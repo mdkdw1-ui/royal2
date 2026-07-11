@@ -48,21 +48,31 @@ class SolverService : Service() {
         val data = intent?.getParcelableExtra<Intent>("data")
 
         if (resultCode != -1 && data != null) {
-            // 안드로이드 14 이상 대응: 화면 캡처 권한 토큰이 확보된 이 시점에 포그라운드 서비스 유형을 명시하여 시작
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    notificationId, 
-                    createNotification(), 
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                )
-            } else {
-                startForeground(notificationId, createNotification())
+            // 1. 안드로이드 14+ 대응 포그라운드 서비스 시작
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        notificationId, 
+                        createNotification(), 
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                    )
+                } else {
+                    startForeground(notificationId, createNotification())
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
 
-            val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = mpManager.getMediaProjection(resultCode, data)
-            
-            startScreenCaptureLoop()
+            // 2. 미디어 프로젝션 토큰 가져오기
+            try {
+                val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = mpManager.getMediaProjection(resultCode, data)
+                
+                // 3. 화면 캡처 루프 진입
+                startScreenCaptureLoop()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
         
         return START_NOT_STICKY
@@ -71,19 +81,28 @@ class SolverService : Service() {
     private fun startScreenCaptureLoop() {
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
+        
+        // [핵심 조치] 메모리 부족(OOM)으로 인한 튕김을 원천 차단하기 위해 해상도를 50%로 낮춰 캡처합니다.
+        // GridDetector는 비율 기반으로 작동하므로 해상도가 낮아져도 정확하게 작동합니다.
+        val width = metrics.widthPixels / 2
+        val height = metrics.heightPixels / 2
+        val density = metrics.densityDpi / 2
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "SolverCapture",
-            width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface, null, null
-        )
+        try {
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "SolverCapture",
+                width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader?.surface, null, null
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return
+        }
 
+        // 1초 주기로 분석 실행
         handler.post(object : Runnable {
             override fun run() {
                 processCurrentFrame()
@@ -94,7 +113,13 @@ class SolverService : Service() {
 
     private fun processCurrentFrame() {
         val reader = imageReader ?: return
-        val image = reader.acquireLatestImage() ?: return
+        
+        // 이미지 획득 실패 시 안전하게 리턴
+        val image = try {
+            reader.acquireLatestImage()
+        } catch (e: Throwable) {
+            null
+        } ?: return
 
         try {
             val planes = image.planes
@@ -104,26 +129,33 @@ class SolverService : Service() {
             val width = image.width
             val height = image.height
 
-            val bitmap = Bitmap.createBitmap(
-                width + (rowStride - pixelStride * width) / pixelStride,
-                height,
-                Bitmap.Config.ARGB_8888
-            )
+            // 가로 패딩 여백을 계산하여 정확한 비트맵 크기 설정 (기기별 버퍼 크기 미스매치 방지)
+            val cleanWidth = width + (rowStride - pixelStride * width) / pixelStride
+            if (cleanWidth <= 0 || height <= 0) return
+
+            // 비트맵 생성 및 픽셀 복사
+            val bitmap = Bitmap.createBitmap(cleanWidth, height, Bitmap.Config.ARGB_8888)
             bitmap.copyPixelsFromBuffer(buffer)
 
+            // 격자 탐지 진행
             val gridResult = GridDetector.getGridDataFromBitmap(bitmap)
             
             if (gridResult.success && gridResult.categoryGrid != null) {
                 val bestMoves = Match3Solver.getMatchCandidates(gridResult.categoryGrid)
                 if (bestMoves.isNotEmpty()) {
-                    // 추후 UI 화살표 렌더링 로직 들어갈 자리
+                    // 계산 알고리즘 성공 (추후 로그나 오버레이 UI 반영)
                 }
             }
-            bitmap.recycle()
-        } catch (e: Exception) {
-            e.printStackTrace()
+            bitmap.recycle() // 메모리 해제
+        } catch (t: Throwable) {
+            // [중요] Exception뿐만 아니라 OutOfMemoryError 같은 시스템 에러까지 catch하여 앱이 터지는 것을 방지
+            t.printStackTrace()
         } finally {
-            image.close()
+            try {
+                image.close()
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
         }
     }
 
@@ -142,8 +174,9 @@ class SolverService : Service() {
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("Match-3 Solver가 실행 중입니다")
-            .setContentText("화면 분석을 진행하고 있습니다.")
+            .setContentText("화면 분석을 백그라운드에서 진행하고 있습니다.")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
