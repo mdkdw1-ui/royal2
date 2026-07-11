@@ -16,8 +16,7 @@ jobs:
 
       - name: Build with Gradle
         run: |
-          # 1. 소스 코드가 있는 폴더로 이동 (이 폴더 이름이 맞는지 확인하세요!)
-          cd royal2
+          # 1. 파일이 이미 루트에 있으므로 cd 명령어는 삭제했습니다.
           
           # 2. gradlew 파일이 없으면 생성
           if [ ! -f gradlew ]; then
@@ -33,4 +32,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: royal2/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
