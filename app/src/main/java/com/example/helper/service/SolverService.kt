@@ -1,4 +1,4 @@
-package com.example.helper
+package com.example.helper.service
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -22,8 +23,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
-import com.example.helper.core.GridDetector
-import com.example.helper.core.Match3Solver
+import com.example.helper.MainActivity // 🎯 메인 액티비티 연결을 위한 필수 임포트
 
 class SolverService : Service() {
     private val TAG = "SolverService"
@@ -36,6 +36,7 @@ class SolverService : Service() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
     
+    // 예전 코드 핵심: 메모리 누수 및 튕김 방지용 변수
     private var reusableBitmap: Bitmap? = null
     private var screenWidth = 1080
     private var screenHeight = 2400
@@ -53,7 +54,6 @@ class SolverService : Service() {
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build()
 
-            // OS 가이드라인에 맞춰 최우선순위로 미디어 프로젝션 타입 선언하여 포그라운드 승격
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(8888, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             } else {
@@ -94,11 +94,10 @@ class SolverService : Service() {
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
 
-            // 🎯 [예전 코드 참조] 시스템에 의해 화면 공유 토큰이 강제 회수되는지 모니터링하기 위한 콜백 추가
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     super.onStop()
-                    Log.e(TAG, "⚠️ 미디어 프로젝션이 시스템 정책 또는 사용자에 의해 해제되었습니다.")
+                    Log.e(TAG, "⚠️ 미디어 프로젝션 캐스팅 세션이 종료되었습니다.")
                     stopSelf()
                 }
             }, backgroundHandler)
@@ -109,10 +108,9 @@ class SolverService : Service() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, backgroundHandler
             )
             
-            // 이미지 분석 루프 핸들러 구동
             backgroundHandler?.post(analyzeRunnable)
 
-            // 🎯 [예전 코드 참조 핵심] 공유 승인 직후 메인 액티비티를 안전하게 호출하여 백그라운드로 밀어내기 유도
+            // 승인 즉시 게임 화면으로 전환 유도하기 위해 메인 액티비티를 호출하여 백그라운드로 밀어냄
             val finishIntent = Intent(this, MainActivity::class.java).apply {
                 action = Intent.ACTION_MAIN
                 addCategory(Intent.CATEGORY_LAUNCHER)
@@ -122,7 +120,7 @@ class SolverService : Service() {
             startActivity(finishIntent)
 
         } catch (e: Exception) {
-            Log.e(TAG, "프로젝션 및 캡처 레이어 초기화 실패", e)
+            Log.e(TAG, "프로젝션 초기화 실패", e)
             stopSelf()
         }
 
@@ -152,7 +150,6 @@ class SolverService : Service() {
             val rowPadding = rowStride - pixelStride * screenWidth
             val adjustedWidth = screenWidth + rowPadding / pixelStride
 
-            // 예전 방식의 완벽한 힙 메모리 고정 및 재사용 기법
             if (reusableBitmap == null || reusableBitmap!!.width != adjustedWidth || reusableBitmap!!.height != screenHeight) {
                 reusableBitmap?.recycle()
                 reusableBitmap = Bitmap.createBitmap(adjustedWidth, screenHeight, Bitmap.Config.ARGB_8888)
@@ -162,19 +159,153 @@ class SolverService : Service() {
             buffer.rewind() 
             bitmap.copyPixelsFromBuffer(buffer)
 
-            // 분석 모듈 연산 실행
-            val gridResult = GridDetector.getGridDataFromBitmap(bitmap)
-            if (gridResult.success && gridResult.categoryGrid != null) {
-                val bestMoves = Match3Solver.getMatchCandidates(gridResult.categoryGrid)
-                if (bestMoves.isNotEmpty()) {
-                    Log.d(TAG, "🎯 백그라운드 분석 성공! 최적의 경로 발견: ${bestMoves[0]}")
+            // 🎯 예전 검증된 로직: 컬러 밀도 매핑 알고리즘 직결 처리
+            var minBlockX = screenWidth
+            var maxBlockX = 0
+            var minBlockY = screenHeight
+            var maxBlockY = 0
+            var detectedBlockCount = 0
+
+            val stepX = 25
+            val stepY = 25
+            val scanLeft = (screenWidth * 0.03f).toInt()
+            val scanRight = (screenWidth * 0.97f).toInt()
+            val scanTop = (screenHeight * 0.30f).toInt()
+            val scanBottom = (screenHeight * 0.88f).toInt()
+
+            for (y in scanTop until scanBottom step stepY) {
+                for (x in scanLeft until scanRight step stepX) {
+                    val colorId = identifyColorHSV(bitmap.getPixel(x, y))
+                    if (colorId in 1..5) {
+                        if (x < minBlockX) minBlockX = x
+                        if (x > maxBlockX) maxBlockX = x
+                        if (y < minBlockY) minBlockY = y
+                        if (y > maxBlockY) maxBlockY = y
+                        detectedBlockCount++
+                    }
                 }
+            }
+
+            if (detectedBlockCount < 15 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
+                return
+            }
+
+            val boardLeft = minBlockX
+            val boardRight = maxBlockX
+            val boardTop = minBlockY
+            val boardBottom = maxBlockY
+            
+            val boardWidth = boardRight - boardLeft
+            val boardHeight = boardBottom - boardTop
+
+            val approxBlockSize = screenWidth / 8.5f
+            val currentGridCols = Math.round(boardWidth.toFloat() / approxBlockSize + 0.3f).coerceIn(5, 11)
+            val currentGridRows = Math.round(boardHeight.toFloat() / approxBlockSize + 0.3f).coerceIn(3, 11)
+
+            val strideX = if (currentGridCols > 1) boardWidth.toFloat() / (currentGridCols - 1) else approxBlockSize
+            val strideY = if (currentGridRows > 1) boardHeight.toFloat() / (currentGridRows - 1) else approxBlockSize
+
+            val topLeftAnchorX = boardLeft.toFloat()
+            val topLeftAnchorY = boardTop.toFloat()
+
+            val colorGrid = Array(currentGridRows) { IntArray(currentGridCols) }
+            for (r in 0 until currentGridRows) {
+                for (c in 0 until currentGridCols) {
+                    val cx = (topLeftAnchorX + (c * strideX)).toInt().coerceIn(0, screenWidth - 1)
+                    val cy = (topLeftAnchorY + (r * strideY)).toInt().coerceIn(0, screenHeight - 1)
+                    colorGrid[r][c] = getPixelBlockColor(bitmap, cx, cy)
+                }
+            }
+
+            // 5-Ball 매칭 엔진 연산 후 로그 출력
+            val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
+            if (hint != null) {
+                Log.d(TAG, "🎯 [백그라운드 스캔 성공] 5링크 매칭 후보 발견 -> From(${hint.fromR}, ${hint.fromC}) To(${hint.toR}, ${hint.toC})")
             }
         } catch (t: Throwable) {
             Log.e(TAG, "프레임 분석 루프 예외 보호", t)
         } finally {
             try { image.close() } catch (e: Exception) {}
         }
+    }
+
+    private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
+        val votes = IntArray(6)
+        votes[identifyColorHSV(bitmap.getPixel(cx, cy))]++
+        votes[identifyColorHSV(bitmap.getPixel((cx - 8).coerceIn(0, screenWidth - 1), cy))]++
+        votes[identifyColorHSV(bitmap.getPixel((cx + 8).coerceIn(0, screenWidth - 1), cy))]++
+        votes[identifyColorHSV(bitmap.getPixel(cx, (cy - 8).coerceIn(0, screenHeight - 1)))]++
+        votes[identifyColorHSV(bitmap.getPixel(cx, (cy + 8).coerceIn(0, screenHeight - 1)))]++
+        
+        var maxVote = 0
+        var winner = 0
+        for (i in 1..5) {
+            if (votes[i] > maxVote) {
+                maxVote = votes[i]
+                winner = i
+            }
+        }
+        return if (maxVote >= 2) winner else 0
+    }
+
+    private fun identifyColorHSV(pixel: Int): Int {
+        val r = Color.red(pixel)
+        val g = Color.green(pixel)
+        val b = Color.blue(pixel)
+        if (r + g + b < 100 || r + g + b > 710) return 0
+
+        val hsv = FloatArray(3)
+        Color.RGBToHSV(r, g, b, hsv)
+        val hue = hsv[0]
+        val sat = hsv[1]
+        val value = hsv[2]
+
+        if (sat < 0.16f || value < 0.16f) return 0
+
+        return when {
+            (hue >= 345f || hue <= 15f) -> 1  // 빨강
+            (hue in 195f..245f) -> 2          // 파랑
+            (hue in 40f..65f) -> 3            // 노랑
+            (hue in 90f..145f) -> 4           // 초록
+            (hue in 265f..330f) -> 5          // 보라
+            else -> 0
+        }
+    }
+
+    private fun findExactOOXOOMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
+        for (r in 0 until rows) {
+            for (c in 0..cols - 5) {
+                val t = grid[r][c]
+                if (t == 0) continue
+                if (grid[r][c+1] == t && grid[r][c+3] == t && grid[r][c+4] == t && grid[r][c+2] != t) {
+                    val targetRow = r
+                    val targetCol = c + 2 
+                    if (targetRow - 1 >= 0 && grid[targetRow - 1][targetCol] == t) {
+                        return MatchHint(targetRow - 1, targetCol, targetRow, targetCol)
+                    }
+                    if (targetRow + 1 < rows && grid[targetRow + 1][targetCol] == t) {
+                        return MatchHint(targetRow + 1, targetCol, targetRow, targetCol)
+                    }
+                }
+            }
+        }
+        for (c in 0 until cols) {
+            for (r in 0..rows - 5) {
+                val t = grid[r][c]
+                if (t == 0) continue
+                if (grid[r+1][c] == t && grid[r+3][c] == t && grid[r+4][c] == t && grid[r+2][c] != t) {
+                    val targetRow = r + 2 
+                    val targetCol = c
+                    if (targetCol - 1 >= 0 && grid[targetRow][targetCol - 1] == t) {
+                        return MatchHint(targetRow, targetCol - 1, targetRow, targetCol)
+                    }
+                    if (targetCol + 1 < cols && grid[targetRow][targetCol + 1] == t) {
+                        return MatchHint(targetRow, targetCol + 1, targetRow, targetCol)
+                    }
+                }
+            }
+        }
+        return null
     }
 
     override fun onDestroy() {
@@ -187,9 +318,11 @@ class SolverService : Service() {
             mediaProjection?.stop()
             reusableBitmap?.recycle()
             reusableBitmap = null
-            Log.d(TAG, "SolverService 안전 종료 완료")
+            Log.d(TAG, "SolverService 정상 종료 및 자원 해제 완료")
         } catch (e: Exception) {
             Log.e(TAG, "자원 해제 예외", e)
         }
     }
+
+    data class MatchHint(val fromR: Int, val fromC: Int, val toR: Int, val toC: Int)
 }
