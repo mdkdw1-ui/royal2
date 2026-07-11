@@ -250,4 +250,107 @@ class SolverService : Service() {
             if (hint != null) {
                 Log.d(TAG, "🎯 [백그라운드 스캔 성공] 5연속 매칭 후보: From(${hint.fromR}, ${hint.fromC}) -> To(${hint.toR}, ${hint.toC})")
             }
-        } catch (t: Throwable)
+        } catch (t: Throwable) {
+            Log.e(TAG, "프레임 핵심 연산 예외 보호", t)
+        } finally {
+            try { image.close() } catch (e: Exception) {}
+        }
+    }
+
+    private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
+        val votes = IntArray(6)
+        votes[identifyColorHSV(bitmap.getPixel(cx, cy))]++
+        votes[identifyColorHSV(bitmap.getPixel((cx - 8).coerceIn(0, bitmap.width - 1), cy))]++
+        votes[identifyColorHSV(bitmap.getPixel((cx + 8).coerceIn(0, bitmap.width - 1), cy))]++
+        votes[identifyColorHSV(bitmap.getPixel(cx, (cy - 8).coerceIn(0, bitmap.height - 1)))]++
+        votes[identifyColorHSV(bitmap.getPixel(cx, (cy + 8).coerceIn(0, bitmap.height - 1)))]++
+        
+        var maxVote = 0
+        var winner = 0
+        for (i in 1..5) {
+            if (votes[i] > maxVote) {
+                maxVote = votes[i]
+                winner = i
+            }
+        }
+        return if (maxVote >= 2) winner else 0
+    }
+
+    private fun identifyColorHSV(pixel: Int): Int {
+        val r = Color.red(pixel)
+        val g = Color.green(pixel)
+        val b = Color.blue(pixel)
+        if (r + g + b < 100 || r + g + b > 710) return 0
+
+        val hsv = FloatArray(3)
+        Color.RGBToHSV(r, g, b, hsv)
+        val hue = hsv[0]
+        val sat = hsv[1]
+        val value = hsv[2]
+
+        if (sat < 0.16f || value < 0.16f) return 0
+
+        return when {
+            (hue >= 345f || hue <= 15f) -> 1  
+            (hue in 195f..245f) -> 2          
+            (hue in 40f..65f) -> 3            
+            (hue in 90f..145f) -> 4           
+            (hue in 265f..330f) -> 5          
+            else -> 0
+        }
+    }
+
+    private fun findExactOOXOOMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
+        for (r in 0 until rows) {
+            for (c in 0..cols - 5) {
+                val t = grid[r][c]
+                if (t == 0) continue
+                if (grid[r][c+1] == t && grid[r][c+3] == t && grid[r][c+4] == t && grid[r][c+2] != t) {
+                    val targetRow = r
+                    val targetCol = c + 2 
+                    if (targetRow - 1 >= 0 && grid[targetRow - 1][targetCol] == t) {
+                        return MatchHint(targetRow - 1, targetCol, targetRow, targetCol)
+                    }
+                    if (targetRow + 1 < rows && grid[targetRow + 1][targetCol] == t) {
+                        return MatchHint(targetRow + 1, targetCol, targetRow, targetCol)
+                    }
+                }
+            }
+        }
+        for (c in 0 until cols) {
+            for (r in 0..rows - 5) {
+                val t = grid[r][c]
+                if (t == 0) continue
+                if (grid[r+1][c] == t && grid[r+3][c] == t && grid[r+4][c] == t && grid[r+2][c] != t) {
+                    val targetRow = r + 2 
+                    val targetCol = c
+                    if (targetCol - 1 >= 0 && grid[targetRow][targetCol - 1] == t) {
+                        return MatchHint(targetRow, targetCol - 1, targetRow, targetCol)
+                    }
+                    if (targetCol + 1 < cols && grid[targetRow][targetCol + 1] == t) {
+                        return MatchHint(targetRow, targetCol + 1, targetRow, targetCol)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            backgroundHandler?.removeCallbacks(analyzeRunnable)
+            backgroundThread?.quitSafely() 
+            virtualDisplay?.release()
+            imageReader?.close()
+            mediaProjection?.stop()
+            reusableBitmap?.recycle()
+            reusableBitmap = null
+            Log.d(TAG, "SolverService 정상 자원 해제 완료")
+        } catch (e: Exception) {
+            Log.e(TAG, "자원 해제 예외 발생", e)
+        }
+    }
+
+    data class MatchHint(val fromR: Int, val fromC: Int, val toR: Int, val toC: Int)
+}
