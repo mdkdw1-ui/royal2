@@ -25,6 +25,7 @@
         <service
             android:name="com.example.helper.service.SolverService"
             android:foregroundServiceType="mediaProjection"
+            ㅍandroid:enabled="true"
             android:exported="false" />
     </application>
 
