@@ -1,6 +1,5 @@
 package com.example.helper.service
 
-import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -23,9 +22,8 @@ import android.os.IBinder
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.example.helper.MainActivity
+import com.example.royal2.MainActivity
 
 class SolverService : Service() {
     private val TAG = "SolverService"
@@ -81,17 +79,12 @@ class SolverService : Service() {
 
         val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
         
-        // 🎯 호환성 문제를 피하기 위해 가장 전통적이고 안전한 방식으로 Intent 데이터를 복원합니다.
-        val dataIntent: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent?.getParcelableExtra("data", Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent?.getParcelableExtra("data")
+        val dataIntent = intent?.let {
+            androidx.core.content.IntentCompat.getParcelableExtra(it, "data", Intent::class.java)
         }
         
-        if (resultCode != Activity.RESULT_OK || dataIntent == null) {
-            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터가 누락되었거나 거부되었습니다. (resultCode: $resultCode)")
-            sendFinishSignalToActivity() // 실패하더라도 액티비티를 닫아 사용자 경험 확보
+        if (resultCode == -1 || dataIntent == null) {
+            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터가 누락되었습니다. (resultCode: $resultCode)")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -118,17 +111,8 @@ class SolverService : Service() {
             if (screenHeight <= 0) screenHeight = 2400
 
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            
-            // 🎯 이 지점에서 OS 보안 예외가 나는지 검증합니다.
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
             
-            if (mediaProjection == null) {
-                Log.e(TAG, "❌ 미디어 프로젝션 객체를 생성하지 못했습니다.")
-                sendFinishSignalToActivity()
-                stopSelf()
-                return START_NOT_STICKY
-            }
-
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
 
@@ -147,26 +131,9 @@ class SolverService : Service() {
             )
             
             backgroundHandler?.post(analyzeRunnable)
+
             promoteToForeground("백그라운드에서 실시간 화면 분석 중")
 
-        } catch (e: Exception) {
-            Log.e(TAG, "치명적 오류: 프로젝션 레이어 초기화 실패", e)
-            // 에러 내용을 토스트로 띄워 개발 중 확인이 가능하도록 조치합니다.
-            Handler(android.os.Looper.getMainLooper()).post {
-                Toast.makeText(applicationContext, "캡처 레이어 생성 실패: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-            stopSelf()
-        } finally {
-            // 🎯 성공하든 실패하든, 시스템 팝업 작업이 끝났으므로 
-            // 무조건 메인 액티비티를 백그라운드로 내려서 사용자가 홈 화면을 보게 만듭니다.
-            sendFinishSignalToActivity()
-        }
-
-        return START_NOT_STICKY
-    }
-
-    private fun sendFinishSignalToActivity() {
-        try {
             val finishIntent = Intent(this, MainActivity::class.java).apply {
                 action = Intent.ACTION_MAIN
                 addCategory(Intent.CATEGORY_LAUNCHER)
@@ -174,9 +141,13 @@ class SolverService : Service() {
                 putExtra("ACTION_FINISH", true)
             }
             startActivity(finishIntent)
+
         } catch (e: Exception) {
-            Log.e(TAG, "액티비티 백그라운드 시그널 전송 실패", e)
+            Log.e(TAG, "치명적 오류: 프로젝션 레이어 초기화 실패", e)
+            stopSelf()
         }
+
+        return START_NOT_STICKY
     }
 
     private val analyzeRunnable = object : Runnable {
@@ -276,3 +247,7 @@ class SolverService : Service() {
             }
 
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
+            if (hint != null) {
+                Log.d(TAG, "🎯 [백그라운드 스캔 성공] 5연속 매칭 후보: From(${hint.fromR}, ${hint.fromC}) -> To(${hint.toR}, ${hint.toC})")
+            }
+        } catch (t: Throwable)
