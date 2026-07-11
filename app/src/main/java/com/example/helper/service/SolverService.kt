@@ -23,7 +23,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
-import com.example.helper.MainActivity // 🎯 메인 액티비티 연결을 위한 필수 임포트
+import com.example.helper.MainActivity
 
 class SolverService : Service() {
     private val TAG = "SolverService"
@@ -36,7 +36,6 @@ class SolverService : Service() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
     
-    // 예전 코드 핵심: 메모리 누수 및 튕김 방지용 변수
     private var reusableBitmap: Bitmap? = null
     private var screenWidth = 1080
     private var screenHeight = 2400
@@ -45,11 +44,16 @@ class SolverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // 초기화 시 포그라운드 서비스 등록
+        promoteToForeground("서비스 초기화 중...")
+    }
+
+    private fun promoteToForeground(message: String) {
         try {
             createNotificationChannel()
             val notification: Notification = NotificationCompat.Builder(this, "solver_service_channel")
-                .setContentTitle("Match-3 Solver Running")
-                .setContentText("백그라운드에서 실시간 화면 분석 중")
+                .setContentTitle("Match-3 Solver")
+                .setContentText(message)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build()
@@ -61,7 +65,6 @@ class SolverService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Foreground 서비스 승격 실패", e)
-            stopSelf()
         }
     }
 
@@ -73,20 +76,46 @@ class SolverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 🎯 해결책 3: 진입 시점에 즉시 미디어 프로젝션 타입으로 포그라운드 락 갱신
+        promoteToForeground("실시간 화면 캡처 세션 준비 중")
+
         val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
-        val dataIntent = intent?.getParcelableExtra<Intent>("data")
+        
+        // 🎯 해결책 1: Android 13/14 대응 안전한 Parcelable 데이터 추출 기법 적용 (Null로 인한 자동종료 방지)
+        val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra("data", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra("data")
+        }
         
         if (resultCode == -1 || dataIntent == null) {
+            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터가 누락되었습니다. (resultCode: $resultCode)")
             stopSelf()
             return START_NOT_STICKY
         }
 
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val metrics = DisplayMetrics()
-            windowManager?.defaultDisplay?.getRealMetrics(metrics)
-            screenWidth = metrics.widthPixels
-            screenHeight = metrics.heightPixels
+            
+            // 🎯 해결책 2: Android 11+ 최신 창 경계 측정 API 반영 및 0값 방어 코드 추가 (ImageReader 크래시 방지)
+            var densityDpi = 420
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = windowManager?.currentWindowMetrics?.bounds
+                screenWidth = bounds?.width() ?: 1080
+                screenHeight = bounds?.height() ?: 2400
+                densityDpi = resources.displayMetrics.densityDpi
+            } else {
+                val metrics = DisplayMetrics()
+                @Suppress("DEPRECATION")
+                windowManager?.defaultDisplay?.getRealMetrics(metrics)
+                screenWidth = metrics.widthPixels
+                screenHeight = metrics.heightPixels
+                densityDpi = metrics.densityDpi
+            }
+
+            if (screenWidth <= 0) screenWidth = 1080
+            if (screenHeight <= 0) screenHeight = 2400
 
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
@@ -97,20 +126,23 @@ class SolverService : Service() {
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     super.onStop()
-                    Log.e(TAG, "⚠️ 미디어 프로젝션 캐스팅 세션이 종료되었습니다.")
+                    Log.e(TAG, "⚠️ 시스템 정책 또는 사용자에 의해 캡처 세션이 닫혔습니다.")
                     stopSelf()
                 }
             }, backgroundHandler)
 
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "ScreenCapture", screenWidth, screenHeight, metrics.densityDpi,
+                "ScreenCapture", screenWidth, screenHeight, densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, backgroundHandler
             )
             
             backgroundHandler?.post(analyzeRunnable)
 
-            // 승인 즉시 게임 화면으로 전환 유도하기 위해 메인 액티비티를 호출하여 백그라운드로 밀어냄
+            // 세션 정상 시작 알림 업데이트
+            promoteToForeground("백그라운드에서 실시간 화면 분석 중")
+
+            // 안전하게 메인 액티비티를 백그라운드로 밀어내기 호출
             val finishIntent = Intent(this, MainActivity::class.java).apply {
                 action = Intent.ACTION_MAIN
                 addCategory(Intent.CATEGORY_LAUNCHER)
@@ -120,7 +152,7 @@ class SolverService : Service() {
             startActivity(finishIntent)
 
         } catch (e: Exception) {
-            Log.e(TAG, "프로젝션 초기화 실패", e)
+            Log.e(TAG, "치명적 오류: 프로젝션 레이어 초기화 실패", e)
             stopSelf()
         }
 
@@ -132,9 +164,9 @@ class SolverService : Service() {
             try { 
                 analyzeScreenFast() 
             } catch (e: Exception) { 
-                Log.e(TAG, "루프 스킵", e) 
+                Log.e(TAG, "루프 예외 무시 및 스킵", e) 
             }
-            backgroundHandler?.postDelayed(this, 1000) // 1초 간격 갱신
+            backgroundHandler?.postDelayed(this, 1000)
         }
     }
 
@@ -144,9 +176,17 @@ class SolverService : Service() {
         
         try {
             val planes = image.planes
+            // 🎯 해결책 4: 스트림 연결 직후 빈 프레임이 들어올 때 생기는 인덱스 크래시 원천 차단
+            if (planes.isNullOrEmpty() || planes[0].buffer == null) {
+                return
+            }
+
             val buffer = planes[0].buffer          
             val pixelStride = planes[0].pixelStride  
             val rowStride = planes[0].rowStride      
+            
+            if (pixelStride == 0) return
+            
             val rowPadding = rowStride - pixelStride * screenWidth
             val adjustedWidth = screenWidth + rowPadding / pixelStride
 
@@ -159,7 +199,7 @@ class SolverService : Service() {
             buffer.rewind() 
             bitmap.copyPixelsFromBuffer(buffer)
 
-            // 🎯 예전 검증된 로직: 컬러 밀도 매핑 알고리즘 직결 처리
+            // 고속 서칭 연산 구동
             var minBlockX = screenWidth
             var maxBlockX = 0
             var minBlockY = screenHeight
@@ -211,19 +251,18 @@ class SolverService : Service() {
             val colorGrid = Array(currentGridRows) { IntArray(currentGridCols) }
             for (r in 0 until currentGridRows) {
                 for (c in 0 until currentGridCols) {
-                    val cx = (topLeftAnchorX + (c * strideX)).toInt().coerceIn(0, screenWidth - 1)
-                    val cy = (topLeftAnchorY + (r * strideY)).toInt().coerceIn(0, screenHeight - 1)
+                    val cx = (topLeftAnchorX + (c * strideX)).toInt().coerceIn(0, bitmap.width - 1)
+                    val cy = (topLeftAnchorY + (r * strideY)).toInt().coerceIn(0, bitmap.height - 1)
                     colorGrid[r][c] = getPixelBlockColor(bitmap, cx, cy)
                 }
             }
 
-            // 5-Ball 매칭 엔진 연산 후 로그 출력
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
             if (hint != null) {
-                Log.d(TAG, "🎯 [백그라운드 스캔 성공] 5링크 매칭 후보 발견 -> From(${hint.fromR}, ${hint.fromC}) To(${hint.toR}, ${hint.toC})")
+                Log.d(TAG, "🎯 [백그라운드 스캔 성공] 5연속 매칭 후보: From(${hint.fromR}, ${hint.fromC}) -> To(${hint.toR}, ${hint.toC})")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "프레임 분석 루프 예외 보호", t)
+            Log.e(TAG, "프레임 핵심 연산 예외 보호 보호", t)
         } finally {
             try { image.close() } catch (e: Exception) {}
         }
@@ -232,10 +271,10 @@ class SolverService : Service() {
     private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
         val votes = IntArray(6)
         votes[identifyColorHSV(bitmap.getPixel(cx, cy))]++
-        votes[identifyColorHSV(bitmap.getPixel((cx - 8).coerceIn(0, screenWidth - 1), cy))]++
-        votes[identifyColorHSV(bitmap.getPixel((cx + 8).coerceIn(0, screenWidth - 1), cy))]++
-        votes[identifyColorHSV(bitmap.getPixel(cx, (cy - 8).coerceIn(0, screenHeight - 1)))]++
-        votes[identifyColorHSV(bitmap.getPixel(cx, (cy + 8).coerceIn(0, screenHeight - 1)))]++
+        votes[identifyColorHSV(bitmap.getPixel((cx - 8).coerceIn(0, bitmap.width - 1), cy))]++
+        votes[identifyColorHSV(bitmap.getPixel((cx + 8).coerceIn(0, bitmap.width - 1), cy))]++
+        votes[identifyColorHSV(bitmap.getPixel(cx, (cy - 8).coerceIn(0, bitmap.height - 1)))]++
+        votes[identifyColorHSV(bitmap.getPixel(cx, (cy + 8).coerceIn(0, bitmap.height - 1)))]++
         
         var maxVote = 0
         var winner = 0
@@ -263,11 +302,11 @@ class SolverService : Service() {
         if (sat < 0.16f || value < 0.16f) return 0
 
         return when {
-            (hue >= 345f || hue <= 15f) -> 1  // 빨강
-            (hue in 195f..245f) -> 2          // 파랑
-            (hue in 40f..65f) -> 3            // 노랑
-            (hue in 90f..145f) -> 4           // 초록
-            (hue in 265f..330f) -> 5          // 보라
+            (hue >= 345f || hue <= 15f) -> 1  
+            (hue in 195f..245f) -> 2          
+            (hue in 40f..65f) -> 3            
+            (hue in 90f..145f) -> 4           
+            (hue in 265f..330f) -> 5          
             else -> 0
         }
     }
@@ -318,9 +357,9 @@ class SolverService : Service() {
             mediaProjection?.stop()
             reusableBitmap?.recycle()
             reusableBitmap = null
-            Log.d(TAG, "SolverService 정상 종료 및 자원 해제 완료")
+            Log.d(TAG, "SolverService 정상 자원 해제 완료")
         } catch (e: Exception) {
-            Log.e(TAG, "자원 해제 예외", e)
+            Log.e(TAG, "자원 해제 예외 발생", e)
         }
     }
 
