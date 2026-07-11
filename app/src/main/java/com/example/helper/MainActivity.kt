@@ -7,6 +7,8 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.widget.Button
 import android.widget.Toast
@@ -34,7 +36,6 @@ class MainActivity : AppCompatActivity() {
             checkPermissionsAndStart()
         }
 
-        // 혹시 서비스가 동작하면서 최초 인텐트가 전달되었을 경우를 대비한 처리
         handleServiceSignal(intent)
     }
 
@@ -68,21 +69,26 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (requestCode == SCREEN_CAPTURE_REQUEST_CODE && resultCode == Activity.RESULT_OK && data != null) {
-            val serviceIntent = Intent(this, SolverService::class.java).apply {
-                putExtra("resultCode", resultCode)
-                putExtra("data", data)
+            // 🎯 [핵심 수정] Handler().post를 통해 메인 루프 한 사이클 뒤로 실행을 미룹니다.
+            // 이렇게 하면 액티비티가 완전히 OS 상에서 Foreground 상태로 복귀한 뒤 서비스가 시작되어 튕김이 완전히 방지됩니다.
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    val serviceIntent = Intent(this, SolverService::class.java).apply {
+                        putExtra("resultCode", resultCode)
+                        putExtra("data", data)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(serviceIntent)
+                    } else {
+                        startService(serviceIntent)
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(this, "서비스 시작 실패: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-            // 🎯 [수정 핵심] 여기서 바로 moveTaskToBack(true)를 호출하면 Android 14 정책 위반 크래시가 납니다.
-            // 서비스가 확실하게 구동을 완료한 뒤 호출하는 신호를 받아 안전하게 백그라운드로 보낼 것입니다.
         }
     }
 
-    // 🎯 [추가 핵심] SolverService가 구동 완료 후 본 액티비티를 싱글탑으로 깨울 때 신호를 수신하는 곳입니다.
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -91,7 +97,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleServiceSignal(intent: Intent?) {
         if (intent?.getBooleanExtra("ACTION_FINISH", false) == true) {
-            // 서비스가 완전하게 포그라운드로 승격 및 미디어 프로젝션 등록을 끝낸 시점이므로 안전하게 백그라운드로 밀어냅니다.
             moveTaskToBack(true)
         }
     }
