@@ -33,6 +33,9 @@ class MainActivity : AppCompatActivity() {
         startButton.setOnClickListener {
             checkPermissionsAndStart()
         }
+
+        // 혹시 서비스가 동작하면서 최초 인텐트가 전달되었을 경우를 대비한 처리
+        handleServiceSignal(intent)
     }
 
     private fun checkPermissionsAndStart() {
@@ -74,6 +77,21 @@ class MainActivity : AppCompatActivity() {
             } else {
                 startService(serviceIntent)
             }
+            // 🎯 [수정 핵심] 여기서 바로 moveTaskToBack(true)를 호출하면 Android 14 정책 위반 크래시가 납니다.
+            // 서비스가 확실하게 구동을 완료한 뒤 호출하는 신호를 받아 안전하게 백그라운드로 보낼 것입니다.
+        }
+    }
+
+    // 🎯 [추가 핵심] SolverService가 구동 완료 후 본 액티비티를 싱글탑으로 깨울 때 신호를 수신하는 곳입니다.
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleServiceSignal(intent)
+    }
+
+    private fun handleServiceSignal(intent: Intent?) {
+        if (intent?.getBooleanExtra("ACTION_FINISH", false) == true) {
+            // 서비스가 완전하게 포그라운드로 승격 및 미디어 프로젝션 등록을 끝낸 시점이므로 안전하게 백그라운드로 밀어냅니다.
             moveTaskToBack(true)
         }
     }
