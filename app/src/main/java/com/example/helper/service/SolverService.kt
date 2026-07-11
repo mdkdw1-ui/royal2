@@ -1,5 +1,6 @@
 package com.example.helper.service
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -22,6 +23,7 @@ import android.os.IBinder
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.example.helper.MainActivity
 
@@ -79,13 +81,17 @@ class SolverService : Service() {
 
         val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
         
-        // AndroidX 공식 호환성 도구를 사용하여 안전하게 데이터를 추출합니다.
-        val dataIntent = intent?.let {
-            androidx.core.content.IntentCompat.getParcelableExtra(it, "data", Intent::class.java)
+        // 🎯 호환성 문제를 피하기 위해 가장 전통적이고 안전한 방식으로 Intent 데이터를 복원합니다.
+        val dataIntent: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra("data", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra("data")
         }
         
-        if (resultCode == -1 || dataIntent == null) {
-            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터가 누락되었습니다. (resultCode: $resultCode)")
+        if (resultCode != Activity.RESULT_OK || dataIntent == null) {
+            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터가 누락되었거나 거부되었습니다. (resultCode: $resultCode)")
+            sendFinishSignalToActivity() // 실패하더라도 액티비티를 닫아 사용자 경험 확보
             stopSelf()
             return START_NOT_STICKY
         }
@@ -112,8 +118,17 @@ class SolverService : Service() {
             if (screenHeight <= 0) screenHeight = 2400
 
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            
+            // 🎯 이 지점에서 OS 보안 예외가 나는지 검증합니다.
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
             
+            if (mediaProjection == null) {
+                Log.e(TAG, "❌ 미디어 프로젝션 객체를 생성하지 못했습니다.")
+                sendFinishSignalToActivity()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
 
@@ -132,10 +147,26 @@ class SolverService : Service() {
             )
             
             backgroundHandler?.post(analyzeRunnable)
-
             promoteToForeground("백그라운드에서 실시간 화면 분석 중")
 
-            // 안전하게 메인 액티비티를 백그라운드로 밀어내기 호출
+        } catch (e: Exception) {
+            Log.e(TAG, "치명적 오류: 프로젝션 레이어 초기화 실패", e)
+            // 에러 내용을 토스트로 띄워 개발 중 확인이 가능하도록 조치합니다.
+            Handler(android.os.Looper.getMainLooper()).post {
+                Toast.makeText(applicationContext, "캡처 레이어 생성 실패: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+            stopSelf()
+        } finally {
+            // 🎯 성공하든 실패하든, 시스템 팝업 작업이 끝났으므로 
+            // 무조건 메인 액티비티를 백그라운드로 내려서 사용자가 홈 화면을 보게 만듭니다.
+            sendFinishSignalToActivity()
+        }
+
+        return START_NOT_STICKY
+    }
+
+    private fun sendFinishSignalToActivity() {
+        try {
             val finishIntent = Intent(this, MainActivity::class.java).apply {
                 action = Intent.ACTION_MAIN
                 addCategory(Intent.CATEGORY_LAUNCHER)
@@ -143,13 +174,9 @@ class SolverService : Service() {
                 putExtra("ACTION_FINISH", true)
             }
             startActivity(finishIntent)
-
         } catch (e: Exception) {
-            Log.e(TAG, "치명적 오류: 프로젝션 레이어 초기화 실패", e)
-            stopSelf()
+            Log.e(TAG, "액티비티 백그라운드 시그널 전송 실패", e)
         }
-
-        return START_NOT_STICKY
     }
 
     private val analyzeRunnable = object : Runnable {
@@ -249,110 +276,3 @@ class SolverService : Service() {
             }
 
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
-            if (hint != null) {
-                Log.d(TAG, "🎯 [백그라운드 스캔 성공] 5연속 매칭 후보: From(${hint.fromR}, ${hint.fromC}) -> To(${hint.toR}, ${hint.toC})")
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "프레임 핵심 연산 예외 보호", t)
-        } finally {
-            try { image.close() } catch (e: Exception) {}
-        }
-    }
-
-    private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
-        val votes = IntArray(6)
-        votes[identifyColorHSV(bitmap.getPixel(cx, cy))]++
-        votes[identifyColorHSV(bitmap.getPixel((cx - 8).coerceIn(0, bitmap.width - 1), cy))]++
-        votes[identifyColorHSV(bitmap.getPixel((cx + 8).coerceIn(0, bitmap.width - 1), cy))]++
-        votes[identifyColorHSV(bitmap.getPixel(cx, (cy - 8).coerceIn(0, bitmap.height - 1)))]++
-        votes[identifyColorHSV(bitmap.getPixel(cx, (cy + 8).coerceIn(0, bitmap.height - 1)))]++
-        
-        var maxVote = 0
-        var winner = 0
-        for (i in 1..5) {
-            if (votes[i] > maxVote) {
-                maxVote = votes[i]
-                winner = i
-            }
-        }
-        return if (maxVote >= 2) winner else 0
-    }
-
-    private fun identifyColorHSV(pixel: Int): Int {
-        val r = Color.red(pixel)
-        val g = Color.green(pixel)
-        val b = Color.blue(pixel)
-        if (r + g + b < 100 || r + g + b > 710) return 0
-
-        val hsv = FloatArray(3)
-        Color.RGBToHSV(r, g, b, hsv)
-        val hue = hsv[0]
-        val sat = hsv[1]
-        val value = hsv[2]
-
-        if (sat < 0.16f || value < 0.16f) return 0
-
-        return when {
-            (hue >= 345f || hue <= 15f) -> 1  
-            (hue in 195f..245f) -> 2          
-            (hue in 40f..65f) -> 3            
-            (hue in 90f..145f) -> 4           
-            (hue in 265f..330f) -> 5          
-            else -> 0
-        }
-    }
-
-    private fun findExactOOXOOMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
-        for (r in 0 until rows) {
-            for (c in 0..cols - 5) {
-                val t = grid[r][c]
-                if (t == 0) continue
-                if (grid[r][c+1] == t && grid[r][c+3] == t && grid[r][c+4] == t && grid[r][c+2] != t) {
-                    val targetRow = r
-                    val targetCol = c + 2 
-                    if (targetRow - 1 >= 0 && grid[targetRow - 1][targetCol] == t) {
-                        return MatchHint(targetRow - 1, targetCol, targetRow, targetCol)
-                    }
-                    if (targetRow + 1 < rows && grid[targetRow + 1][targetCol] == t) {
-                        return MatchHint(targetRow + 1, targetCol, targetRow, targetCol)
-                    }
-                }
-            }
-        }
-        for (c in 0 until cols) {
-            for (r in 0..rows - 5) {
-                val t = grid[r][c]
-                if (t == 0) continue
-                if (grid[r+1][c] == t && grid[r+3][c] == t && grid[r+4][c] == t && grid[r+2][c] != t) {
-                    val targetRow = r + 2 
-                    val targetCol = c
-                    if (targetCol - 1 >= 0 && grid[targetRow][targetCol - 1] == t) {
-                        return MatchHint(targetRow, targetCol - 1, targetRow, targetCol)
-                    }
-                    if (targetCol + 1 < cols && grid[targetRow][targetCol + 1] == t) {
-                        return MatchHint(targetRow, targetCol + 1, targetRow, targetCol)
-                    }
-                }
-            }
-        }
-        return null
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        try {
-            backgroundHandler?.removeCallbacks(analyzeRunnable)
-            backgroundThread?.quitSafely() 
-            virtualDisplay?.release()
-            imageReader?.close()
-            mediaProjection?.stop()
-            reusableBitmap?.recycle()
-            reusableBitmap = null
-            Log.d(TAG, "SolverService 정상 자원 해제 완료")
-        } catch (e: Exception) {
-            Log.e(TAG, "자원 해제 예외 발생", e)
-        }
-    }
-
-    data class MatchHint(val fromR: Int, val fromC: Int, val toR: Int, val toC: Int)
-}
