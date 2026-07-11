@@ -14,15 +14,18 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # gradlew 파일이 없을 경우를 대비해 직접 시스템 gradle을 호출하여 래퍼 생성
-      - name: Build with Gradle
+      # 핵심: gradlew 파일이 없으면 강제로 생성함
+      - name: Ensure Gradle Wrapper exists
         run: |
-          # 래퍼가 없으면 생성하고, 있으면 그대로 사용
           if [ ! -f gradlew ]; then
+            echo "gradlew not found, generating wrapper..."
             gradle wrapper --gradle-version 8.5
-            chmod +x gradlew
           fi
-          ./gradlew assembleDebug
+          chmod +x gradlew
+
+      # 빌드 실행
+      - name: Build with Gradle
+        run: ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
