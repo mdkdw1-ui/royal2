@@ -44,7 +44,6 @@ class SolverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // 초기화 시 포그라운드 서비스 등록
         promoteToForeground("서비스 초기화 중...")
     }
 
@@ -76,13 +75,11 @@ class SolverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         promoteToForeground("실시간 화면 캡처 세션 준비 중")
 
         val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
         
-        // 🎯 [수정] 기존 버전 분기 처리를 안드로이드 공식 하이브리드 추출기(IntentCompat)로 대체합니다.
-        // 이를 통해 내부 캐스팅 오류나 Null 리턴으로 인한 세션 종료 현상을 원천 차단합니다.
+        // AndroidX 공식 호환성 도구를 사용하여 안전하게 데이터를 추출합니다.
         val dataIntent = intent?.let {
             androidx.core.content.IntentCompat.getParcelableExtra(it, "data", Intent::class.java)
         }
@@ -92,14 +89,10 @@ class SolverService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        
-        // ... 이하 기존 코드 동일 ...
-
 
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             
-            // 🎯 해결책 2: Android 11+ 최신 창 경계 측정 API 반영 및 0값 방어 코드 추가 (ImageReader 크래시 방지)
             var densityDpi = 420
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val bounds = windowManager?.currentWindowMetrics?.bounds
@@ -140,7 +133,6 @@ class SolverService : Service() {
             
             backgroundHandler?.post(analyzeRunnable)
 
-            // 세션 정상 시작 알림 업데이트
             promoteToForeground("백그라운드에서 실시간 화면 분석 중")
 
             // 안전하게 메인 액티비티를 백그라운드로 밀어내기 호출
@@ -177,7 +169,6 @@ class SolverService : Service() {
         
         try {
             val planes = image.planes
-            // 🎯 해결책 4: 스트림 연결 직후 빈 프레임이 들어올 때 생기는 인덱스 크래시 원천 차단
             if (planes.isNullOrEmpty() || planes[0].buffer == null) {
                 return
             }
@@ -200,7 +191,6 @@ class SolverService : Service() {
             buffer.rewind() 
             bitmap.copyPixelsFromBuffer(buffer)
 
-            // 고속 서칭 연산 구동
             var minBlockX = screenWidth
             var maxBlockX = 0
             var minBlockY = screenHeight
@@ -263,7 +253,7 @@ class SolverService : Service() {
                 Log.d(TAG, "🎯 [백그라운드 스캔 성공] 5연속 매칭 후보: From(${hint.fromR}, ${hint.fromC}) -> To(${hint.toR}, ${hint.toC})")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "프레임 핵심 연산 예외 보호 보호", t)
+            Log.e(TAG, "프레임 핵심 연산 예외 보호", t)
         } finally {
             try { image.close() } catch (e: Exception) {}
         }
