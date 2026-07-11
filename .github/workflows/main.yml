@@ -14,19 +14,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # 공식 Gradle 액션을 사용하면 gradlew 파일 고민이 사라집니다.
       - name: Build with Gradle
-        run: |
-          # 1. 파일이 이미 루트에 있으므로 cd 명령어는 삭제했습니다.
-          
-          # 2. gradlew 파일이 없으면 생성
-          if [ ! -f gradlew ]; then
-            echo "gradlew not found, generating wrapper..."
-            gradle wrapper --gradle-version 8.5
-          fi
-          
-          # 3. 권한 부여 및 빌드 실행
-          chmod +x gradlew
-          ./gradlew assembleDebug
+        uses: gradle/actions/gradle-build@v3
+        with:
+          arguments: assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
