@@ -1,49 +1,28 @@
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    id("com.android.application") version "8.2.2"
+    id("org.jetbrains.kotlin.android") version "1.9.22"
 }
 
 android {
-    namespace = "com.example.helper" // 이전 GridDetector.kt의 패키지명과 일치해야 합니다.
+    namespace = "com.example.royal2" // 프로젝트 이름에 맞게 수정 가능
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.helper"
+        applicationId = "com.example.royal2"
         minSdk = 24
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-        }
-    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
 }
 
 dependencies {
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.material)
-    
-    // 핵심: GitHub CI 및 Termux 빌드를 가능하게 하는 OpenCV Android 자동 다운로드 의존성
-    implementation("com.github.jeziellago:OpenCV-Android:4.10.0")
-
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.material:material:1.11.0")
 }
