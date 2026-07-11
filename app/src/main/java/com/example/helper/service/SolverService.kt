@@ -23,7 +23,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
-import com.example.royal2.MainActivity
+import com.example.helper.MainActivity // 🎯 [무결점 수정] 실제 MainActivity 패키지 주소로 정밀 매칭
 
 class SolverService : Service() {
     private val TAG = "SolverService"
