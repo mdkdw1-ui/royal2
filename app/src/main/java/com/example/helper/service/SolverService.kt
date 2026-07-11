@@ -76,17 +76,15 @@ class SolverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 🎯 해결책 3: 진입 시점에 즉시 미디어 프로젝션 타입으로 포그라운드 락 갱신
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         promoteToForeground("실시간 화면 캡처 세션 준비 중")
 
         val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
         
-        // 🎯 해결책 1: Android 13/14 대응 안전한 Parcelable 데이터 추출 기법 적용 (Null로 인한 자동종료 방지)
-        val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent?.getParcelableExtra("data", Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent?.getParcelableExtra("data")
+        // 🎯 [수정] 기존 버전 분기 처리를 안드로이드 공식 하이브리드 추출기(IntentCompat)로 대체합니다.
+        // 이를 통해 내부 캐스팅 오류나 Null 리턴으로 인한 세션 종료 현상을 원천 차단합니다.
+        val dataIntent = intent?.let {
+            androidx.core.content.IntentCompat.getParcelableExtra(it, "data", Intent::class.java)
         }
         
         if (resultCode == -1 || dataIntent == null) {
@@ -94,6 +92,9 @@ class SolverService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        
+        // ... 이하 기존 코드 동일 ...
+
 
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
