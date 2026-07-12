@@ -7,12 +7,12 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    // 🟢 모든 모듈의 저장소를 전역에서 중앙 제어하도록 강제합니다.
+    // 🟢 개별 모듈에서 저장소를 정의하지 못하게 하고 여기서만 정의하도록 강제합니다.
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
-        // 🟢 JitPack 저장소를 전역에 안전하게 등록하여 401/404 인증 우회를 해결합니다.
+        // 🟢 JitPack을 가장 안전한 방식으로 등록
         maven { url = uri("https://jitpack.io") }
     }
 }
