@@ -1,5 +1,4 @@
 import java.io.File
-import java.net.URL
 
 plugins {
     id("com.android.application")
@@ -41,10 +40,9 @@ android {
 repositories {
     google()
     mavenCentral()
-    // 🟢 JitPack 저장소를 완전히 제거하여 GitHub Actions의 무차별 토큰 주입 타겟에서 완전히 제외시킵니다.
 }
 
-// 🟢 [핵심] 빌드가 시작될 때 가상 머신 몰래 일반 HTTP 통신으로 OpenCV AAR 파일을 직접 다운로드하는 작업입니다.
+// 🟢 [최종 병기] 자바 네트워크 스택을 쓰지 않고, 리눅스 자체 curl 명령어로 강제 다운로드합니다.
 tasks.register("downloadOpenCV") {
     val outputFile = file("libs/opencv-android-4.6.0.aar")
     outputs.file(outputFile)
@@ -52,23 +50,21 @@ tasks.register("downloadOpenCV") {
     doLast {
         if (!outputFile.exists()) {
             outputFile.parentFile.mkdirs()
-            println("🚀 [우회 작전] JitPack에서 OpenCV 라이브러리를 직접 다운로드하는 중...")
-            try {
-                // Gradle 저장소 메커니즘을 쓰지 않으므로 오염된 인증 헤더가 절대 붙지 않습니다.
-                URL("https://jitpack.io/com/github/jeziellago/opencv-android/4.6.0/opencv-android-4.6.0.aar").openStream().use { input ->
-                    outputFile.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                println("✅ 다운로드 성공: ${outputFile.absolutePath}")
-            } catch (e: Exception) {
-                throw GradleException("OpenCV 다운로드 실패: ${e.message}", e)
+            println("🚀 [최종 우회 작전] JVM 오염을 피해 시스템 curl 명령어로 다운로드를 시작합니다.")
+            
+            exec {
+                // 가상 머신 OS의 curl을 다이렉트로 호출하여 토큰 강제 주입을 원천 차단합니다.
+                commandLine(
+                    "curl", "-L", "-s", "--fail",
+                    "https://jitpack.io/com/github/jeziellago/opencv-android/4.6.0/opencv-android-4.6.0.aar",
+                    "-o", outputFile.absolutePath
+                )
             }
+            println("✅ 다운로드 완료: ${outputFile.absolutePath}")
         }
     }
 }
 
-// 안드로이드 빌드 초기 단계(preBuild)에서 위의 다운로드 작업이 무조건 선행되도록 강제 결합합니다.
 tasks.named("preBuild") {
     dependsOn("downloadOpenCV")
 }
@@ -80,7 +76,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 🟢 원격 저장소 에러를 완전히 파괴하고, 위에서 로컬로 다운로드 완료한 순수 AAR 파일을 다이렉트로 결합합니다.
+    // 시스템 curl이 안전하게 받아온 로컬 파일과 직접 결합합니다.
     implementation(files("libs/opencv-android-4.6.0.aar"))
 
     testImplementation("junit:junit:4.13.2")
