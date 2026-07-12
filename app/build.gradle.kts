@@ -35,13 +35,20 @@ android {
     }
 }
 
-// 🟢 복잡한 인증(credentials, authentication) 블록을 완전히 걷어낸 순정 설정입니다.
 repositories {
     google()
     mavenCentral()
-    
-    // 공개 저장소이므로 이 한 줄만 있으면 빈 헤더 충돌 없이 안전하게 접근합니다.
     maven { url = uri("https://jitpack.io") }
+}
+
+// 🟢 [핵심] GitHub Actions가 백그라운드에서 몰래 주입한 인증 헤더를 빌드 직전에 최종적으로 파괴합니다.
+afterEvaluate {
+    repositories.forEach { repo ->
+        if (repo is MavenArtifactRepository && repo.url.toString().contains("jitpack.io")) {
+            // JitPack으로 향하는 모든 인증 방식(Authentication) 설정을 완전히 비워버립니다.
+            repo.authentication.clear()
+        }
+    }
 }
 
 dependencies {
@@ -51,7 +58,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 깨끗해진 JitPack 경로를 통해 OpenCV 라이브러리가 정상적으로 빌드에 포함됩니다.
+    // 무인증 순정 상태가 강제 보장되므로, 이제 JitPack에서 정상적으로 다운로드됩니다.
     implementation("com.github.jeziellago:opencv-android:4.6.0")
 
     testImplementation("junit:junit:4.13.2")
