@@ -165,7 +165,7 @@ class SolverService : Service() {
                     text = "시작"
                     setBackgroundColor(Color.parseColor("#AAFF9800")) 
                     statusTextView?.text = "⏸️ 일시정지"
-                    hintOverlayView?.clearHint() 
+                    hintOverlayView?.clearAll() 
                 }
             }
         }
@@ -342,23 +342,42 @@ class SolverService : Service() {
                 mainHandler.post {
                     if (isAnalyzing) {
                         statusTextView?.text = "🧩 퍼즐 판 탐색 중 (OpenCV)..."
-                        hintOverlayView?.clearHint()
+                        hintOverlayView?.clearAll()
                     }
                 }
                 return
             }
 
+            // [추가] 로그캣 디버깅을 위한 출력용 문자열 생성
+            val gridLog = StringBuilder().append("\n📊 [현재 OpenCV가 인식한 9x9 보드판] 📊\n")
+            for (r in 0 until ROWS) {
+                for (c in 0 until COLS) {
+                    val emoji = when (analysisResult.grid[r][c]) {
+                        1 -> "🔴 " // red
+                        2 -> "🔵 " // blue
+                        3 -> "🟡 " // yellow
+                        4 -> "🟢 " // green
+                        5 -> "🟣 " // purple
+                        else -> "❌ " // 0 (인식 실패)
+                    }
+                    gridLog.append(emoji)
+                }
+                gridLog.append("\n")
+            }
+            Log.d("Match3GridDebug", gridLog.toString())
+
             val hint = findSimulatedMatch5(analysisResult.grid, ROWS, COLS)
             
             mainHandler.post {
                 if (!isAnalyzing) return@post
+                
+                val bounds = analysisResult.bounds
+                val vLines = analysisResult.verticalLines
+                val hLines = analysisResult.horizontalLines
+
                 if (hint != null) {
                     statusTextView?.text = "🔥 5매칭 발견!"
                     
-                    val bounds = analysisResult.bounds
-                    val vLines = analysisResult.verticalLines
-                    val hLines = analysisResult.horizontalLines
-
                     val fromLeft = bounds.x + vLines[hint.fromC]
                     val fromRight = bounds.x + vLines[hint.fromC + 1]
                     val fromTop = bounds.y + hLines[hint.fromR]
@@ -374,10 +393,13 @@ class SolverService : Service() {
                     val toPixelX = (toLeft + toRight) / 2f
                     val toPixelY = (toTop + toBottom) / 2f
                     
-                    hintOverlayView?.updateHint(fromPixelX, fromPixelY, toPixelX, toPixelY)
+                    // 화살표 힌트와 시각화 검증 원(Dot)을 화면에 동시 전송
+                    hintOverlayView?.updateHint(fromPixelX, fromPixelY, toPixelX, toPixelY, 
+                        analysisResult.grid, bounds, vLines, hLines)
                 } else {
                     statusTextView?.text = "🔍 5매칭 구조 탐색 중..."
-                    hintOverlayView?.clearHint() 
+                    // 5매칭 구조가 안 나와도 OpenCV가 뭘 읽었는지는 계속 화면에 출력해 줌
+                    hintOverlayView?.updateGridOnly(analysisResult.grid, bounds, vLines, hLines)
                 }
             }
         } catch (t: Throwable) {
@@ -477,14 +499,12 @@ class SolverService : Service() {
             val stdMat = MatOfDouble()
             Core.meanStdDev(saturation, meanMat, stdMat)
             
-            // [수정] 플랫폼 타입 뒤 안전성 향상을 위해 엘비스 처리 명시
             val meanSaturation = meanMat.get(0, 0)?.get(0) ?: 0.0
             val stdSaturation = stdMat.get(0, 0)?.get(0) ?: 0.0
             
             meanMat.release()
             stdMat.release()
 
-            // [수정] 확실한 Double 연산 범위를 위해 결합 연산자 괄호 추가
             var saturationThreshold = (meanSaturation + (0.4 * stdSaturation)).toInt()
             saturationThreshold = max(saturationThreshold, 45)
 
@@ -514,7 +534,6 @@ class SolverService : Service() {
 
         for (y in 0 until height) {
             for (x in 0 until width) {
-                // [수정] Nullable 대응 및 플랫폼 타입 처리 분리
                 val bgPixel = backgroundMask.get(y, x)
                 if (bgPixel != null && bgPixel[0] == 255.0) {
                     colCounts[x]++
@@ -604,7 +623,6 @@ class SolverService : Service() {
                     for (px in innerLeft until innerRight step stepX) {
                         if (py >= 0 && py < gridRegionHsv.height() && px >= 0 && px < gridRegionHsv.width()) {
                             
-                            // [수정] ?: continue 제거 후 명시적 null 및 사이즈 체크로 분리 (Type variable V 추론 오류 방지)
                             val pixel = gridRegionHsv.get(py, px)
                             if (pixel == null || pixel.size < 3) continue
                             
@@ -652,6 +670,7 @@ class SolverService : Service() {
     }
 
     private fun findSimulatedMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
+        // 가로 스왑 시뮬레이션
         for (r in 0 until rows) {
             for (c in 0 until cols - 1) {
                 if (grid[r][c] == 0 || grid[r][c+1] == 0) continue
@@ -669,6 +688,7 @@ class SolverService : Service() {
             }
         }
         
+        // 세로 스왑 시뮬레이션
         for (r in 0 until rows - 1) {
             for (c in 0 until cols) {
                 if (grid[r][c] == 0 || grid[r+1][c] == 0) continue
@@ -689,6 +709,7 @@ class SolverService : Service() {
     }
 
     private fun verify5MatchLine(grid: Array<IntArray>, rows: Int, cols: Int): Boolean {
+        // 1. 가로 일직선 5개 체크
         for (r in 0 until rows) {
             var chain = 1
             var prev = -1
@@ -703,6 +724,8 @@ class SolverService : Service() {
                 }
             }
         }
+        
+        // 2. 세로 일직선 5개 체크
         for (c in 0 until cols) {
             var chain = 1
             var prev = -1
@@ -717,6 +740,51 @@ class SolverService : Service() {
                 }
             }
         }
+
+        // 3. T자 / L자 / 십자형 교차 5개 체크 (폭탄 조합)
+        val isPartOfH3 = Array(rows) { BooleanArray(cols) }
+        val isPartOfV3 = Array(rows) { BooleanArray(cols) }
+
+        for (r in 0 until rows) {
+            var c = 0
+            while (c < cols) {
+                val color = grid[r][c]
+                if (color == 0) { c++; continue }
+                var matchLen = 1
+                while (c + matchLen < cols && grid[r][c + matchLen] == color) {
+                    matchLen++
+                }
+                if (matchLen >= 3) {
+                    for (i in 0 until matchLen) isPartOfH3[r][c + i] = true
+                }
+                c += matchLen
+            }
+        }
+
+        for (c in 0 until cols) {
+            var r = 0
+            while (r < rows) {
+                val color = grid[r][c]
+                if (color == 0) { r++; continue }
+                var matchLen = 1
+                while (r + matchLen < rows && grid[r + matchLen][c] == color) {
+                    matchLen++
+                }
+                if (matchLen >= 3) {
+                    for (i in 0 until matchLen) isPartOfV3[r + i][c] = true
+                }
+                r += matchLen
+            }
+        }
+
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                if (isPartOfH3[r][c] && isPartOfV3[r][c]) {
+                    return true
+                }
+            }
+        }
+
         return false
     }
 
@@ -752,6 +820,11 @@ class SolverService : Service() {
         private var tx = 0f
         private var ty = 0f
 
+        private var debugGrid: Array<IntArray>? = null
+        private var debugBounds: Rect? = null
+        private var debugVLines: List<Int>? = null
+        private var debugHLines: List<Int>? = null
+
         private val linePaint = Paint().apply {
             color = Color.parseColor("#FFFF1744") 
             strokeWidth = 14f
@@ -767,26 +840,75 @@ class SolverService : Service() {
             isAntiAlias = true
         }
 
-        fun updateHint(fromX: Float, fromY: Float, toX: Float, toY: Float) {
+        private val debugPaint = Paint().apply {
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
+
+        fun updateHint(fromX: Float, fromY: Float, toX: Float, toY: Float, 
+                       grid: Array<IntArray>, bounds: Rect, vLines: List<Int>, hLines: List<Int>) {
             this.fx = fromX
             this.fy = fromY
             this.tx = toX
             this.ty = toY
             this.showDrawing = true
+            
+            this.debugGrid = grid
+            this.debugBounds = bounds
+            this.debugVLines = vLines
+            this.debugHLines = hLines
             invalidate() 
         }
 
-        fun clearHint() {
-            if (showDrawing) {
-                this.showDrawing = false
-                invalidate()
-            }
+        fun updateGridOnly(grid: Array<IntArray>, bounds: Rect, vLines: List<Int>, hLines: List<Int>) {
+            this.showDrawing = false
+            this.debugGrid = grid
+            this.debugBounds = bounds
+            this.debugVLines = vLines
+            this.debugHLines = hLines
+            invalidate()
+        }
+
+        fun clearAll() {
+            this.showDrawing = false
+            this.debugGrid = null
+            invalidate()
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            if (!showDrawing) return
 
+            // OpenCV 실시간 분석 점 매핑 드로잉
+            val grid = debugGrid
+            val bounds = debugBounds
+            val vLines = debugVLines
+            val hLines = debugHLines
+            if (grid != null && bounds != null && vLines != null && hLines != null) {
+                for (r in 0 until 9) {
+                    for (c in 0 until 9) {
+                        if (c + 1 >= vLines.size || r + 1 >= hLines.size) continue
+                        val left = bounds.x + vLines[c]
+                        val right = bounds.x + vLines[c + 1]
+                        val top = bounds.y + hLines[r]
+                        val bottom = bounds.y + hLines[r + 1]
+                        
+                        val cx = (left + right) / 2f
+                        val cy = (top + bottom) / 2f
+
+                        debugPaint.color = when (grid[r][c]) {
+                            1 -> Color.parseColor("#99FF0000") 
+                            2 -> Color.parseColor("#990000FF") 
+                            3 -> Color.parseColor("#99FFFF00") 
+                            4 -> Color.parseColor("#9900FF00") 
+                            5 -> Color.parseColor("#99AA00FF") 
+                            else -> Color.parseColor("#99888888") // 인식 실패 (회색)
+                        }
+                        canvas.drawCircle(cx, cy, 15f, debugPaint)
+                    }
+                }
+            }
+
+            if (!showDrawing) return
             canvas.drawLine(fx, fy, tx, ty, linePaint)
 
             val angle = Math.atan2((ty - fy).toDouble(), (tx - fx).toDouble())
