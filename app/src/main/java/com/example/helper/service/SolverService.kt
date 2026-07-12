@@ -43,7 +43,6 @@ class SolverService : Service() {
     private var toggleButton: Button? = null           
     private var killButton: Button? = null             
     
-    // 🎯 [신규] 화면 위에 화살표를 직접 그릴 투명 가이드 뷰
     private var hintOverlayView: HintOverlayView? = null
     
     private var mediaProjection: MediaProjection? = null
@@ -68,10 +67,9 @@ class SolverService : Service() {
         super.onCreate()
         promoteToForeground("실시간 화면 분석 엔진 준비 중")
         createOverlayLayout()
-        createHintOverlayCanvas() // 🎯 가이드 캔버스 시동
+        createHintOverlayCanvas() 
     }
 
-    // 🎯 [신규] 터치 입력이 통과하는 투명한 그리기 전용 오버레이 생성
     private fun createHintOverlayCanvas() {
         if (!Settings.canDrawOverlays(this)) return
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -85,8 +83,7 @@ class SolverService : Service() {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
             else 
                 @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
-            // 💡 FLAG_NOT_TOUCHABLE가 가장 중요합니다. 화살표를 터치해도 아래 게임판으로 터치가 그대로 뚫고 지나갑니다.
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_BOUNDS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         )
         
@@ -137,7 +134,7 @@ class SolverService : Service() {
                     text = "시작"
                     setBackgroundColor(Color.parseColor("#AAFF9800")) 
                     statusTextView?.text = "⏸️ 분석 일시정지"
-                    hintOverlayView?.clearHint() // 정지 시 그려진 화살표 즉시 삭제
+                    hintOverlayView?.clearHint() 
                 }
             }
         }
@@ -246,7 +243,7 @@ class SolverService : Service() {
                 }
 
                 val currentTime = System.currentTimeMillis()
-                if (currentTime - lastAnalyzeTime >= 700L) { // 실시간성 향상을 위해 주기 0.7초로 단축
+                if (currentTime - lastAnalyzeTime >= 700L) { 
                     lastAnalyzeTime = currentTime
                     try {
                         analyzeScreenFast(reader)
@@ -357,22 +354,20 @@ class SolverService : Service() {
                 if (hint != null) {
                     statusTextView?.text = "🔥 5매칭 발견! 화면의 화살표를 따라 미세요!"
                     
-                    // 🎯 [신규] 감지된 물리 좌표 매핑 계산
                     val fromPixelX = minBlockX + (hint.fromC * strideX)
                     val fromPixelY = minBlockY + (hint.fromR * strideY)
                     val toPixelX = minBlockX + (hint.toC * strideX)
                     val toPixelY = minBlockY + (hint.toR * strideY)
                     
-                    // 🎯 캔버스 가이드 뷰에 좌표를 던져 즉시 화살표 렌더링 요청
                     hintOverlayView?.updateHint(fromPixelX, fromPixelY, toPixelX, toPixelY)
                 } else {
                     statusTextView?.text = "🔍 5매칭 구조 탐색 중..."
-                    hintOverlayView?.clearHint() // 대기 상태일 때는 이전 화살표 지우기
+                    hintOverlayView?.clearHint() 
                 }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "연산 예외", t)
-        } final {
+        } finally { // 🎯 [교정 완료] final -> finally 수정됨
             try { image.close() } catch (e: Exception) {}
         }
     }
@@ -465,7 +460,6 @@ class SolverService : Service() {
                 windowManager?.removeView(overlayContainer)
                 overlayContainer = null
             }
-            // 🎯 자원 해제 시 힌트 오버레이 뷰도 함께 파괴
             if (hintOverlayView != null) {
                 windowManager?.removeView(hintOverlayView)
                 hintOverlayView = null
@@ -484,7 +478,6 @@ class SolverService : Service() {
 
     data class MatchHint(val fromR: Int, val fromC: Int, val toR: Int, val toC: Int)
 
-    // 🎯 [신규] 화면 위에 관통형 화살표 가이드를 실시간 드로잉해 주는 커스텀 뷰 클래스
     private class HintOverlayView(context: Context) : View(context) {
         private var showDrawing = false
         private var fx = 0f
@@ -492,17 +485,15 @@ class SolverService : Service() {
         private var tx = 0f
         private var ty = 0f
 
-        // 선 그리기용 붓 세팅 (네온 레드 스타일)
         private val linePaint = Paint().apply {
-            color = Color.parseColor("#FFFF1744") // 강렬한 핫핑크 레드로 투명 판 식별 극대화
+            color = Color.parseColor("#FFFF1744") 
             strokeWidth = 14f
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
             isAntiAlias = true
-            setShadowLayer(10f, 0f, 0f, Color.RED) // 눈에 확 띄는 네온 광원 효과 추가
+            setShadowLayer(10f, 0f, 0f, Color.RED) 
         }
 
-        // 화살표 머리용 세팅
         private val arrowPaint = Paint().apply {
             color = Color.parseColor("#FFFF1744")
             style = Paint.Style.FILL
@@ -515,7 +506,7 @@ class SolverService : Service() {
             this.tx = toX
             this.ty = toY
             this.showDrawing = true
-            invalidate() // UI 스레드에서 다시 그리기 호출
+            invalidate() 
         }
 
         fun clearHint() {
@@ -529,16 +520,14 @@ class SolverService : Service() {
             super.onDraw(canvas)
             if (!showDrawing) return
 
-            // 1. 블록 중심 축을 잇는 지시 선 긋기
             canvas.drawLine(fx, fy, tx, ty, linePaint)
 
-            // 2. 진행 방향을 명확하게 찔러주는 삼각형 화살표 머리 계산
             val angle = Math.atan2((ty - fy).toDouble(), (tx - fx).toDouble())
             val arrowLength = 36f
-            val arrowWidthAngle = Math.PI / 6.0 // 30도 각도 밸런스
+            val arrowWidthAngle = Math.PI / 6.0 
 
             val path = Path().apply {
-                moveTo(tx, ty) // 목표 지점 (화살표 끝단 주둥이)
+                moveTo(tx, ty) 
                 lineTo(
                     (tx - arrowLength * Math.cos(angle - arrowWidthAngle)).toFloat(),
                     (ty - arrowLength * Math.sin(angle - arrowWidthAngle)).toFloat()
