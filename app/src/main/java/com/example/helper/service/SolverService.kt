@@ -29,6 +29,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 
 import com.example.helper.core.GridBounds
@@ -43,6 +44,8 @@ class SolverService : Service() {
     private var windowManager: WindowManager? = null
     private var overlayView: OverlayView? = null
     private var controlPanel: LinearLayout? = null
+    private var statusText: TextView? = null
+    private var errorText: TextView? = null
     
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -58,6 +61,9 @@ class SolverService : Service() {
     private var boundsRight = 1000
     private var boundsBottom = 1500
 
+    // 🟢 [기능 1] 격자 온/오프 상태 변수
+    private var isGridVisible = true
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -72,7 +78,6 @@ class SolverService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .build()
             
-        // 🟢 [해결책 2] 안드로이드 10 이상 보안 정책 대응: 미디어 프로젝션 타입 선언을 반드시 명시해야 화면 공유가 정상 작동합니다.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
@@ -100,16 +105,15 @@ class SolverService : Service() {
     }
 
     private fun createControlPanel() {
-        // 🟢 [해결책 1] 레이아웃을 VERTICAL 구조로 바꾼 후 두 줄에 나누어 배치하여 잘림 현상을 해결합니다.
         controlPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#E6000000")) 
+            setBackgroundColor(Color.parseColor("#F2000000")) 
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, 10, 0, 10)
+            setPadding(10, 15, 10, 15)
         }
 
         // 현재 수치 상태 시각화 라벨
-        val statusText = TextView(this).apply {
+        statusText = TextView(this).apply {
             setTextColor(Color.GREEN)
             textSize = 12f
             gravity = Gravity.CENTER
@@ -117,16 +121,29 @@ class SolverService : Service() {
         }
         controlPanel?.addView(statusText)
 
-        // 첫 번째 행 (좌우 조절용)
+        // 🟢 [기능 2] 화면 공유 에러 실시간 출력용 텍스트 뷰 (초기에는 숨김)
+        errorText = TextView(this).apply {
+            setTextColor(Color.RED)
+            textSize = 12f
+            visibility = View.GONE
+            gravity = Gravity.CENTER
+            setPadding(0, 5, 0, 5)
+        }
+        controlPanel?.addView(errorText)
+
+        // 버튼 행들 생성
         val rowLeftRight = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        
-        // 두 번째 행 (상하 조절용)
         val rowTopBottom = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+        }
+        val rowToggleMenu = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, 5, 0, 0)
         }
 
         val btnStep = 10 
@@ -139,33 +156,55 @@ class SolverService : Service() {
                 setOnClickListener { 
                     onClick() 
                     saveBounds()
-                    statusText.text = "L: $boundsLeft  |  R: $boundsRight  |  T: $boundsTop  |  B: $boundsBottom"
+                    statusText?.text = "L: $boundsLeft  |  R: $boundsRight  |  T: $boundsTop  |  B: $boundsBottom"
                     overlayView?.updateGrid(
                         left = boundsLeft,
                         top = boundsTop,
                         right = boundsRight,
                         bottom = boundsBottom,
-                        candidates = emptyList()
+                        candidates = emptyList(),
+                        gridVisible = isGridVisible
                     )
                 }
             }
             targetRow.addView(btn)
         }
 
-        // 1층 레이아웃에 배정 (가로폭 여유 확보)
+        // 1층: 좌우 좌표 조절
         createAdjustButton(rowLeftRight, "좌(L)-") { boundsLeft -= btnStep }
         createAdjustButton(rowLeftRight, "좌(L)+") { boundsLeft += btnStep }
         createAdjustButton(rowLeftRight, "우(R)-") { boundsRight -= btnStep }
         createAdjustButton(rowLeftRight, "우(R)+") { boundsRight += btnStep }
 
-        // 2층 레이아웃에 배정
+        // 2층: 상하 좌표 조절
         createAdjustButton(rowTopBottom, "상(T)-") { boundsTop -= btnStep }
         createAdjustButton(rowTopBottom, "상(T)+") { boundsTop += btnStep }
         createAdjustButton(rowTopBottom, "하(B)-") { boundsBottom -= btnStep }
         createAdjustButton(rowTopBottom, "하(B)+") { boundsBottom += btnStep }
 
+        // 🟢 [기능 1] 3층: 격자 온/오프 토글 버튼 배치
+        val btnToggleGrid = Button(this).apply {
+            text = "격자 숨기기"
+            textSize = 11f
+            setTextColor(Color.YELLOW)
+            setOnClickListener {
+                isGridVisible = !isGridVisible
+                text = if (isGridVisible) "격자 숨기기" else "격자 보이기"
+                overlayView?.updateGrid(
+                    left = boundsLeft,
+                    top = boundsTop,
+                    right = boundsRight,
+                    bottom = boundsBottom,
+                    candidates = emptyList(),
+                    gridVisible = isGridVisible
+                )
+            }
+        }
+        rowToggleMenu.addView(btnToggleGrid)
+
         controlPanel?.addView(rowLeftRight)
         controlPanel?.addView(rowTopBottom)
+        controlPanel?.addView(rowToggleMenu)
 
         val panelParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -178,6 +217,17 @@ class SolverService : Service() {
         }
         
         windowManager?.addView(controlPanel, panelParams)
+    }
+
+    // 🟢 [기능 2] 에러 발생 시 UI 단에 붉은색 경고 출력 유틸리티
+    private fun displayErrorToUser(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            errorText?.apply {
+                text = "⚠️ $message"
+                visibility = View.VISIBLE
+            }
+        }
     }
 
     private fun saveBounds() {
@@ -210,8 +260,22 @@ class SolverService : Service() {
         val data = intent?.getParcelableExtra<Intent>("data")
         if (resultCode != -1 && data != null) {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = mpManager.getMediaProjection(resultCode, data)
-            startCapture()
+            
+            // 🟢 [기능 2] 미디어 프로젝션 획득 단계 에러 트래킹 추가
+            try {
+                mediaProjection = mpManager.getMediaProjection(resultCode, data)
+                if (mediaProjection == null) {
+                    displayErrorToUser("화면 공유 토큰이 Null입니다. 권한 팝업을 다시 확인해주세요.")
+                } else {
+                    startCapture()
+                }
+            } catch (e: SecurityException) {
+                displayErrorToUser("보안 거부 (안드로이드 14+ 정책): 서비스 실행 전 토큰이 만료되었거나 누락되었습니다.\n[상세: ${e.localizedMessage}]")
+            } catch (e: Exception) {
+                displayErrorToUser("프로젝션 생성 에러: ${e.javaClass.simpleName} - ${e.localizedMessage}")
+            }
+        } else {
+            displayErrorToUser("MainActivity로부터 정상적인 화면 캡처 결과 데이터가 전달되지 않았습니다.")
         }
         return START_NOT_STICKY
     }
@@ -222,26 +286,41 @@ class SolverService : Service() {
         val height = metrics.heightPixels
         val density = metrics.densityDpi
 
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenCapture", width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, backgroundHandler
-        )
+        // 🟢 [기능 2] 가상 디스플레이 생성 에러 트래킹 추가
+        try {
+            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCapture", width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, backgroundHandler
+            )
+            
+            if (virtualDisplay == null) {
+                displayErrorToUser("VirtualDisplay 매핑 실패: 가상화면을 만들 수 없습니다.")
+                return
+            }
+        } catch (e: Exception) {
+            displayErrorToUser("화면 캡처 파이프라인 생성 실패: ${e.localizedMessage}")
+            return
+        }
 
         imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            val planes = image.planes
-            val buffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
-            val rowPadding = rowStride - pixelStride * width
+            try {
+                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val rowPadding = rowStride - pixelStride * width
 
-            val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-            bitmap.copyPixelsFromBuffer(buffer)
-            image.close()
+                val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
+                bitmap.copyPixelsFromBuffer(buffer)
+                image.close()
 
-            val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
-            processFrame(cleanBitmap)
+                val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
+                processFrame(cleanBitmap)
+            } catch (e: Exception) {
+                // 프레임 분석 중 발생하는 간헐적 크래시 방지
+            }
         }, backgroundHandler)
     }
 
@@ -257,7 +336,8 @@ class SolverService : Service() {
                     top = gridResult.bounds.top,
                     right = gridResult.bounds.right,
                     bottom = gridResult.bounds.bottom,
-                    candidates = candidates
+                    candidates = candidates,
+                    gridVisible = isGridVisible
                 )
             }
         }
@@ -279,6 +359,7 @@ class SolverService : Service() {
         private var bRight = 0
         private var bBottom = 0
         private var matchCandidates: List<MatchCandidate> = emptyList()
+        private var isVisibleMode = true // 🟢 격자 활성화 유무 플래그
 
         private val gridPaint = Paint().apply {
             color = Color.parseColor("#AA00FF00")
@@ -297,11 +378,12 @@ class SolverService : Service() {
             isAntiAlias = true
         }
 
-        fun updateGrid(left: Int, top: Int, right: Int, bottom: Int, candidates: List<MatchCandidate>) {
+        fun updateGrid(left: Int, top: Int, right: Int, bottom: Int, candidates: List<MatchCandidate>, gridVisible: Boolean) {
             this.bLeft = left
             this.bTop = top
             this.bRight = right
             this.bBottom = bottom
+            this.isVisibleMode = gridVisible
             if (candidates.isNotEmpty()) {
                 this.matchCandidates = candidates
             }
@@ -310,7 +392,8 @@ class SolverService : Service() {
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            if (bRight <= bLeft || bBottom <= bTop) return
+            // 🟢 격자 비활성화 상태면 아무것도 그리지 않고 리턴
+            if (!isVisibleMode || bRight <= bLeft || bBottom <= bTop) return
 
             val cellW = (bRight - bLeft) / 7f
             val cellH = (bBottom - bTop) / 9f
@@ -325,7 +408,7 @@ class SolverService : Service() {
                 canvas.drawLine(x, bTop.toFloat(), x, bBottom.toFloat(), gridPaint)
             }
 
-            // 실시간 최적 알고리즘 결과(화살표) 그리기
+            // 최적 알고리즘 결과(화살표) 그리기
             val bestCandidate = matchCandidates.maxByOrNull { it.score } ?: return
             if (bestCandidate.score > 0) {
                 val r = bestCandidate.row
