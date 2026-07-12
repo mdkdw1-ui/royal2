@@ -19,24 +19,32 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
 import android.util.Log
+import android.view.Gravity
+import android.view.WindowManager
+import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
 class SolverService : Service() {
     private val TAG = "SolverService"
     
+    private var windowManager: WindowManager? = null
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    
+    // 🎯 실시간 힌트를 보여줄 최상단 플로팅 뷰
+    private var overlayTextView: TextView? = null
     
     private var reusableBitmap: Bitmap? = null
     private var screenWidth = 1080
     private var screenHeight = 2400
-    
-    // 분석 주기를 제어하기 위한 타임스탬프
     private var lastAnalyzeTime = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -44,6 +52,37 @@ class SolverService : Service() {
     override fun onCreate() {
         super.onCreate()
         promoteToForeground("실시간 화면 분석 엔진 준비 중")
+    }
+
+    // 화면 최상단에 띄울 텍스트 바 생성
+    private fun createOverlayLayout() {
+        if (!Settings.canDrawOverlays(this)) return
+        
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        overlayTextView = TextView(this).apply {
+            text = "🧩 매칭 헬퍼 스캔 대기 중..."
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#AA000000")) // 반투명 검은색
+            setPadding(30, 15, 30, 15)
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }
+
+        val layoutParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
+            else 
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = 150 // 상태바 아래쪽 적당한 높이
+        }
+
+        windowManager?.addView(overlayTextView, layoutParams)
     }
 
     private fun promoteToForeground(message: String) {
@@ -58,7 +97,6 @@ class SolverService : Service() {
                 .setContentTitle("Match-3 Solver")
                 .setContentText(message)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build()
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -78,7 +116,6 @@ class SolverService : Service() {
         }
 
         val resultCode = intent.getIntExtra("resultCode", -1)
-        // 안드로이드 버전에 따른 파셀러블 인텐트 무손실 추출 방법 적용
         val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra("data", Intent::class.java)
         } else {
@@ -87,7 +124,6 @@ class SolverService : Service() {
         }
         
         if (resultCode == -1 || dataIntent == null) {
-            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터 누락")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -97,8 +133,8 @@ class SolverService : Service() {
             screenWidth = metrics.widthPixels
             screenHeight = metrics.heightPixels
 
-            if (screenWidth <= 0) screenWidth = 1080
-            if (screenHeight <= 0) screenHeight = 2400
+            // 메인 스레드에서 플로팅 UI 띄우기
+            mainHandler.post { createOverlayLayout() }
 
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
@@ -106,12 +142,10 @@ class SolverService : Service() {
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
 
-            // 🎯 [작동 보장 핵심] ImageReader에 리스너를 걸어 스트림을 강제로 활성화 시킵니다.
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
                 val currentTime = System.currentTimeMillis()
-                // 과부하를 막기 위해 딱 1초(1000ms) 간격으로 분석 연산 실행
-                if (currentTime - lastAnalyzeTime >= 1000L) {
+                if (currentTime - lastAnalyzeTime >= 1000L) { // 1초 주기로 작동
                     lastAnalyzeTime = currentTime
                     try {
                         analyzeScreenFast(reader)
@@ -119,7 +153,6 @@ class SolverService : Service() {
                         Log.e(TAG, "분석 스킵 예외", e)
                     }
                 } else {
-                    // 주기가 도래하기 전의 프레임들은 닫아서 즉시 버림 (큐 적체 예방)
                     try { reader.acquireLatestImage()?.close() } catch (e: Exception) {}
                 }
             }, backgroundHandler)
@@ -132,7 +165,7 @@ class SolverService : Service() {
             promoteToForeground("실시간 화면 분석 엔진 동작 중")
 
         } catch (e: Exception) {
-            Log.e(TAG, "치명적 오류: 프로젝션 레이어 초기화 실패", e)
+            Log.e(TAG, "치명적 오류: 초기화 실패", e)
             stopSelf()
         }
 
@@ -161,7 +194,7 @@ class SolverService : Service() {
             }
             
             val bitmap = reusableBitmap!!
-            buffer. rewind() 
+            buffer.rewind() 
             bitmap.copyPixelsFromBuffer(buffer)
 
             var minBlockX = screenWidth
@@ -188,7 +221,14 @@ class SolverService : Service() {
                 }
             }
 
-            if (detectedBlockCount < 15 || (maxBlockX - minBlockX) < screenWidth * 0.5) return
+            // 퍼즐 판이 완전히 감지되지 않은 상태면 대기로 표시
+            if (detectedBlockCount < 15 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
+                mainHandler.post {
+                    overlayTextView?.text = "🧩 게임 화면 스캔 중..."
+                    overlayTextView?.setBackgroundColor(Color.parseColor("#AA000000"))
+                }
+                return
+            }
 
             val boardWidth = maxBlockX - minBlockX
             val boardHeight = maxBlockY - minBlockY
@@ -209,8 +249,16 @@ class SolverService : Service() {
             }
 
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
-            if (hint != null) {
-                Log.d(TAG, "🎯 [매칭 성공] From(${hint.fromR}, ${hint.fromC}) -> To(${hint.toR}, ${hint.toC})")
+            
+            // 🎯 발견된 매칭 힌트를 실시간 최상단 뷰에 시각화 표출
+            mainHandler.post {
+                if (hint != null) {
+                    overlayTextView?.text = "🎯 추천 매칭: [${hint.fromR}, ${hint.fromC}] -> [${hint.toR}, ${hint.toC}]"
+                    overlayTextView?.setBackgroundColor(Color.parseColor("#CC00AA00")) // 녹색 알림
+                } else {
+                    overlayTextView?.text = "🔍 분석 중 (매칭을 찾는 중...)"
+                    overlayTextView?.setBackgroundColor(Color.parseColor("#AA0055AA")) // 청색 상태
+                }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "연산 예외 방어", t)
@@ -293,6 +341,10 @@ class SolverService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
+            if (overlayTextView != null) {
+                windowManager?.removeView(overlayTextView)
+                overlayTextView = null
+            }
             imageReader?.setOnImageAvailableListener(null, null)
             backgroundThread?.quitSafely() 
             virtualDisplay?.release()
@@ -300,9 +352,8 @@ class SolverService : Service() {
             mediaProjection?.stop()
             reusableBitmap?.recycle()
             reusableBitmap = null
-            Log.d(TAG, "SolverService 정상 자원 해제 완료")
         } catch (e: Exception) {
-            Log.e(TAG, "자원 해제 예외 발생", e)
+            Log.e(TAG, "자원 해제 예외", e)
         }
     }
 
