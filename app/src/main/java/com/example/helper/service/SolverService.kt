@@ -1,5 +1,6 @@
 package com.example.helper.service
 
+import android.app.Activity // 🎯 RESULT_OK 검증을 위해 추가
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -51,8 +52,6 @@ class SolverService : Service() {
     override fun onCreate() {
         super.onCreate()
         promoteToForeground("실시간 화면 분석 엔진 준비 중")
-        
-        // 🎯 [실시간 확인] 서비스가 살아나자마자 화면에 안내창부터 무조건 주입합니다.
         createOverlayLayout()
     }
 
@@ -120,7 +119,8 @@ class SolverService : Service() {
             return START_NOT_STICKY
         }
 
-        val resultCode = intent.getIntExtra("resultCode", -1)
+        // 🎯 [교정] 기본값을 RESULT_CANCELED(0)으로 변경하여 -1(RESULT_OK)과 충돌하지 않게 합니다.
+        val resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED)
         val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra("data", Intent::class.java)
         } else {
@@ -128,8 +128,9 @@ class SolverService : Service() {
             intent.getParcelableExtra("data")
         }
         
-        if (resultCode == -1 || dataIntent == null) {
-            overlayTextView?.text = "❌ 오류: 권한 토큰 데이터 누락"
+        // 🎯 [교정] 성공코드(RESULT_OK)가 아니거나 데이터가 진짜 없을 때만 에러로 처리합니다.
+        if (resultCode != Activity.RESULT_OK || dataIntent == null) {
+            overlayTextView?.text = "❌ 오류: 권한 토큰 거부됨 (Code: $resultCode)"
             overlayTextView?.setBackgroundColor(Color.RED)
             mainHandler.postDelayed({ stopSelf() }, 3000)
             return START_NOT_STICKY
@@ -141,8 +142,6 @@ class SolverService : Service() {
             screenHeight = metrics.heightPixels
 
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            
-            // 🎯 이 지점에서 안드로이드 내부 권한 검증이 일어납니다.
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
             
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
@@ -173,12 +172,8 @@ class SolverService : Service() {
 
         } catch (e: Exception) {
             Log.e(TAG, "치명적 오류: 미디어 프로젝션 시동 실패", e)
-            
-            // 🎯 [시각적 디버깅] 에러 발생 시 안내창을 빨간색으로 바꾸고 예외 원인을 노출합니다.
             overlayTextView?.text = "❌ 시동 실패: ${e.localizedMessage ?: "Security Error"}"
             overlayTextView?.setBackgroundColor(Color.RED)
-            
-            // 사용자가 에러를 읽을 시간을 준 뒤 안전하게 종료합니다.
             mainHandler.postDelayed({ stopSelf() }, 5000)
         }
 
