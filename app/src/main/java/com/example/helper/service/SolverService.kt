@@ -24,7 +24,6 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
-import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -35,10 +34,10 @@ class SolverService : Service() {
     private val TAG = "SolverService"
     
     private var windowManager: WindowManager? = null
-    private var overlayContainer: LinearLayout? = null // 🎯 전체를 감싸는 레이아웃
-    private var statusTextView: TextView? = null       // 상태 메시지 뷰
-    private var toggleButton: Button? = null           // 로직 온오프 버튼
-    private var killButton: Button? = null             // 킬스위치 버튼
+    private var overlayContainer: LinearLayout? = null
+    private var statusTextView: TextView? = null       
+    private var toggleButton: Button? = null           
+    private var killButton: Button? = null             
     
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -53,7 +52,6 @@ class SolverService : Service() {
     private var screenHeight = 2400
     private var lastAnalyzeTime = 0L
 
-    // 🎯 [로직 온오프 플래그] true일 때만 화면 분석 연산을 수행합니다.
     @Volatile
     private var isAnalyzing = true
 
@@ -70,32 +68,27 @@ class SolverService : Service() {
         
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         
-        // 1. 메인 가로 바 레이아웃 생성
         overlayContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.parseColor("#CC000000")) // 약간 더 어두운 반투명 블랙
+            setBackgroundColor(Color.parseColor("#CC000000")) 
             setPadding(30, 15, 30, 15)
         }
 
-        // 2. 텍스트 영역
         statusTextView = TextView(this).apply {
             text = "🧩 엔진 시동 중..."
             setTextColor(Color.WHITE)
             textSize = 13f
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            // 버튼들과의 간격을 위해 우측 마진 확보
             setPadding(0, 0, 30, 0)
         }
         
-        // 3. 로직 온오프 스위치 버튼
         toggleButton = Button(this).apply {
             text = "정지"
             textSize = 12f
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#44FFFFFF")) // 반투명 흰색 버튼
+            setBackgroundColor(Color.parseColor("#44FFFFFF")) 
             
-            // 레이아웃 파라미터 크기 조절
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -111,36 +104,30 @@ class SolverService : Service() {
                     statusTextView?.text = "🔍 분석 재개됨..."
                 } else {
                     text = "시작"
-                    setBackgroundColor(Color.parseColor("#AAFF9800")) // 오렌지색 경고
-                    statusTextView?.text = "⏸️ 분석 일시정지 (연산 중단)"
+                    setBackgroundColor(Color.parseColor("#AAFF9800")) 
+                    statusTextView?.text = "⏸️ 분석 일시정지"
                 }
             }
         }
 
-        // 4. 킬스위치 (종료) 버튼
         killButton = Button(this).apply {
             text = "종료"
             textSize = 12f
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#AAD32F2F")) // 부드러운 빨간색
+            setBackgroundColor(Color.parseColor("#AAD32F2F")) 
             
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
             
-            setOnClickListener {
-                // 즉시 서비스를 파괴하고 종료 프로세스 가동
-                stopSelf()
-            }
+            setOnClickListener { stopSelf() }
         }
 
-        // 레이아웃에 컴포넌트들 조립
         overlayContainer?.addView(statusTextView)
         overlayContainer?.addView(toggleButton)
         overlayContainer?.addView(killButton)
 
-        // 오버레이가 터치 이벤트를 먹되, 바깥 영역은 게임 터치가 가능하도록 플래그 설정
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -152,7 +139,7 @@ class SolverService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = 150 // 살짝 더 위로 조정
+            y = 150 
         }
 
         try {
@@ -201,9 +188,7 @@ class SolverService : Service() {
         }
         
         if (resultCode != Activity.RESULT_OK || dataIntent == null) {
-            statusTextView?.text = "❌ 오류: 권한 토큰 거부됨"
-            overlayContainer?.setBackgroundColor(Color.RED)
-            mainHandler.postDelayed({ stopSelf() }, 3000)
+            statusTextView?.text = "❌ 오류: 권한 거부됨"
             return START_NOT_STICKY
         }
 
@@ -220,15 +205,12 @@ class SolverService : Service() {
 
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    mainHandler.post {
-                        statusTextView?.text = "🧩 스캔 엔진 종료됨"
-                    }
+                    mainHandler.post { statusTextView?.text = "🧩 스캔 엔진 종료됨" }
                 }
             }, backgroundHandler)
 
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
-                // 🎯 [로직 온오프 검증] 일시정지 상태라면 무거운 이미지 연산 로직을 통째로 패스합니다.
                 if (!isAnalyzing) {
                     try { reader.acquireLatestImage()?.close() } catch (e: Exception) {}
                     return@setOnImageAvailableListener
@@ -253,13 +235,9 @@ class SolverService : Service() {
             )
             
             statusTextView?.text = "🧩 게임 화면 스캔 대기 중..."
-            promoteToForeground("실시간 화면 분석 엔진 동작 중")
 
         } catch (e: Exception) {
-            Log.e(TAG, "치명적 오류: 미디어 프로젝션 시동 실패", e)
-            statusTextView?.text = "❌ 시동 실패: ${e.localizedMessage}"
-            overlayContainer?.setBackgroundColor(Color.RED)
-            mainHandler.postDelayed({ stopSelf() }, 5000)
+            Log.e(TAG, "미디어 프로젝션 시동 실패", e)
         }
 
         return START_STICKY
@@ -296,10 +274,10 @@ class SolverService : Service() {
             var maxBlockY = 0
             var detectedBlockCount = 0
 
-            val scanLeft = (screenWidth * 0.03f).toInt()
-            val scanRight = (screenWidth * 0.97f).toInt()
-            val scanTop = (screenHeight * 0.30f).toInt()
-            val scanBottom = (screenHeight * 0.88f).toInt()
+            val scanLeft = (screenWidth * 0.05f).toInt()
+            val scanRight = (screenWidth * 0.95f).toInt()
+            val scanTop = (screenHeight * 0.33f).toInt()    
+            val scanBottom = (screenHeight * 0.82f).toInt() 
 
             for (y in scanTop until scanBottom step 25) {
                 for (x in scanLeft until scanRight step 25) {
@@ -314,10 +292,9 @@ class SolverService : Service() {
                 }
             }
 
-            // 분석 도중 사용자가 일시정지를 눌렀을 수 있으므로 UI 갱신 전 최종 확인
             if (!isAnalyzing) return
 
-            if (detectedBlockCount < 15 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
+            if (detectedBlockCount < 12 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
                 mainHandler.post {
                     if (isAnalyzing) statusTextView?.text = "🧩 퍼즐 판 탐색 중..."
                 }
@@ -326,7 +303,7 @@ class SolverService : Service() {
 
             val boardWidth = maxBlockX - minBlockX
             val boardHeight = maxBlockY - minBlockY
-            val approxBlockSize = screenWidth / 8.5f
+            val approxBlockSize = screenWidth / 9.0f
             val currentGridCols = Math.round(boardWidth.toFloat() / approxBlockSize + 0.3f).coerceIn(5, 11)
             val currentGridRows = Math.round(boardHeight.toFloat() / approxBlockSize + 0.3f).coerceIn(3, 11)
 
@@ -342,14 +319,15 @@ class SolverService : Service() {
                 }
             }
 
+            // 🎯 [교정 반영] 오직 OO_OO 물리적 매칭 구조만 정확하게 저격 탐색
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
             
             mainHandler.post {
                 if (!isAnalyzing) return@post
                 if (hint != null) {
-                    statusTextView?.text = "🎯 추천: [${hint.fromR}, ${hint.fromC}] -> [${hint.toR}, ${hint.toC}]"
+                    statusTextView?.text = "🔥 5매칭 기회: [${hint.fromR + 1}행, ${hint.fromC + 1}열] ➡️ [${hint.toR + 1}행, ${hint.toC + 1}열]"
                 } else {
-                    statusTextView?.text = "🔍 분석 중 (5매칭 탐색 중)"
+                    statusTextView?.text = "🔍 분석 중 (5매칭 대기 중)"
                 }
             }
         } catch (t: Throwable) {
@@ -361,11 +339,15 @@ class SolverService : Service() {
 
     private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
         val votes = IntArray(6)
-        votes[identifyColorHSV(bitmap.getPixel(cx, cy))]++
-        votes[identifyColorHSV(bitmap.getPixel((cx - 8).coerceIn(0, bitmap.width - 1), cy))]++
-        votes[identifyColorHSV(bitmap.getPixel((cx + 8).coerceIn(0, bitmap.width - 1), cy))]++
-        votes[identifyColorHSV(bitmap.getPixel(cx, (cy - 8).coerceIn(0, bitmap.height - 1)))]++
-        votes[identifyColorHSV(bitmap.getPixel(cx, (cy + 8).coerceIn(0, bitmap.height - 1)))]++
+        val offsets = intArrayOf(-12, 0, 12) 
+        
+        for (dy in offsets) {
+            for (dx in offsets) {
+                val px = (cx + dx).coerceIn(0, bitmap.width - 1)
+                val py = (cy + dy).coerceIn(0, bitmap.height - 1)
+                votes[identifyColorHSV(bitmap.getPixel(px, py))]++
+            }
+        }
         
         var maxVote = 0
         var winner = 0
@@ -375,7 +357,7 @@ class SolverService : Service() {
                 winner = i
             }
         }
-        return if (maxVote >= 2) winner else 0
+        return if (maxVote >= 3) winner else 0
     }
 
     private fun identifyColorHSV(pixel: Int): Int {
@@ -393,37 +375,63 @@ class SolverService : Service() {
         if (sat < 0.16f || value < 0.16f) return 0
 
         return when {
-            (hue >= 345f || hue <= 15f) -> 1  
-            (hue in 195f..245f) -> 2          
-            (hue in 40f..65f) -> 3            
-            (hue in 90f..145f) -> 4           
-            (hue in 265f..330f) -> 5          
+            (hue >= 345f || hue <= 15f) -> 1  // 빨강
+            (hue in 195f..245f) -> 2          // 파랑
+            (hue in 38f..65f) -> 3            // 노랑 (왕관 집중 타겟)
+            (hue in 90f..145f) -> 4           // 초록
+            (hue in 265f..330f) -> 5          // 보라
             else -> 0
         }
     }
 
+    // 🎯 [교정 핵심 알고리즘] 폭발 규칙을 준수한 OO_OO 완전 전용 탐색기
     private fun findExactOOXOOMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
+        // 1. 가로형 OO_OO 탐색 (가운데 빈칸을 위나 아래에서 채워 넣는 구조)
         for (r in 0 until rows) {
             for (c in 0..cols - 5) {
                 val t = grid[r][c]
                 if (t == 0) continue
+                
+                // OO[빈칸]OO 형태 확인
                 if (grid[r][c+1] == t && grid[r][c+3] == t && grid[r][c+4] == t && grid[r][c+2] != t) {
                     val targetRow = r
-                    val targetCol = c + 2 
-                    if (targetRow - 1 >= 0 && grid[targetRow - 1][targetCol] == t) return MatchHint(targetRow - 1, targetCol, targetRow, targetCol)
-                    if (targetRow + 1 < rows && grid[targetRow + 1][targetCol] == t) return MatchHint(targetRow + 1, targetCol, targetRow, targetCol)
+                    val targetCol = c + 2 // 채워 넣어야 할 빈칸 위치
+                    
+                    // 위 칸에 같은 색 블록이 있다면 아래로 스왑
+                    if (targetRow - 1 >= 0 && grid[targetRow - 1][targetCol] == t) {
+                        return MatchHint(targetRow - 1, targetCol, targetRow, targetCol)
+                    }
+                    // 아래 칸에 같은 색 블록이 있다면 위로 스왑
+                    if (targetRow + 1 < rows && grid[targetRow + 1][targetCol] == t) {
+                        return MatchHint(targetRow + 1, targetCol, targetRow, targetCol)
+                    }
                 }
             }
         }
+
+        // 2. 세로형 OO_OO 탐색 (가운데 빈칸을 왼쪽이나 오른쪽에서 채워 넣는 구조)
         for (c in 0 until cols) {
             for (r in 0..rows - 5) {
                 val t = grid[r][c]
                 if (t == 0) continue
+                
+                // O
+                // O
+                // [빈칸]
+                // O
+                // O 형태 확인
                 if (grid[r+1][c] == t && grid[r+3][c] == t && grid[r+4][c] == t && grid[r+2][c] != t) {
-                    val targetRow = r + 2 
+                    val targetRow = r + 2 // 채워 넣어야 할 빈칸 위치
                     val targetCol = c
-                    if (targetCol - 1 >= 0 && grid[targetRow][targetCol - 1] == t) return MatchHint(targetRow, targetCol - 1, targetRow, targetCol)
-                    if (targetCol + 1 < cols && grid[targetRow][targetCol + 1] == t) return MatchHint(targetRow, targetCol + 1, targetRow, targetCol)
+                    
+                    // 왼쪽 칸에 같은 색 블록이 있다면 오른쪽으로 스왑
+                    if (targetCol - 1 >= 0 && grid[targetRow][targetCol - 1] == t) {
+                        return MatchHint(targetRow, targetCol - 1, targetRow, targetCol)
+                    }
+                    // 오른쪽 칸에 같은 색 블록이 있다면 왼쪽으로 스왑
+                    if (targetCol + 1 < cols && grid[targetRow][targetCol + 1] == t) {
+                        return MatchHint(targetRow, targetCol + 1, targetRow, targetCol)
+                    }
                 }
             }
         }
@@ -433,13 +441,9 @@ class SolverService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
-            // 🎯 [자원 해제] 오버레이 컨테이너 통째로 제거
             if (overlayContainer != null) {
                 windowManager?.removeView(overlayContainer)
                 overlayContainer = null
-                statusTextView = null
-                toggleButton = null
-                killButton = null
             }
             imageReader?.setOnImageAvailableListener(null, null)
             backgroundThread?.quitSafely() 
