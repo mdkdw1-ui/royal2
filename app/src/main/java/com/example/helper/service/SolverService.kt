@@ -9,7 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -24,6 +27,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -38,6 +42,9 @@ class SolverService : Service() {
     private var statusTextView: TextView? = null       
     private var toggleButton: Button? = null           
     private var killButton: Button? = null             
+    
+    // 🎯 [신규] 화면 위에 화살표를 직접 그릴 투명 가이드 뷰
+    private var hintOverlayView: HintOverlayView? = null
     
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -61,11 +68,37 @@ class SolverService : Service() {
         super.onCreate()
         promoteToForeground("실시간 화면 분석 엔진 준비 중")
         createOverlayLayout()
+        createHintOverlayCanvas() // 🎯 가이드 캔버스 시동
+    }
+
+    // 🎯 [신규] 터치 입력이 통과하는 투명한 그리기 전용 오버레이 생성
+    private fun createHintOverlayCanvas() {
+        if (!Settings.canDrawOverlays(this)) return
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        
+        hintOverlayView = HintOverlayView(this)
+        
+        val layoutParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
+            else 
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+            // 💡 FLAG_NOT_TOUCHABLE가 가장 중요합니다. 화살표를 터치해도 아래 게임판으로 터치가 그대로 뚫고 지나갑니다.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        
+        try {
+            windowManager?.addView(hintOverlayView, layoutParams)
+        } catch (e: Exception) {
+            Log.e(TAG, "힌트 오버레이 캔버스 주입 실패", e)
+        }
     }
 
     private fun createOverlayLayout() {
         if (!Settings.canDrawOverlays(this)) return
-        
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         
         overlayContainer = LinearLayout(this).apply {
@@ -92,9 +125,7 @@ class SolverService : Service() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 15, 0)
-            }
+            ).apply { setMargins(0, 0, 15, 0) }
             
             setOnClickListener {
                 isAnalyzing = !isAnalyzing
@@ -106,6 +137,7 @@ class SolverService : Service() {
                     text = "시작"
                     setBackgroundColor(Color.parseColor("#AAFF9800")) 
                     statusTextView?.text = "⏸️ 분석 일시정지"
+                    hintOverlayView?.clearHint() // 정지 시 그려진 화살표 즉시 삭제
                 }
             }
         }
@@ -115,12 +147,10 @@ class SolverService : Service() {
             textSize = 12f
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#AAD32F2F")) 
-            
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            
             setOnClickListener { stopSelf() }
         }
 
@@ -145,7 +175,7 @@ class SolverService : Service() {
         try {
             windowManager?.addView(overlayContainer, layoutParams)
         } catch (e: Exception) {
-            Log.e(TAG, "오버레이 뷰 주입 실패", e)
+            Log.e(TAG, "컨트롤 패널 주입 실패", e)
         }
     }
 
@@ -183,8 +213,7 @@ class SolverService : Service() {
         val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra("data", Intent::class.java)
         } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra("data")
+            @Suppress("DEPRECATION") intent.getParcelableExtra("data")
         }
         
         if (resultCode != Activity.RESULT_OK || dataIntent == null) {
@@ -217,7 +246,7 @@ class SolverService : Service() {
                 }
 
                 val currentTime = System.currentTimeMillis()
-                if (currentTime - lastAnalyzeTime >= 1000L) { 
+                if (currentTime - lastAnalyzeTime >= 700L) { // 실시간성 향상을 위해 주기 0.7초로 단축
                     lastAnalyzeTime = currentTime
                     try {
                         analyzeScreenFast(reader)
@@ -253,7 +282,6 @@ class SolverService : Service() {
             val buffer = planes[0].buffer          
             val pixelStride = planes[0].pixelStride  
             val rowStride = planes[0].rowStride      
-            
             if (pixelStride == 0) return
             
             val rowPadding = rowStride - pixelStride * screenWidth
@@ -296,7 +324,10 @@ class SolverService : Service() {
 
             if (detectedBlockCount < 12 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
                 mainHandler.post {
-                    if (isAnalyzing) statusTextView?.text = "🧩 퍼즐 판 탐색 중..."
+                    if (isAnalyzing) {
+                        statusTextView?.text = "🧩 퍼즐 판 탐색 중..."
+                        hintOverlayView?.clearHint()
+                    }
                 }
                 return
             }
@@ -319,20 +350,29 @@ class SolverService : Service() {
                 }
             }
 
-            // 🎯 [교정 반영] 오직 OO_OO 물리적 매칭 구조만 정확하게 저격 탐색
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
             
             mainHandler.post {
                 if (!isAnalyzing) return@post
                 if (hint != null) {
-                    statusTextView?.text = "🔥 5매칭 기회: [${hint.fromR + 1}행, ${hint.fromC + 1}열] ➡️ [${hint.toR + 1}행, ${hint.toC + 1}열]"
+                    statusTextView?.text = "🔥 5매칭 발견! 화면의 화살표를 따라 미세요!"
+                    
+                    // 🎯 [신규] 감지된 물리 좌표 매핑 계산
+                    val fromPixelX = minBlockX + (hint.fromC * strideX)
+                    val fromPixelY = minBlockY + (hint.fromR * strideY)
+                    val toPixelX = minBlockX + (hint.toC * strideX)
+                    val toPixelY = minBlockY + (hint.toR * strideY)
+                    
+                    // 🎯 캔버스 가이드 뷰에 좌표를 던져 즉시 화살표 렌더링 요청
+                    hintOverlayView?.updateHint(fromPixelX, fromPixelY, toPixelX, toPixelY)
                 } else {
-                    statusTextView?.text = "🔍 분석 중 (5매칭 대기 중)"
+                    statusTextView?.text = "🔍 5매칭 구조 탐색 중..."
+                    hintOverlayView?.clearHint() // 대기 상태일 때는 이전 화살표 지우기
                 }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "연산 예외", t)
-        } finally {
+        } final {
             try { image.close() } catch (e: Exception) {}
         }
     }
@@ -340,7 +380,6 @@ class SolverService : Service() {
     private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
         val votes = IntArray(6)
         val offsets = intArrayOf(-12, 0, 12) 
-        
         for (dy in offsets) {
             for (dx in offsets) {
                 val px = (cx + dx).coerceIn(0, bitmap.width - 1)
@@ -348,7 +387,6 @@ class SolverService : Service() {
                 votes[identifyColorHSV(bitmap.getPixel(px, py))]++
             }
         }
-        
         var maxVote = 0
         var winner = 0
         for (i in 1..5) {
@@ -375,60 +413,42 @@ class SolverService : Service() {
         if (sat < 0.16f || value < 0.16f) return 0
 
         return when {
-            (hue >= 345f || hue <= 15f) -> 1  // 빨강
-            (hue in 195f..245f) -> 2          // 파랑
-            (hue in 38f..65f) -> 3            // 노랑 (왕관 집중 타겟)
-            (hue in 90f..145f) -> 4           // 초록
-            (hue in 265f..330f) -> 5          // 보라
+            (hue >= 345f || hue <= 15f) -> 1  
+            (hue in 195f..245f) -> 2          
+            (hue in 38f..65f) -> 3            
+            (hue in 90f..145f) -> 4           
+            (hue in 265f..330f) -> 5          
             else -> 0
         }
     }
 
-    // 🎯 [교정 핵심 알고리즘] 폭발 규칙을 준수한 OO_OO 완전 전용 탐색기
     private fun findExactOOXOOMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
-        // 1. 가로형 OO_OO 탐색 (가운데 빈칸을 위나 아래에서 채워 넣는 구조)
         for (r in 0 until rows) {
             for (c in 0..cols - 5) {
                 val t = grid[r][c]
                 if (t == 0) continue
-                
-                // OO[빈칸]OO 형태 확인
                 if (grid[r][c+1] == t && grid[r][c+3] == t && grid[r][c+4] == t && grid[r][c+2] != t) {
                     val targetRow = r
-                    val targetCol = c + 2 // 채워 넣어야 할 빈칸 위치
-                    
-                    // 위 칸에 같은 색 블록이 있다면 아래로 스왑
+                    val targetCol = c + 2 
                     if (targetRow - 1 >= 0 && grid[targetRow - 1][targetCol] == t) {
                         return MatchHint(targetRow - 1, targetCol, targetRow, targetCol)
                     }
-                    // 아래 칸에 같은 색 블록이 있다면 위로 스왑
                     if (targetRow + 1 < rows && grid[targetRow + 1][targetCol] == t) {
                         return MatchHint(targetRow + 1, targetCol, targetRow, targetCol)
                     }
                 }
             }
         }
-
-        // 2. 세로형 OO_OO 탐색 (가운데 빈칸을 왼쪽이나 오른쪽에서 채워 넣는 구조)
         for (c in 0 until cols) {
             for (r in 0..rows - 5) {
                 val t = grid[r][c]
                 if (t == 0) continue
-                
-                // O
-                // O
-                // [빈칸]
-                // O
-                // O 형태 확인
                 if (grid[r+1][c] == t && grid[r+3][c] == t && grid[r+4][c] == t && grid[r+2][c] != t) {
-                    val targetRow = r + 2 // 채워 넣어야 할 빈칸 위치
+                    val targetRow = r + 2 
                     val targetCol = c
-                    
-                    // 왼쪽 칸에 같은 색 블록이 있다면 오른쪽으로 스왑
                     if (targetCol - 1 >= 0 && grid[targetRow][targetCol - 1] == t) {
                         return MatchHint(targetRow, targetCol - 1, targetRow, targetCol)
                     }
-                    // 오른쪽 칸에 같은 색 블록이 있다면 왼쪽으로 스왑
                     if (targetCol + 1 < cols && grid[targetRow][targetCol + 1] == t) {
                         return MatchHint(targetRow, targetCol + 1, targetRow, targetCol)
                     }
@@ -445,6 +465,11 @@ class SolverService : Service() {
                 windowManager?.removeView(overlayContainer)
                 overlayContainer = null
             }
+            // 🎯 자원 해제 시 힌트 오버레이 뷰도 함께 파괴
+            if (hintOverlayView != null) {
+                windowManager?.removeView(hintOverlayView)
+                hintOverlayView = null
+            }
             imageReader?.setOnImageAvailableListener(null, null)
             backgroundThread?.quitSafely() 
             virtualDisplay?.release()
@@ -458,4 +483,73 @@ class SolverService : Service() {
     }
 
     data class MatchHint(val fromR: Int, val fromC: Int, val toR: Int, val toC: Int)
+
+    // 🎯 [신규] 화면 위에 관통형 화살표 가이드를 실시간 드로잉해 주는 커스텀 뷰 클래스
+    private class HintOverlayView(context: Context) : View(context) {
+        private var showDrawing = false
+        private var fx = 0f
+        private var fy = 0f
+        private var tx = 0f
+        private var ty = 0f
+
+        // 선 그리기용 붓 세팅 (네온 레드 스타일)
+        private val linePaint = Paint().apply {
+            color = Color.parseColor("#FFFF1744") // 강렬한 핫핑크 레드로 투명 판 식별 극대화
+            strokeWidth = 14f
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            isAntiAlias = true
+            setShadowLayer(10f, 0f, 0f, Color.RED) // 눈에 확 띄는 네온 광원 효과 추가
+        }
+
+        // 화살표 머리용 세팅
+        private val arrowPaint = Paint().apply {
+            color = Color.parseColor("#FFFF1744")
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
+
+        fun updateHint(fromX: Float, fromY: Float, toX: Float, toY: Float) {
+            this.fx = fromX
+            this.fy = fromY
+            this.tx = toX
+            this.ty = toY
+            this.showDrawing = true
+            invalidate() // UI 스레드에서 다시 그리기 호출
+        }
+
+        fun clearHint() {
+            if (showDrawing) {
+                this.showDrawing = false
+                invalidate()
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (!showDrawing) return
+
+            // 1. 블록 중심 축을 잇는 지시 선 긋기
+            canvas.drawLine(fx, fy, tx, ty, linePaint)
+
+            // 2. 진행 방향을 명확하게 찔러주는 삼각형 화살표 머리 계산
+            val angle = Math.atan2((ty - fy).toDouble(), (tx - fx).toDouble())
+            val arrowLength = 36f
+            val arrowWidthAngle = Math.PI / 6.0 // 30도 각도 밸런스
+
+            val path = Path().apply {
+                moveTo(tx, ty) // 목표 지점 (화살표 끝단 주둥이)
+                lineTo(
+                    (tx - arrowLength * Math.cos(angle - arrowWidthAngle)).toFloat(),
+                    (ty - arrowLength * Math.sin(angle - arrowWidthAngle)).toFloat()
+                )
+                lineTo(
+                    (tx - arrowLength * Math.cos(angle + arrowWidthAngle)).toFloat(),
+                    (ty - arrowLength * Math.sin(angle + arrowWidthAngle)).toFloat()
+                )
+                close()
+            }
+            canvas.drawPath(path, arrowPaint)
+        }
+    }
 }
