@@ -301,9 +301,6 @@ class SolverService : Service() {
         return START_STICKY
     }
 
-    /**
-     * 🌟 [핵심 변경] OpenCV 인지 파이프라인과 비동기 화면 처리가 융합된 고속 스캔 파트
-     */
     private fun analyzeScreenFast(reader: ImageReader) {
         val image = try { reader.acquireLatestImage() } catch (e: Exception) { null } ?: return
         
@@ -330,20 +327,17 @@ class SolverService : Service() {
 
             if (!isAnalyzing) return
 
-            // 1. Android Bitmap을 OpenCV Mat 객체로 변환
             val srcMat = Mat()
             var analysisResult: BoardAnalysisResult? = null
             try {
                 Utils.bitmapToMat(bitmap, srcMat)
-                // 2. OpenCV 분석 파이프라인 구동
                 analysisResult = processOpenCVGrid(srcMat)
             } catch (ex: Exception) {
                 Log.e(TAG, "OpenCV Matrix 변환 또는 파이프라인 처리 오류", ex)
             } finally {
-                srcMat.release() // 네이티브 메모리 즉각 해제
+                srcMat.release() 
             }
 
-            // 보드 검출 실패 시 처리
             if (analysisResult == null) {
                 mainHandler.post {
                     if (isAnalyzing) {
@@ -354,7 +348,6 @@ class SolverService : Service() {
                 return
             }
 
-            // 3. 5매칭 알고리즘 검증 연산 수행
             val hint = findSimulatedMatch5(analysisResult.grid, ROWS, COLS)
             
             mainHandler.post {
@@ -362,7 +355,6 @@ class SolverService : Service() {
                 if (hint != null) {
                     statusTextView?.text = "🔥 5매칭 발견!"
                     
-                    // 🎯 OpenCV가 정밀 스냅한 라인 데이터를 이용해 완벽한 셀 중앙 좌표 계산
                     val bounds = analysisResult.bounds
                     val vLines = analysisResult.verticalLines
                     val hLines = analysisResult.horizontalLines
@@ -395,9 +387,6 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * OpenCV 순수 이미지 프로세싱 알고리즘 파이프라인
-     */
     private fun processOpenCVGrid(img: Mat): BoardAnalysisResult? {
         if (img.empty()) return null
 
@@ -408,8 +397,7 @@ class SolverService : Service() {
         var backgroundMask: Mat? = null
 
         try {
-            // 1. HSV 변환 및 보드 외곽 테두리(블루) 검출 마스크 생성
-            Imgproc.cvtColor(img, hsv, Imgproc.COLOR_RGBA2BGR) // RGBA에서 BGR 변환 후 HSV 가기 위함
+            Imgproc.cvtColor(img, hsv, Imgproc.COLOR_RGBA2BGR) 
             Imgproc.cvtColor(hsv, hsv, Imgproc.COLOR_BGR2HSV)
             
             Core.inRange(hsv, Scalar(95.0, 40.0, 40.0), Scalar(135.0, 220.0, 240.0), blueMask)
@@ -418,16 +406,10 @@ class SolverService : Service() {
             Imgproc.morphologyEx(blueMask, blueMask, Imgproc.MORPH_OPEN, kernel, Point(-1.0, -1.0), 1)
             Core.bitwise_not(blueMask, invertedMask)
 
-            // 2. 외곽 보드 윤곽선 탐지
             val bounds = findGridBounds(invertedMask) ?: return null
-
-            // 3. 배경 격자 분리 마스크 추출
             backgroundMask = createBackgroundMask(img, bounds) ?: return null
 
-            // 4. 하이브리드 미세 스냅 그리드 라인 검출
             val (verticalLines, horizontalLines) = detectGridLinesFromBackground(backgroundMask, bounds)
-
-            // 5. 안전지대 샘플링 투표를 통한 격자 색상 2차원 배열 추출
             val grid = extractAndCategorizeGrid(hsv, bounds, verticalLines, horizontalLines)
 
             return BoardAnalysisResult(grid, bounds, verticalLines, horizontalLines)
@@ -495,13 +477,15 @@ class SolverService : Service() {
             val stdMat = MatOfDouble()
             Core.meanStdDev(saturation, meanMat, stdMat)
             
-            val meanSaturation = meanMat.get(0, 0)[0]
-            val stdSaturation = stdMat.get(0, 0)[0]
+            // [수정] 플랫폼 타입 뒤 안전성 향상을 위해 엘비스 처리 명시
+            val meanSaturation = meanMat.get(0, 0)?.get(0) ?: 0.0
+            val stdSaturation = stdMat.get(0, 0)?.get(0) ?: 0.0
             
             meanMat.release()
             stdMat.release()
 
-            var saturationThreshold = (meanSaturation + 0.4 * stdSaturation).toInt()
+            // [수정] 확실한 Double 연산 범위를 위해 결합 연산자 괄호 추가
+            var saturationThreshold = (meanSaturation + (0.4 * stdSaturation)).toInt()
             saturationThreshold = max(saturationThreshold, 45)
 
             Core.inRange(saturation, Scalar(0.0), Scalar(saturationThreshold.toDouble()), backgroundMask)
@@ -530,7 +514,9 @@ class SolverService : Service() {
 
         for (y in 0 until height) {
             for (x in 0 until width) {
-                if (backgroundMask.get(y, x)[0] == 255.0) {
+                // [수정] Nullable 대응 및 플랫폼 타입 처리 분리
+                val bgPixel = backgroundMask.get(y, x)
+                if (bgPixel != null && bgPixel[0] == 255.0) {
                     colCounts[x]++
                     rowCounts[y]++
                 }
@@ -617,7 +603,11 @@ class SolverService : Service() {
                 for (py in innerTop until innerBottom step stepY) {
                     for (px in innerLeft until innerRight step stepX) {
                         if (py >= 0 && py < gridRegionHsv.height() && px >= 0 && px < gridRegionHsv.width()) {
-                            val pixel = gridRegionHsv.get(py, px) ?: continue
+                            
+                            // [수정] ?: continue 제거 후 명시적 null 및 사이즈 체크로 분리 (Type variable V 추론 오류 방지)
+                            val pixel = gridRegionHsv.get(py, px)
+                            if (pixel == null || pixel.size < 3) continue
+                            
                             val h = pixel[0]
                             val s = pixel[1]
                             val v = pixel[2]
@@ -644,7 +634,6 @@ class SolverService : Service() {
                     }
                 }
 
-                // 🎯 [인덱스 매핑 수정] 기존 매치5 코드(1~5 코드)와 호환되도록 i + 1 보정 처리 (표가 아예 없으면 0)
                 var maxVotes = 0
                 var winningCategory = 0 
                 for (i in votes.indices) {
@@ -654,7 +643,6 @@ class SolverService : Service() {
                     }
                 }
                 
-                // 5표 이상 획득 신뢰성 검증 적용
                 categoryGrid[row][col] = if (maxVotes >= 5) winningCategory else 0
             }
         }
