@@ -1,6 +1,6 @@
 package com.example.helper.service
 
-import android.app.Activity // 🎯 RESULT_OK 검증을 위해 추가
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -119,7 +119,6 @@ class SolverService : Service() {
             return START_NOT_STICKY
         }
 
-        // 🎯 [교정] 기본값을 RESULT_CANCELED(0)으로 변경하여 -1(RESULT_OK)과 충돌하지 않게 합니다.
         val resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED)
         val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra("data", Intent::class.java)
@@ -128,7 +127,6 @@ class SolverService : Service() {
             intent.getParcelableExtra("data")
         }
         
-        // 🎯 [교정] 성공코드(RESULT_OK)가 아니거나 데이터가 진짜 없을 때만 에러로 처리합니다.
         if (resultCode != Activity.RESULT_OK || dataIntent == null) {
             overlayTextView?.text = "❌ 오류: 권한 토큰 거부됨 (Code: $resultCode)"
             overlayTextView?.setBackgroundColor(Color.RED)
@@ -146,6 +144,17 @@ class SolverService : Service() {
             
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
+
+            // 🎯 [핵심 교정] Android 14+ 정책에 따라 VirtualDisplay를 생성하기 전에 반드시 콜백을 등록합니다.
+            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    Log.d(TAG, "시스템에 의해 미디어 프로젝션이 중단되었습니다.")
+                    mainHandler.post {
+                        overlayTextView?.text = "🧩 스캔 엔진 종료됨"
+                        overlayTextView?.setBackgroundColor(Color.parseColor("#AA000000"))
+                    }
+                }
+            }, backgroundHandler)
 
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
