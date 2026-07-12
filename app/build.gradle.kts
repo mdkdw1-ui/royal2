@@ -42,8 +42,8 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 🟢 settings.gradle.kts에 지정된 mavenCentral 서버를 통해 안전하게 빌드에 포함됩니다.
-    implementation("com.quickbirdstudios:opencv-android:4.5.3.0")
+    // 🟢 기존 라이브러리 에러를 해결하기 위한 고안정성 JitPack 기반 OpenCV 라이브러리
+    implementation("com.github.jeziellago:opencv-android:4.6.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
