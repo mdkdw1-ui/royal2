@@ -83,7 +83,8 @@ class SolverService : Service() {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
             else 
                 @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_BOUNDS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            // 🎯 [교정 완료] 잘못 들어간 FLAG_NOT_TOUCH_BOUNDS를 완전히 제거했습니다.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         )
         
@@ -367,7 +368,7 @@ class SolverService : Service() {
             }
         } catch (t: Throwable) {
             Log.e(TAG, "연산 예외", t)
-        } finally { // 🎯 [교정 완료] final -> finally 수정됨
+        } finally { 
             try { image.close() } catch (e: Exception) {}
         }
     }
