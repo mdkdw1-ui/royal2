@@ -28,6 +28,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
 import com.example.helper.core.GridBounds
@@ -62,7 +63,7 @@ class SolverService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = getSharedPreferences("GridSettings", Context.MODE_PRIVATE)
-        loadBounds() // 기존에 저장된 설정이 있으면 불러옴
+        loadBounds() 
 
         createNotificationChannel()
         val notification = NotificationCompat.Builder(this, "solver_channel")
@@ -70,7 +71,13 @@ class SolverService : Service() {
             .setContentText("오버레이 격자가 활성화되었습니다.")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .build()
-        startForeground(1, notification)
+            
+        // 🟢 [해결책 2] 안드로이드 10 이상 보안 정책 대응: 미디어 프로젝션 타입 선언을 반드시 명시해야 화면 공유가 정상 작동합니다.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(1, notification)
+        }
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         
@@ -85,7 +92,7 @@ class SolverService : Service() {
         )
         windowManager?.addView(overlayView, overlayParams)
 
-        // 2. 상단 미세조정 컨트롤 패널 생성 (터치 가능 영역)
+        // 2. 상단 미세조정 컨트롤 패널 생성
         createControlPanel()
 
         handlerThread = HandlerThread("CaptureThread").apply { start() }
@@ -93,16 +100,38 @@ class SolverService : Service() {
     }
 
     private fun createControlPanel() {
+        // 🟢 [해결책 1] 레이아웃을 VERTICAL 구조로 바꾼 후 두 줄에 나누어 배치하여 잘림 현상을 해결합니다.
         controlPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#E6000000")) 
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 10, 0, 10)
+        }
+
+        // 현재 수치 상태 시각화 라벨
+        val statusText = TextView(this).apply {
+            setTextColor(Color.GREEN)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            text = "L: $boundsLeft  |  R: $boundsRight  |  T: $boundsTop  |  B: $boundsBottom"
+        }
+        controlPanel?.addView(statusText)
+
+        // 첫 번째 행 (좌우 조절용)
+        val rowLeftRight = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            // 🟢 문법 오류 수정: 속성 대신 안드로이드 표준 메서드 호출로 변경
-            setBackgroundColor(Color.parseColor("#CC000000")) 
+            gravity = Gravity.CENTER
+        }
+        
+        // 두 번째 행 (상하 조절용)
+        val rowTopBottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
 
-        val btnStep = 10 // 한 번 클릭 시 이동할 픽셀 단위
+        val btnStep = 10 
 
-        fun createAdjustButton(textStr: String, onClick: () -> Unit) {
+        fun createAdjustButton(targetRow: LinearLayout, textStr: String, onClick: () -> Unit) {
             val btn = Button(this).apply {
                 text = textStr
                 textSize = 11f
@@ -110,7 +139,7 @@ class SolverService : Service() {
                 setOnClickListener { 
                     onClick() 
                     saveBounds()
-                    // 🟢 문법 오류 수정: 파라미터 이름을 명시하여 안전하게 호출하도록 통일
+                    statusText.text = "L: $boundsLeft  |  R: $boundsRight  |  T: $boundsTop  |  B: $boundsBottom"
                     overlayView?.updateGrid(
                         left = boundsLeft,
                         top = boundsTop,
@@ -120,18 +149,23 @@ class SolverService : Service() {
                     )
                 }
             }
-            controlPanel?.addView(btn)
+            targetRow.addView(btn)
         }
 
-        // 버튼 레이아웃 추가
-        createAdjustButton("시작점 좌측-") { boundsLeft -= btnStep }
-        createAdjustButton("시작점 좌측+") { boundsLeft += btnStep }
-        createAdjustButton("상단 경계-") { boundsTop -= btnStep }
-        createAdjustButton("상단 경계+") { boundsTop += btnStep }
-        createAdjustButton("우측 경계-") { boundsRight -= btnStep }
-        createAdjustButton("우측 경계+") { boundsRight += btnStep }
-        createAdjustButton("하단 경계-") { boundsBottom -= btnStep }
-        createAdjustButton("하단 경계+") { boundsBottom += btnStep }
+        // 1층 레이아웃에 배정 (가로폭 여유 확보)
+        createAdjustButton(rowLeftRight, "좌(L)-") { boundsLeft -= btnStep }
+        createAdjustButton(rowLeftRight, "좌(L)+") { boundsLeft += btnStep }
+        createAdjustButton(rowLeftRight, "우(R)-") { boundsRight -= btnStep }
+        createAdjustButton(rowLeftRight, "우(R)+") { boundsRight += btnStep }
+
+        // 2층 레이아웃에 배정
+        createAdjustButton(rowTopBottom, "상(T)-") { boundsTop -= btnStep }
+        createAdjustButton(rowTopBottom, "상(T)+") { boundsTop += btnStep }
+        createAdjustButton(rowTopBottom, "하(B)-") { boundsBottom -= btnStep }
+        createAdjustButton(rowTopBottom, "하(B)+") { boundsBottom += btnStep }
+
+        controlPanel?.addView(rowLeftRight)
+        controlPanel?.addView(rowTopBottom)
 
         val panelParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -218,7 +252,6 @@ class SolverService : Service() {
         if (gridResult.success && gridResult.categoryGrid != null && gridResult.bounds != null) {
             val candidates = Match3Solver.getMatchCandidates(gridResult.categoryGrid)
             Handler(Looper.getMainLooper()).post {
-                // 🟢 문법 오류 수정: 함수 정의에 맞추어 명칭을 일치시켜 호출하도록 변경
                 overlayView?.updateGrid(
                     left = gridResult.bounds.left,
                     top = gridResult.bounds.top,
@@ -282,7 +315,7 @@ class SolverService : Service() {
             val cellW = (bRight - bLeft) / 7f
             val cellH = (bBottom - bTop) / 9f
 
-            // 격자선 캔버스 드로잉
+            // 격자선 그리기
             for (r in 0..9) {
                 val y = bTop + r * cellH
                 canvas.drawLine(bLeft.toFloat(), y, bRight.toFloat(), y, gridPaint)
@@ -292,7 +325,7 @@ class SolverService : Service() {
                 canvas.drawLine(x, bTop.toFloat(), x, bBottom.toFloat(), gridPaint)
             }
 
-            // 최적의 화살표 드로잉 루틴
+            // 실시간 최적 알고리즘 결과(화살표) 그리기
             val bestCandidate = matchCandidates.maxByOrNull { it.score } ?: return
             if (bestCandidate.score > 0) {
                 val r = bestCandidate.row
