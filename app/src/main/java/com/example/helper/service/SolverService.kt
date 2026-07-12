@@ -102,27 +102,27 @@ class SolverService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(Color.parseColor("#CC000000")) 
-            setPadding(30, 15, 30, 15)
+            setPadding(25, 12, 25, 12)
         }
 
         statusTextView = TextView(this).apply {
             text = "🧩 엔진 시동 중..."
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 12f
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 30, 0)
+            setPadding(0, 0, 20, 0)
         }
         
         toggleButton = Button(this).apply {
             text = "정지"
-            textSize = 12f
+            textSize = 11f
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#44FFFFFF")) 
             
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 15, 0) }
+            ).apply { setMargins(0, 0, 10, 0) }
             
             setOnClickListener {
                 isAnalyzing = !isAnalyzing
@@ -133,7 +133,7 @@ class SolverService : Service() {
                 } else {
                     text = "시작"
                     setBackgroundColor(Color.parseColor("#AAFF9800")) 
-                    statusTextView?.text = "⏸️ 분석 일시정지"
+                    statusTextView?.text = "⏸️ 일시정지"
                     hintOverlayView?.clearHint() 
                 }
             }
@@ -141,7 +141,7 @@ class SolverService : Service() {
 
         killButton = Button(this).apply {
             text = "종료"
-            textSize = 12f
+            textSize = 11f
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#AAD32F2F")) 
             layoutParams = LinearLayout.LayoutParams(
@@ -165,7 +165,9 @@ class SolverService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            // 🎯 [위치 수정] 우측 상단 남은 횟수를 가리지 않도록 좌측 상단(START) 배치로 이동
+            gravity = Gravity.TOP or Gravity.START
+            x = 40  
             y = 150 
         }
 
@@ -214,7 +216,7 @@ class SolverService : Service() {
         }
         
         if (resultCode != Activity.RESULT_OK || dataIntent == null) {
-            statusTextView?.text = "❌ 오류: 권한 거부됨"
+            statusTextView?.text = "❌ 권한 거부됨"
             return START_NOT_STICKY
         }
 
@@ -226,7 +228,6 @@ class SolverService : Service() {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
             
-            // 🎯 [OS 보안 크래시 해결] 가상 디스플레이 활성화 전, 메인 스레드 지연 없이 즉시 콜백 연결!
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     mainHandler.post { statusTextView?.text = "🧩 스캔 엔진 종료됨" }
@@ -244,7 +245,7 @@ class SolverService : Service() {
                 }
 
                 val currentTime = System.currentTimeMillis()
-                if (currentTime - lastAnalyzeTime >= 600L) { // 실시간 피드백 속도 향상 (0.6초)
+                if (currentTime - lastAnalyzeTime >= 500L) { // 실시간 피드백 주기 0.5초로 고속화
                     lastAnalyzeTime = currentTime
                     try {
                         analyzeScreenFast(reader)
@@ -261,7 +262,7 @@ class SolverService : Service() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, backgroundHandler
             )
             
-            statusTextView?.text = "🧩 게임 화면 스캔 대기 중..."
+            statusTextView?.text = "🧩 화면 스캔 대기 중..."
 
         } catch (e: Exception) {
             Log.e(TAG, "미디어 프로젝션 시동 실패", e)
@@ -332,12 +333,14 @@ class SolverService : Service() {
 
             val boardWidth = maxBlockX - minBlockX
             val boardHeight = maxBlockY - minBlockY
-            val approxBlockSize = screenWidth / 9.0f
-            val currentGridCols = Math.round(boardWidth.toFloat() / approxBlockSize + 0.3f).coerceIn(5, 11)
-            val currentGridRows = Math.round(boardHeight.toFloat() / approxBlockSize + 0.3f).coerceIn(4, 12)
 
-            val strideX = if (currentGridCols > 1) boardWidth.toFloat() / (currentGridCols - 1) else approxBlockSize
-            val strideY = if (currentGridRows > 1) boardHeight.toFloat() / (currentGridRows - 1) else approxBlockSize
+            // 🎯 [놓침 버그 해결] 화면 여백 왜곡을 없애기 위해 완벽한 정사각형 블록 비율 계산 적용
+            val estimatedBlockSize = screenWidth * 0.096f
+            val currentGridCols = Math.round(boardWidth.toFloat() / estimatedBlockSize).toInt() + 1
+            val currentGridRows = Math.round(boardHeight.toFloat() / estimatedBlockSize).toInt() + 1
+
+            val strideX = if (currentGridCols > 1) boardWidth.toFloat() / (currentGridCols - 1) else estimatedBlockSize
+            val strideY = if (currentGridRows > 1) boardHeight.toFloat() / (currentGridRows - 1) else estimatedBlockSize
 
             val colorGrid = Array(currentGridRows) { IntArray(currentGridCols) }
             for (r in 0 until currentGridRows) {
@@ -348,13 +351,12 @@ class SolverService : Service() {
                 }
             }
 
-            // 🎯 [매칭 엔진 업그레이드] 고도화된 가상 스와이프 시뮬레이션 가동
             val hint = findSimulatedMatch5(colorGrid, currentGridRows, currentGridCols)
             
             mainHandler.post {
                 if (!isAnalyzing) return@post
                 if (hint != null) {
-                    statusTextView?.text = "🔥 5매칭 발견! 화살표대로 움직이세요!"
+                    statusTextView?.text = "🔥 5매칭 발견!"
                     
                     val fromPixelX = minBlockX + (hint.fromC * strideX)
                     val fromPixelY = minBlockY + (hint.fromR * strideY)
@@ -376,8 +378,7 @@ class SolverService : Service() {
 
     private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
         val votes = IntArray(6)
-        // 🎯 [픽셀 자석 보정] 5x5 그리드로 스캔 반경을 넓혀 비정형 맵에서도 중앙부 색상 순도를 완벽 추적
-        val step = 8
+        val step = 6 
         for (dy in -2 * step..2 * step step step) {
             for (dx in -2 * step..2 * step step step) {
                 val px = (cx + dx).coerceIn(0, bitmap.width - 1)
@@ -393,8 +394,8 @@ class SolverService : Service() {
                 winner = i
             }
         }
-        // 확실히 과반수 이상 채택된 실제 블록 색상만 추출 (배경 노이즈 면역)
-        return if (winner != 0 && votes[winner] >= 7) winner else 0
+        // 합격선 투표 기준을 5표 이상으로 조정하여 판독 신뢰도 향상
+        return if (winner != 0 && votes[winner] >= 5) winner else 0
     }
 
     private fun identifyColorHSV(pixel: Int): Int {
@@ -408,34 +409,32 @@ class SolverService : Service() {
         val sat = hsv[1]
         val value = hsv[2]
 
-        // 🎯 [오탐지 원인 해결] 배경 타일의 흐린 색상을 차단하기 위해 채도 최소 기준을 0.16에서 0.45로 대폭 강화!
-        if (sat < 0.45f || value < 0.40f) return 0
+        // 🎯 [놓침 원인 해결] 빛 반사나 음영으로 인한 인식 누락을 막기 위해 채도 커트라인을 0.38f로 최적화
+        if (sat < 0.38f || value < 0.35f) return 0
 
         return when {
             (hue >= 345f || hue <= 15f) -> 1  // Red (책)
             (hue in 195f..245f) -> 2          // Blue (방패)
             (hue in 35f..65f) -> 3            // Yellow (왕관)
             (hue in 85f..145f) -> 4           // Green (나뭇잎)
-            (hue in 265f..335f) -> 5          // Pink/Purple (하트 등)
+            (hue in 265f..335f) -> 5          // Pink/Purple (하트)
             else -> 0
         }
     }
 
-    // 🎯 [알고리즘 전면 교체] 전체 판 시뮬레이션 기법 기반 5매칭 감지 추적기
     private fun findSimulatedMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
         // 1. 가로 방향 스와이프 시뮬레이션
         for (r in 0 until rows) {
             for (c in 0 until cols - 1) {
-                if (grid[r][c] == 0 && grid[r][c+1] == 0) continue
+                // 🎯 [오동작 방지] 두 칸 중 하나라도 장애물이나 빈 공간(0)이면 스와이프 연산 건너뜀
+                if (grid[r][c] == 0 || grid[r][c+1] == 0) continue
                 
-                // 가상 교환
                 val temp = grid[r][c]
                 grid[r][c] = grid[r][c+1]
                 grid[r][c+1] = temp
                 
                 val success = verify5MatchLine(grid, rows, cols)
                 
-                // 원상 복구
                 grid[r][c+1] = grid[r][c]
                 grid[r][c] = temp
                 
@@ -446,7 +445,7 @@ class SolverService : Service() {
         // 2. 세로 방향 스와이프 시뮬레이션
         for (r in 0 until rows - 1) {
             for (c in 0 until cols) {
-                if (grid[r][c] == 0 && grid[r+1][c] == 0) continue
+                if (grid[r][c] == 0 || grid[r+1][c] == 0) continue
                 
                 val temp = grid[r][c]
                 grid[r][c] = grid[r+1][c]
@@ -464,7 +463,6 @@ class SolverService : Service() {
     }
 
     private fun verify5MatchLine(grid: Array<IntArray>, rows: Int, cols: Int): Boolean {
-        // 가로 방향 5연속 체크
         for (r in 0 until rows) {
             var chain = 1
             var prev = -1
@@ -479,7 +477,6 @@ class SolverService : Service() {
                 }
             }
         }
-        // 세로 방향 5연속 체크
         for (c in 0 until cols) {
             var chain = 1
             var prev = -1
