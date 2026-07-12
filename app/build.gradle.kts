@@ -36,12 +36,13 @@ android {
 }
 
 dependencies {
+    // 안드로이드 핵심 기본 라이브러리
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 🟢 CI 환경(GitHub Actions)에서도 자동으로 OpenCV를 빌드 패키징해 주는 치트키 의존성
+    // 🟢 settings.gradle.kts에 지정된 mavenCentral 서버를 통해 안전하게 빌드에 포함됩니다.
     implementation("com.quickbirdstudios:opencv-android:4.5.3.0")
 
     testImplementation("junit:junit:4.13.2")
