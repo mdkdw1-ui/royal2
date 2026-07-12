@@ -10,8 +10,15 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // 🟢 핵심: JitPack 저장소를 등록하여 외부 OpenCV 라이브러리를 무조건 다운로드받을 수 있게 합니다.
-        maven { url = java.net.URI("https://jitpack.io") }
+        
+        // 🟢 GitHub Actions의 전역 토큰 강제 주입으로 인한 401 에러를 방지하는 우회 설정
+        maven {
+            url = java.net.URI("https://jitpack.io")
+            credentials {
+                username = ""
+                password = ""
+            }
+        }
     }
 }
 
