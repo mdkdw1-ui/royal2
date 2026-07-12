@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.royal2" // 프로젝트 이름에 맞게 수정 가능
+    namespace = "com.example.royal2"
     compileSdk = 34
 
     defaultConfig {
@@ -18,14 +18,18 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-   
-}
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
+    
+    // OpenCV Android 공식 빌드 라이브러리
     implementation("org.opencv:opencv:4.10.0")
-
 }
