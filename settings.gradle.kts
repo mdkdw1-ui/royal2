@@ -6,20 +6,8 @@ pluginManagement {
     }
 }
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-        
-        // 🟢 GitHub Actions의 전역 토큰 강제 주입으로 인한 401 에러를 방지하는 우회 설정
-        maven {
-            url = java.net.URI("https://jitpack.io")
-            credentials {
-                username = ""
-                password = ""
-            }
-        }
-    }
+    // 🟢 개별 프로젝트 레벨에서 의존성 저장소를 자유롭고 확실하게 제어하도록 허용합니다.
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
 }
 
 rootProject.name = "royal2"
