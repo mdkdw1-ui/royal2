@@ -37,12 +37,7 @@ android {
     }
 }
 
-repositories {
-    google()
-    mavenCentral()
-    // 🟢 JitPack 원격 저장소를 안전하게 추가합니다 (settings의 PREFER_PROJECT 규칙 덕분에 작동 가능)
-    maven { url = uri("https://jitpack.io") }
-}
+// 🟢 중앙 집중 관리를 위해 중복되는 repositories 블록은 과감히 제거합니다.
 
 dependencies {
     // 안드로이드 기본 핵심 라이브러리
@@ -51,7 +46,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 🟢 복잡한 로컬 AAR 수동 다운로드 대신 표준 Gradle 원격 의존성 주입을 사용합니다.
+    // 🟢 전역 설정된 JitPack을 통해 라이브러리를 안전하게 주입받습니다.
     implementation("com.github.jeziellago.opencv-android:opencv:4.6.0")
 
     testImplementation("junit:junit:4.13.2")
