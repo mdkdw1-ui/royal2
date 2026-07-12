@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -25,10 +26,12 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -48,12 +51,10 @@ class SolverService : Service() {
     
     // UI 최상위 컨테이너 및 상태 뷰
     private var controlPanelContainer: LinearLayout? = null
-    private var expandedLayout: LinearLayout? = null
-    private var collapsedLayout: LinearLayout? = null
+    private lateinit var panelParams: WindowManager.LayoutParams
     
     private var statusText: TextView? = null
     private var errorText: TextView? = null
-    private var gridCountStatusText: TextView? = null
     
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -84,7 +85,7 @@ class SolverService : Service() {
         prefs = getSharedPreferences("GridSettings", Context.MODE_PRIVATE)
         loadSettings() 
 
-        // 사용자가 커스텀한 격자 갯수를 연산 코어엔진에 동기화
+        // 연산 코어엔진에 가로/세로 칸수 동기화
         GameConfig.COLS = gridCols
         GameConfig.ROWS = gridRows
 
@@ -95,7 +96,6 @@ class SolverService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .build()
             
-        // 안드로이드 14 강제 규격 바인딩
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
@@ -122,172 +122,207 @@ class SolverService : Service() {
         backgroundHandler = Handler(handlerThread!!.looper)
     }
 
-    private fun createControlPanel() {
-        controlPanelContainer = LinearLayout(this).apply {
+    // 🎯 [UX 개선 핵심] 슬라이더와 미세조절 버튼을 결합한 통합 로우 생성 함수
+    private fun createSliderRow(
+        bodyLayout: LinearLayout,
+        title: String,
+        currentVal: Int,
+        maxVal: Int,
+        onAction: (Int) -> Unit
+    ): SeekBar {
+        val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#F2111111"))
-            setPadding(12, 12, 12, 12)
+            setPadding(0, 8, 0, 8)
         }
-
-        // 1. 접혔을 때 보일 최소화 레이아웃
-        collapsedLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE 
-        }
-
-        val btnMaximize = Button(this).apply {
-            text = "🛠️ 격자 크기/갯수 조절판 펼치기"
-            textSize = 12f
-            setTextColor(Color.GREEN)
-            setBackgroundColor(Color.parseColor("#44FFFFFF"))
-            setOnClickListener {
-                collapsedLayout?.visibility = View.GONE
-                expandedLayout?.visibility = View.VISIBLE
-            }
-        }
-        collapsedLayout?.addView(btnMaximize)
-
-        // 2. 펼쳐졌을 때 보일 상세 조절 레이아웃
-        expandedLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        val topStatusRow = LinearLayout(this).apply {
+        
+        val labelLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-
-        statusText = TextView(this).apply {
-            text = "● 실시간 분석 작동중"
-            setTextColor(Color.GREEN)
+        
+        val tvLabel = TextView(this).apply {
+            text = title
+            setTextColor(Color.WHITE)
             textSize = 12f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        topStatusRow.addView(statusText)
-
-        val btnMinimize = Button(this).apply {
-            text = "📁 조절판 접기"
-            textSize = 11f
-            setTextColor(Color.LTGRAY)
+        
+        val tvValue = TextView(this).apply {
+            text = currentVal.toString()
+            setTextColor(Color.YELLOW)
+            textSize = 12f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(10, 0, 10, 0)
+        }
+        
+        labelLayout.addView(tvLabel)
+        labelLayout.addView(tvValue)
+        container.addView(labelLayout)
+        
+        val controlLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        
+        val seekBar = SeekBar(this).apply {
+            max = maxVal
+            progress = currentVal
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        
+        val btnMinus = Button(this).apply {
+            text = "-"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#44FFFFFF"))
+            layoutParams = LinearLayout.LayoutParams(100, 80)
             setOnClickListener {
-                expandedLayout?.visibility = View.GONE
-                collapsedLayout?.visibility = View.VISIBLE
+                val step = if (title.contains("수")) 1 else 10
+                seekBar.progress = maxOf(0, seekBar.progress - step)
             }
         }
-        topStatusRow.addView(btnMinimize)
+        
+        val btnPlus = Button(this).apply {
+            text = "+"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#44FFFFFF"))
+            layoutParams = LinearLayout.LayoutParams(100, 80)
+            setOnClickListener {
+                val step = if (title.contains("수")) 1 else 10
+                seekBar.progress = minOf(maxVal, seekBar.progress + step)
+            }
+        }
+        
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                var p = progress
+                if (title.contains("수") && p < 3) {
+                    p = 3
+                    seekBar.progress = 3
+                }
+                tvValue.text = p.toString()
+                onAction(p)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        
+        controlLayout.addView(btnMinus)
+        controlLayout.addView(seekBar)
+        controlLayout.addView(btnPlus)
+        container.addView(controlLayout)
+        
+        bodyLayout.addView(container)
+        return seekBar
+    }
+
+    private fun createControlPanel() {
+        val metrics = resources.displayMetrics
+        val screenWidth = metrics.widthPixels
+        val screenHeight = metrics.heightPixels
+
+        // 1. 최상위 카드 컨테이너 설정 (디자인 강화 및 플로팅 카드화)
+        controlPanelContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F2151515")) // 고급스러운 딥 다크 테마
+                cornerRadius = 28f
+                setStroke(3, Color.parseColor("#66FFFFFF")) // 은은한 실버 아웃라인
+            }
+            setPadding(20, 16, 20, 16)
+        }
+
+        // 2. 드래그 이동이 가능한 상단 헤더 바 구축
+        val headerView = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(4, 4, 4, 12)
+        }
+
+        val tvTitle = TextView(this).apply {
+            text = "☰ 매칭 헬퍼 (드래그 이동)"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        headerView.addView(tvTitle)
+
+        val bodyLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val btnToggleMinimize = Button(this).apply {
+            text = "접기"
+            textSize = 11f
+            setTextColor(Color.CYAN)
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(120, 80)
+            setOnClickListener {
+                if (bodyLayout.visibility == View.VISIBLE) {
+                    bodyLayout.visibility = View.GONE
+                    text = "펼치기"
+                } else {
+                    bodyLayout.visibility = View.VISIBLE
+                    text = "접기"
+                }
+            }
+        }
+        headerView.addView(btnToggleMinimize)
 
         val btnKill = Button(this).apply {
-            text = "🔴 헬퍼 완전히 끄기"
+            text = "종료"
             textSize = 11f
             setTextColor(Color.RED)
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(120, 80)
             setOnClickListener {
-                Toast.makeText(this@SolverService, "매칭 헬퍼를 완전히 종료합니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@SolverService, "매칭 헬퍼를 종료합니다.", Toast.LENGTH_SHORT).show()
                 stopSelf()
             }
         }
-        topStatusRow.addView(btnKill)
-        expandedLayout?.addView(topStatusRow)
+        headerView.addView(btnKill)
+        controlPanelContainer?.addView(headerView)
 
         errorText = TextView(this).apply {
             setTextColor(Color.RED)
             textSize = 11f
             visibility = View.GONE
-            setPadding(0, 4, 0, 4)
+            setPadding(4, 0, 4, 8)
         }
-        expandedLayout?.addView(errorText)
+        bodyLayout.addView(errorText)
 
-        val coordinateInfoText = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setPadding(0, 8, 0, 4)
-        }
-        
-        fun refreshUiTexts() {
-            coordinateInfoText.text = "좌우범위: $boundsLeft ~ $boundsRight  |  상하범위: $boundsTop ~ $boundsBottom"
-            gridCountStatusText?.text = "현재 격자 설정 ➔  [ 가로: ${gridCols}열 ]  x  [ 세로: ${gridRows}행 ]"
-        }
-
-        fun makeAdjustRow(title: String, onMinus: () -> Unit, onPlus: () -> Unit) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-            }
-            val label = TextView(this).apply {
-                text = title
-                setTextColor(Color.WHITE)
-                textSize = 11f
-                setPadding(8, 0, 8, 0)
-            }
-            val bm = Button(this).apply { text = "-" ; setOnClickListener { onMinus(); refreshUiTexts(); triggerRender() } }
-            val bp = Button(this).apply { text = "+" ; setOnClickListener { onPlus(); refreshUiTexts(); triggerRender() } }
-            row.addView(bm)
-            row.addView(label)
-            row.addView(bp)
-            expandedLayout?.addView(row)
-        }
-
-        makeAdjustRow("전체 가로이동", { boundsLeft -= 10; boundsRight -= 10 }, { boundsLeft += 10; boundsRight += 10 })
-        makeAdjustRow("가로폭 크기", { boundsLeft += 10; boundsRight -= 10 }, { boundsLeft -= 10; boundsRight += 10 })
-        makeAdjustRow("전체 세로이동", { boundsTop -= 10; boundsBottom -= 10 }, { boundsTop += 10; boundsBottom += 10 })
-        makeAdjustRow("세로높이 크기", { boundsTop += 10; boundsBottom -= 10 }, { boundsTop -= 10; boundsBottom += 10 })
-
-        val gridCustomizerContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#33FFFFFF"))
-            setPadding(10, 10, 10, 10)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            lp.setMargins(0, 8, 0, 8)
-            layoutParams = lp
-        }
-
-        gridCountStatusText = TextView(this).apply {
-            setTextColor(Color.YELLOW)
+        statusText = TextView(this).apply {
+            text = "● 실시간 분석 엔진 가동 중"
+            setTextColor(Color.GREEN)
             textSize = 12f
-            gravity = Gravity.CENTER
+            setPadding(4, 0, 4, 12)
         }
-        gridCustomizerContainer.addView(gridCountStatusText)
+        bodyLayout.addView(statusText)
 
-        val colControlRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-        val colLabel = TextView(this).apply { text = "가로 칸수(열) 조절 : "; setTextColor(Color.WHITE); textSize = 11f }
-        val btnColMinus = Button(this).apply { text = "열 -" ; setOnClickListener { if(gridCols > 3) gridCols--; refreshUiTexts(); triggerRender() } }
-        val btnColPlus = Button(this).apply { text = "열 +" ; setOnClickListener { if(gridCols < 15) gridCols++; refreshUiTexts(); triggerRender() } }
-        colControlRow.addView(colLabel)
-        colControlRow.addView(btnColMinus)
-        colControlRow.addView(btnColPlus)
-        gridCustomizerContainer.addView(colControlRow)
+        // 3. 편리한 슬라이더 대량 배치 (액션 유도 연동)
+        createSliderRow(bodyLayout, "좌측 경계 (Left)", boundsLeft, screenWidth) { boundsLeft = it; triggerRender() }
+        createSliderRow(bodyLayout, "우측 경계 (Right)", boundsRight, screenWidth) { boundsRight = it; triggerRender() }
+        createSliderRow(bodyLayout, "상단 경계 (Top)", boundsTop, screenHeight) { boundsTop = it; triggerRender() }
+        createSliderRow(bodyLayout, "하단 경계 (Bottom)", boundsBottom, screenHeight) { boundsBottom = it; triggerRender() }
+        createSliderRow(bodyLayout, "가로 격자 수 (열)", gridCols, 15) { gridCols = it; triggerRender() }
+        createSliderRow(bodyLayout, "세로 격자 수 (행)", gridRows, 25) { gridRows = it; triggerRender() }
 
-        val rowControlRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-        val rowLabel = TextView(this).apply { text = "세로 칸수(행) 조절 : "; setTextColor(Color.WHITE); textSize = 11f }
-        val btnRowMinus = Button(this).apply { text = "행 -" ; setOnClickListener { if(gridRows > 3) gridRows--; refreshUiTexts(); triggerRender() } }
-        val btnRowPlus = Button(this).apply { text = "행 +" ; setOnClickListener { if(gridRows < 20) gridRows++; refreshUiTexts(); triggerRender() } }
-        rowControlRow.addView(rowLabel)
-        rowControlRow.addView(btnRowMinus)
-        rowControlRow.addView(btnRowPlus)
-        gridCustomizerContainer.addView(rowControlRow)
-
-        expandedLayout?.addView(coordinateInfoText)
-        expandedLayout?.addView(gridCustomizerContainer)
-
+        // 하단 조작 토글 라인
         val bottomActionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            setPadding(0, 16, 0, 4)
         }
 
         val btnToggleGrid = Button(this).apply {
-            text = "격자 숨기기"
+            text = "격자선 숨기기"
             setTextColor(Color.YELLOW)
             textSize = 11f
+            setBackgroundColor(Color.parseColor("#22FFFFFF"))
+            layoutParams = LinearLayout.LayoutParams(0, 95, 1f).apply { setMargins(4, 0, 4, 0) }
             setOnClickListener {
                 isGridVisible = !isGridVisible
-                text = if (isGridVisible) "격자 숨기기" else "격자 보이기"
+                text = if (isGridVisible) "격자선 숨기기" else "격자선 보이기"
                 triggerRender()
             }
         }
@@ -295,13 +330,15 @@ class SolverService : Service() {
 
         val btnToggleAnalysis = Button(this).apply {
             text = "분석 일시정지"
-            setTextColor(Color.CYAN)
+            setTextColor(Color.parseColor("#FF00E5FF"))
             textSize = 11f
+            setBackgroundColor(Color.parseColor("#22FFFFFF"))
+            layoutParams = LinearLayout.LayoutParams(0, 95, 1f).apply { setMargins(4, 0, 4, 0) }
             setOnClickListener {
                 isAnalysisEnabled = !isAnalysisEnabled
                 if (isAnalysisEnabled) {
                     text = "분석 일시정지"
-                    statusText?.text = "● 실시간 분석 작동중"
+                    statusText?.text = "● 실시간 분석 엔진 가동 중"
                     statusText?.setTextColor(Color.GREEN)
                 } else {
                     text = "분석 재개하기"
@@ -312,22 +349,48 @@ class SolverService : Service() {
             }
         }
         bottomActionRow.addView(btnToggleAnalysis)
-        expandedLayout?.addView(bottomActionRow)
+        bodyLayout.addView(bottomActionRow)
 
-        controlPanelContainer?.addView(collapsedLayout)
-        controlPanelContainer?.addView(expandedLayout)
+        controlPanelContainer?.addView(bodyLayout)
 
-        refreshUiTexts()
-
-        val panelParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
+        // WindowManager 위치 배치 설정 규격 (가로폭을 92%로 채워 콤팩트한 패널 구현)
+        panelParams = WindowManager.LayoutParams(
+            (screenWidth * 0.92).toInt(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP
+            gravity = Gravity.TOP or Gravity.START
+            x = (screenWidth * 0.04).toInt()
+            y = 150
         }
+
+        // 4. [이동 편의성] 헤더 바 터치 시 자유로운 윈도우 이동 기능 바인딩
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+
+        headerView.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = panelParams.x
+                    initialY = panelParams.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    panelParams.x = initialX + (event.rawX - initialTouchX).toInt()
+                    panelParams.y = initialY + (event.rawY - initialTouchY).toInt()
+                    windowManager?.updateViewLayout(controlPanelContainer, panelParams)
+                    true
+                }
+                else -> false
+            }
+        }
+
         windowManager?.addView(controlPanelContainer, panelParams)
     }
 
@@ -378,7 +441,6 @@ class SolverService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
-        
         val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent?.getParcelableExtra("data", Intent::class.java)
         } else {
@@ -388,7 +450,6 @@ class SolverService : Service() {
         
         if (resultCode == Activity.RESULT_OK && data != null) {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            
             try {
                 mediaProjection = mpManager.getMediaProjection(resultCode, data)
                 if (mediaProjection == null) {
@@ -398,7 +459,7 @@ class SolverService : Service() {
                     startCapture()
                 }
             } catch (e: SecurityException) {
-                displayErrorToUser("보안 거부: 앱 메인 창에서 나가는 타이밍이 너무 빨랐습니다. 앱을 켠 상태에서 다시 활성화해 보세요.")
+                displayErrorToUser("보안 거부: 앱 창에서 나가는 타이밍이 너무 빨랐습니다. 다시 활성화해 보세요.")
             } catch (e: Exception) {
                 displayErrorToUser("캡처 초기화 에러: ${e.localizedMessage}")
             }
@@ -408,7 +469,6 @@ class SolverService : Service() {
         return START_NOT_STICKY
     }
 
-    // 🎯 [핵심 교정 구역] Android 14 미디어 프로젝션 필수 규격 적용 완료
     private fun startCapture() {
         val metrics = resources.displayMetrics
         val width = metrics.widthPixels
@@ -417,12 +477,9 @@ class SolverService : Service() {
 
         try {
             imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-            
-            // 🔥 [수정 핵심] 가상 디스플레이 할당 전에 반드시 상태 추적 콜백을 먼저 등록해야 합니다.
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     super.onStop()
-                    // 사용자가 시스템 상단바 등에서 화면 캡처를 강제 종료했을 때 안전하게 자원을 해제합니다.
                     backgroundHandler?.post {
                         virtualDisplay?.release()
                         imageReader?.close()
@@ -432,7 +489,6 @@ class SolverService : Service() {
                 }
             }, backgroundHandler)
 
-            // 콜백이 무사히 등록된 후 가상 디스플레이를 생성하므로 에러가 해소됩니다.
             virtualDisplay = mediaProjection?.createVirtualDisplay(
                 "ScreenCapture", width, height, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, backgroundHandler
@@ -444,7 +500,6 @@ class SolverService : Service() {
 
         imageReader?.setOnImageAvailableListener({ reader ->
             if (!isAnalysisEnabled) return@setOnImageAvailableListener 
-            
             try {
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                 val planes = image.planes
