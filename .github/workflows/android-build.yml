@@ -14,20 +14,17 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # 🟢 수정된 부분: uses를 제거하고 run 블록 하나로 통합했습니다.
       - name: Build with Gradle
-        uses: gradle/actions/gradle-build@v3
-        with:
-          arguments: clean assembleDebug
-
         run: |
-          # 1. 래퍼가 없으면 생성 (이게 가장 중요합니다)
+          # 1. 래퍼가 없으면 생성
           gradle wrapper --gradle-version 8.5
           
           # 2. 실행 권한 부여
           chmod +x gradlew
           
-          # 3. 빌드 실행
-          ./gradlew assembleDebug
+          # 3. 빌드 실행 (clean 추가)
+          ./gradlew clean assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
