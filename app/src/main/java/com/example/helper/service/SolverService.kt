@@ -24,7 +24,10 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
@@ -32,6 +35,11 @@ class SolverService : Service() {
     private val TAG = "SolverService"
     
     private var windowManager: WindowManager? = null
+    private var overlayContainer: LinearLayout? = null // 🎯 전체를 감싸는 레이아웃
+    private var statusTextView: TextView? = null       // 상태 메시지 뷰
+    private var toggleButton: Button? = null           // 로직 온오프 버튼
+    private var killButton: Button? = null             // 킬스위치 버튼
+    
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -40,12 +48,14 @@ class SolverService : Service() {
     private var backgroundHandler: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     
-    private var overlayTextView: TextView? = null
-    
     private var reusableBitmap: Bitmap? = null
     private var screenWidth = 1080
     private var screenHeight = 2400
     private var lastAnalyzeTime = 0L
+
+    // 🎯 [로직 온오프 플래그] true일 때만 화면 분석 연산을 수행합니다.
+    @Volatile
+    private var isAnalyzing = true
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -59,15 +69,78 @@ class SolverService : Service() {
         if (!Settings.canDrawOverlays(this)) return
         
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        overlayTextView = TextView(this).apply {
-            text = "🧩 매칭 헬퍼 스캔 엔진 시동 중..."
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#AA000000")) 
-            setPadding(40, 20, 40, 20)
-            textSize = 14f
-            gravity = Gravity.CENTER
+        
+        // 1. 메인 가로 바 레이아웃 생성
+        overlayContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#CC000000")) // 약간 더 어두운 반투명 블랙
+            setPadding(30, 15, 30, 15)
         }
 
+        // 2. 텍스트 영역
+        statusTextView = TextView(this).apply {
+            text = "🧩 엔진 시동 중..."
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            // 버튼들과의 간격을 위해 우측 마진 확보
+            setPadding(0, 0, 30, 0)
+        }
+        
+        // 3. 로직 온오프 스위치 버튼
+        toggleButton = Button(this).apply {
+            text = "정지"
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#44FFFFFF")) // 반투명 흰색 버튼
+            
+            // 레이아웃 파라미터 크기 조절
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 15, 0)
+            }
+            
+            setOnClickListener {
+                isAnalyzing = !isAnalyzing
+                if (isAnalyzing) {
+                    text = "정지"
+                    setBackgroundColor(Color.parseColor("#44FFFFFF"))
+                    statusTextView?.text = "🔍 분석 재개됨..."
+                } else {
+                    text = "시작"
+                    setBackgroundColor(Color.parseColor("#AAFF9800")) // 오렌지색 경고
+                    statusTextView?.text = "⏸️ 분석 일시정지 (연산 중단)"
+                }
+            }
+        }
+
+        // 4. 킬스위치 (종료) 버튼
+        killButton = Button(this).apply {
+            text = "종료"
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#AAD32F2F")) // 부드러운 빨간색
+            
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            
+            setOnClickListener {
+                // 즉시 서비스를 파괴하고 종료 프로세스 가동
+                stopSelf()
+            }
+        }
+
+        // 레이아웃에 컴포넌트들 조립
+        overlayContainer?.addView(statusTextView)
+        overlayContainer?.addView(toggleButton)
+        overlayContainer?.addView(killButton)
+
+        // 오버레이가 터치 이벤트를 먹되, 바깥 영역은 게임 터치가 가능하도록 플래그 설정
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -79,11 +152,11 @@ class SolverService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = 200 
+            y = 150 // 살짝 더 위로 조정
         }
 
         try {
-            windowManager?.addView(overlayTextView, layoutParams)
+            windowManager?.addView(overlayContainer, layoutParams)
         } catch (e: Exception) {
             Log.e(TAG, "오버레이 뷰 주입 실패", e)
         }
@@ -128,8 +201,8 @@ class SolverService : Service() {
         }
         
         if (resultCode != Activity.RESULT_OK || dataIntent == null) {
-            overlayTextView?.text = "❌ 오류: 권한 토큰 거부됨 (Code: $resultCode)"
-            overlayTextView?.setBackgroundColor(Color.RED)
+            statusTextView?.text = "❌ 오류: 권한 토큰 거부됨"
+            overlayContainer?.setBackgroundColor(Color.RED)
             mainHandler.postDelayed({ stopSelf() }, 3000)
             return START_NOT_STICKY
         }
@@ -145,19 +218,22 @@ class SolverService : Service() {
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
 
-            // 🎯 [핵심 교정] Android 14+ 정책에 따라 VirtualDisplay를 생성하기 전에 반드시 콜백을 등록합니다.
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    Log.d(TAG, "시스템에 의해 미디어 프로젝션이 중단되었습니다.")
                     mainHandler.post {
-                        overlayTextView?.text = "🧩 스캔 엔진 종료됨"
-                        overlayTextView?.setBackgroundColor(Color.parseColor("#AA000000"))
+                        statusTextView?.text = "🧩 스캔 엔진 종료됨"
                     }
                 }
             }, backgroundHandler)
 
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
+                // 🎯 [로직 온오프 검증] 일시정지 상태라면 무거운 이미지 연산 로직을 통째로 패스합니다.
+                if (!isAnalyzing) {
+                    try { reader.acquireLatestImage()?.close() } catch (e: Exception) {}
+                    return@setOnImageAvailableListener
+                }
+
                 val currentTime = System.currentTimeMillis()
                 if (currentTime - lastAnalyzeTime >= 1000L) { 
                     lastAnalyzeTime = currentTime
@@ -176,13 +252,13 @@ class SolverService : Service() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, backgroundHandler
             )
             
-            overlayTextView?.text = "🧩 게임 화면 스캔 대기 중..."
+            statusTextView?.text = "🧩 게임 화면 스캔 대기 중..."
             promoteToForeground("실시간 화면 분석 엔진 동작 중")
 
         } catch (e: Exception) {
             Log.e(TAG, "치명적 오류: 미디어 프로젝션 시동 실패", e)
-            overlayTextView?.text = "❌ 시동 실패: ${e.localizedMessage ?: "Security Error"}"
-            overlayTextView?.setBackgroundColor(Color.RED)
+            statusTextView?.text = "❌ 시동 실패: ${e.localizedMessage}"
+            overlayContainer?.setBackgroundColor(Color.RED)
             mainHandler.postDelayed({ stopSelf() }, 5000)
         }
 
@@ -238,10 +314,12 @@ class SolverService : Service() {
                 }
             }
 
+            // 분석 도중 사용자가 일시정지를 눌렀을 수 있으므로 UI 갱신 전 최종 확인
+            if (!isAnalyzing) return
+
             if (detectedBlockCount < 15 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
                 mainHandler.post {
-                    overlayTextView?.text = "🧩 퍼즐 판 탐색 중..."
-                    overlayTextView?.setBackgroundColor(Color.parseColor("#AA000000"))
+                    if (isAnalyzing) statusTextView?.text = "🧩 퍼즐 판 탐색 중..."
                 }
                 return
             }
@@ -267,12 +345,11 @@ class SolverService : Service() {
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
             
             mainHandler.post {
+                if (!isAnalyzing) return@post
                 if (hint != null) {
-                    overlayTextView?.text = "🎯 추천 매칭: [${hint.fromR}, ${hint.fromC}] -> [${hint.toR}, ${hint.toC}]"
-                    overlayTextView?.setBackgroundColor(Color.parseColor("#CC00AA00")) 
+                    statusTextView?.text = "🎯 추천: [${hint.fromR}, ${hint.fromC}] -> [${hint.toR}, ${hint.toC}]"
                 } else {
-                    overlayTextView?.text = "🔍 분석 중 (5매칭 매칭 탐색 중)"
-                    overlayTextView?.setBackgroundColor(Color.parseColor("#AA0055AA")) 
+                    statusTextView?.text = "🔍 분석 중 (5매칭 탐색 중)"
                 }
             }
         } catch (t: Throwable) {
@@ -356,9 +433,13 @@ class SolverService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
-            if (overlayTextView != null) {
-                windowManager?.removeView(overlayTextView)
-                overlayTextView = null
+            // 🎯 [자원 해제] 오버레이 컨테이너 통째로 제거
+            if (overlayContainer != null) {
+                windowManager?.removeView(overlayContainer)
+                overlayContainer = null
+                statusTextView = null
+                toggleButton = null
+                killButton = null
             }
             imageReader?.setOnImageAvailableListener(null, null)
             backgroundThread?.quitSafely() 
