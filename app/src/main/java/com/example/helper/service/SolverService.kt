@@ -34,8 +34,31 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
+// OpenCV 관련 임포트
+import org.opencv.android.Utils
+import org.opencv.core.*
+import org.opencv.imgproc.Imgproc
+import java.util.ArrayList
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+
 class SolverService : Service() {
     private val TAG = "SolverService"
+    
+    // 퍼즐 판 고정 설정 상수 (9x9)
+    private val ROWS = 9
+    private val COLS = 9
+
+    // OpenCV HSV 기반 색상 타겟 정의 (0~180 범위)
+    private val pieceColors = mapOf(
+        "red" to 5.0,     // 인덱스 0 -> 결과 코드 1
+        "blue" to 115.0,  // 인덱스 1 -> 결과 코드 2
+        "yellow" to 25.0, // 인덱스 2 -> 결과 코드 3
+        "green" to 60.0,  // 인덱스 3 -> 결과 코드 4
+        "purple" to 150.0 // 인덱스 4 -> 결과 코드 5
+    )
+    private val colorNames = pieceColors.keys.toList()
     
     private var windowManager: WindowManager? = null
     private var overlayContainer: LinearLayout? = null
@@ -60,6 +83,14 @@ class SolverService : Service() {
 
     @Volatile
     private var isAnalyzing = true
+
+    // OpenCV 데이터 융합을 위한 구조체
+    private data class BoardAnalysisResult(
+        val grid: Array<IntArray>,
+        val bounds: Rect,
+        val verticalLines: List<Int>,
+        val horizontalLines: List<Int>
+    )
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -165,7 +196,6 @@ class SolverService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            // 🎯 [위치 수정] 우측 상단 남은 횟수를 가리지 않도록 좌측 상단(START) 배치로 이동
             gravity = Gravity.TOP or Gravity.START
             x = 40  
             y = 150 
@@ -245,7 +275,7 @@ class SolverService : Service() {
                 }
 
                 val currentTime = System.currentTimeMillis()
-                if (currentTime - lastAnalyzeTime >= 500L) { // 실시간 피드백 주기 0.5초로 고속화
+                if (currentTime - lastAnalyzeTime >= 500L) { 
                     lastAnalyzeTime = currentTime
                     try {
                         analyzeScreenFast(reader)
@@ -271,6 +301,9 @@ class SolverService : Service() {
         return START_STICKY
     }
 
+    /**
+     * 🌟 [핵심 변경] OpenCV 인지 파이프라인과 비동기 화면 처리가 융합된 고속 스캔 파트
+     */
     private fun analyzeScreenFast(reader: ImageReader) {
         val image = try { reader.acquireLatestImage() } catch (e: Exception) { null } ?: return
         
@@ -295,73 +328,59 @@ class SolverService : Service() {
             buffer.rewind() 
             bitmap.copyPixelsFromBuffer(buffer)
 
-            var minBlockX = screenWidth
-            var maxBlockX = 0
-            var minBlockY = screenHeight
-            var maxBlockY = 0
-            var detectedBlockCount = 0
-
-            val scanLeft = (screenWidth * 0.05f).toInt()
-            val scanRight = (screenWidth * 0.95f).toInt()
-            val scanTop = (screenHeight * 0.30f).toInt()    
-            val scanBottom = (screenHeight * 0.85f).toInt() 
-
-            for (y in scanTop until scanBottom step 25) {
-                for (x in scanLeft until scanRight step 25) {
-                    val colorId = identifyColorHSV(bitmap.getPixel(x, y))
-                    if (colorId in 1..5) {
-                        if (x < minBlockX) minBlockX = x
-                        if (x > maxBlockX) maxBlockX = x
-                        if (y < minBlockY) minBlockY = y
-                        if (y > maxBlockY) maxBlockY = y
-                        detectedBlockCount++
-                    }
-                }
-            }
-
             if (!isAnalyzing) return
 
-            if (detectedBlockCount < 10 || (maxBlockX - minBlockX) < screenWidth * 0.4) {
+            // 1. Android Bitmap을 OpenCV Mat 객체로 변환
+            val srcMat = Mat()
+            var analysisResult: BoardAnalysisResult? = null
+            try {
+                Utils.bitmapToMat(bitmap, srcMat)
+                // 2. OpenCV 분석 파이프라인 구동
+                analysisResult = processOpenCVGrid(srcMat)
+            } catch (ex: Exception) {
+                Log.e(TAG, "OpenCV Matrix 변환 또는 파이프라인 처리 오류", ex)
+            } finally {
+                srcMat.release() // 네이티브 메모리 즉각 해제
+            }
+
+            // 보드 검출 실패 시 처리
+            if (analysisResult == null) {
                 mainHandler.post {
                     if (isAnalyzing) {
-                        statusTextView?.text = "🧩 퍼즐 판 탐색 중..."
+                        statusTextView?.text = "🧩 퍼즐 판 탐색 중 (OpenCV)..."
                         hintOverlayView?.clearHint()
                     }
                 }
                 return
             }
 
-            val boardWidth = maxBlockX - minBlockX
-            val boardHeight = maxBlockY - minBlockY
-
-            // 🎯 [놓침 버그 해결] 화면 여백 왜곡을 없애기 위해 완벽한 정사각형 블록 비율 계산 적용
-            val estimatedBlockSize = screenWidth * 0.096f
-            val currentGridCols = Math.round(boardWidth.toFloat() / estimatedBlockSize).toInt() + 1
-            val currentGridRows = Math.round(boardHeight.toFloat() / estimatedBlockSize).toInt() + 1
-
-            val strideX = if (currentGridCols > 1) boardWidth.toFloat() / (currentGridCols - 1) else estimatedBlockSize
-            val strideY = if (currentGridRows > 1) boardHeight.toFloat() / (currentGridRows - 1) else estimatedBlockSize
-
-            val colorGrid = Array(currentGridRows) { IntArray(currentGridCols) }
-            for (r in 0 until currentGridRows) {
-                for (c in 0 until currentGridCols) {
-                    val cx = (minBlockX + (c * strideX)).toInt().coerceIn(0, bitmap.width - 1)
-                    val cy = (minBlockY + (r * strideY)).toInt().coerceIn(0, bitmap.height - 1)
-                    colorGrid[r][c] = getPixelBlockColor(bitmap, cx, cy)
-                }
-            }
-
-            val hint = findSimulatedMatch5(colorGrid, currentGridRows, currentGridCols)
+            // 3. 5매칭 알고리즘 검증 연산 수행
+            val hint = findSimulatedMatch5(analysisResult.grid, ROWS, COLS)
             
             mainHandler.post {
                 if (!isAnalyzing) return@post
                 if (hint != null) {
                     statusTextView?.text = "🔥 5매칭 발견!"
                     
-                    val fromPixelX = minBlockX + (hint.fromC * strideX)
-                    val fromPixelY = minBlockY + (hint.fromR * strideY)
-                    val toPixelX = minBlockX + (hint.toC * strideX)
-                    val toPixelY = minBlockY + (hint.toR * strideY)
+                    // 🎯 OpenCV가 정밀 스냅한 라인 데이터를 이용해 완벽한 셀 중앙 좌표 계산
+                    val bounds = analysisResult.bounds
+                    val vLines = analysisResult.verticalLines
+                    val hLines = analysisResult.horizontalLines
+
+                    val fromLeft = bounds.x + vLines[hint.fromC]
+                    val fromRight = bounds.x + vLines[hint.fromC + 1]
+                    val fromTop = bounds.y + hLines[hint.fromR]
+                    val fromBottom = bounds.y + hLines[hint.fromR + 1]
+
+                    val toLeft = bounds.x + vLines[hint.toC]
+                    val toRight = bounds.x + vLines[hint.toC + 1]
+                    val toTop = bounds.y + hLines[hint.toR]
+                    val toBottom = bounds.y + hLines[hint.toR + 1]
+
+                    val fromPixelX = (fromLeft + fromRight) / 2f
+                    val fromPixelY = (fromTop + fromBottom) / 2f
+                    val toPixelX = (toLeft + toRight) / 2f
+                    val toPixelY = (toTop + toBottom) / 2f
                     
                     hintOverlayView?.updateHint(fromPixelX, fromPixelY, toPixelX, toPixelY)
                 } else {
@@ -376,57 +395,277 @@ class SolverService : Service() {
         }
     }
 
-    private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
-        val votes = IntArray(6)
-        val step = 6 
-        for (dy in -2 * step..2 * step step step) {
-            for (dx in -2 * step..2 * step step step) {
-                val px = (cx + dx).coerceIn(0, bitmap.width - 1)
-                val py = (cy + dy).coerceIn(0, bitmap.height - 1)
-                votes[identifyColorHSV(bitmap.getPixel(px, py))]++
-            }
+    /**
+     * OpenCV 순수 이미지 프로세싱 알고리즘 파이프라인
+     */
+    private fun processOpenCVGrid(img: Mat): BoardAnalysisResult? {
+        if (img.empty()) return null
+
+        val hsv = Mat()
+        val blueMask = Mat()
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+        val invertedMask = Mat()
+        var backgroundMask: Mat? = null
+
+        try {
+            // 1. HSV 변환 및 보드 외곽 테두리(블루) 검출 마스크 생성
+            Imgproc.cvtColor(img, hsv, Imgproc.COLOR_RGBA2BGR) // RGBA에서 BGR 변환 후 HSV 가기 위함
+            Imgproc.cvtColor(hsv, hsv, Imgproc.COLOR_BGR2HSV)
+            
+            Core.inRange(hsv, Scalar(95.0, 40.0, 40.0), Scalar(135.0, 220.0, 240.0), blueMask)
+            
+            Imgproc.morphologyEx(blueMask, blueMask, Imgproc.MORPH_CLOSE, kernel, Point(-1.0, -1.0), 2)
+            Imgproc.morphologyEx(blueMask, blueMask, Imgproc.MORPH_OPEN, kernel, Point(-1.0, -1.0), 1)
+            Core.bitwise_not(blueMask, invertedMask)
+
+            // 2. 외곽 보드 윤곽선 탐지
+            val bounds = findGridBounds(invertedMask) ?: return null
+
+            // 3. 배경 격자 분리 마스크 추출
+            backgroundMask = createBackgroundMask(img, bounds) ?: return null
+
+            // 4. 하이브리드 미세 스냅 그리드 라인 검출
+            val (verticalLines, horizontalLines) = detectGridLinesFromBackground(backgroundMask, bounds)
+
+            // 5. 안전지대 샘플링 투표를 통한 격자 색상 2차원 배열 추출
+            val grid = extractAndCategorizeGrid(hsv, bounds, verticalLines, horizontalLines)
+
+            return BoardAnalysisResult(grid, bounds, verticalLines, horizontalLines)
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        } finally {
+            hsv.release()
+            blueMask.release()
+            kernel.release()
+            invertedMask.release()
+            backgroundMask?.release()
         }
-        var maxVote = 0
-        var winner = 0
-        for (i in 1..5) {
-            if (votes[i] > maxVote) {
-                maxVote = votes[i]
-                winner = i
-            }
-        }
-        // 합격선 투표 기준을 5표 이상으로 조정하여 판독 신뢰도 향상
-        return if (winner != 0 && votes[winner] >= 5) winner else 0
     }
 
-    private fun identifyColorHSV(pixel: Int): Int {
-        val r = Color.red(pixel)
-        val g = Color.green(pixel)
-        val b = Color.blue(pixel)
+    private fun findGridBounds(mask: Mat): Rect? {
+        val contours = ArrayList<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
-        val hsv = FloatArray(3)
-        Color.RGBToHSV(r, g, b, hsv)
-        val hue = hsv[0]
-        val sat = hsv[1]
-        val value = hsv[2]
+        var bestBox: Rect? = null
+        var maxArea = 0.0
+        val width = mask.width()
+        val height = mask.height()
 
-        // 🎯 [놓침 원인 해결] 빛 반사나 음영으로 인한 인식 누락을 막기 위해 채도 커트라인을 0.38f로 최적화
-        if (sat < 0.38f || value < 0.35f) return 0
-
-        return when {
-            (hue >= 345f || hue <= 15f) -> 1  // Red (책)
-            (hue in 195f..245f) -> 2          // Blue (방패)
-            (hue in 35f..65f) -> 3            // Yellow (왕관)
-            (hue in 85f..145f) -> 4           // Green (나뭇잎)
-            (hue in 265f..335f) -> 5          // Pink/Purple (하트)
-            else -> 0
+        for (cnt in contours) {
+            val rect = Imgproc.boundingRect(cnt)
+            val area = rect.area()
+            
+            if (rect.width > width * 0.5 && rect.height > height * 0.3 && rect.y > height * 0.15) {
+                if (area > maxArea) {
+                    maxArea = area
+                    bestBox = rect
+                }
+            }
+            cnt.release()
         }
+        hierarchy.release()
+        return bestBox
+    }
+
+    private fun createBackgroundMask(img: Mat, bounds: Rect): Mat? {
+        val h = img.height()
+        val w = img.width()
+        if (bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > w || bounds.y + bounds.height > h) return null
+
+        val gridRegion = img.submat(bounds)
+        if (gridRegion.empty()) {
+            gridRegion.release()
+            return null
+        }
+
+        val hsv = Mat()
+        val saturation = Mat()
+        val backgroundMask = Mat()
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+
+        try {
+            Imgproc.cvtColor(gridRegion, hsv, Imgproc.COLOR_RGBA2BGR)
+            Imgproc.cvtColor(hsv, hsv, Imgproc.COLOR_BGR2HSV)
+            Core.extractChannel(hsv, saturation, 1)
+
+            val meanMat = MatOfDouble()
+            val stdMat = MatOfDouble()
+            Core.meanStdDev(saturation, meanMat, stdMat)
+            
+            val meanSaturation = meanMat.get(0, 0)[0]
+            val stdSaturation = stdMat.get(0, 0)[0]
+            
+            meanMat.release()
+            stdMat.release()
+
+            var saturationThreshold = (meanSaturation + 0.4 * stdSaturation).toInt()
+            saturationThreshold = max(saturationThreshold, 45)
+
+            Core.inRange(saturation, Scalar(0.0), Scalar(saturationThreshold.toDouble()), backgroundMask)
+            
+            Imgproc.morphologyEx(backgroundMask, backgroundMask, Imgproc.MORPH_CLOSE, kernel, Point(-1.0, -1.0), 2)
+            Imgproc.morphologyEx(backgroundMask, backgroundMask, Imgproc.MORPH_OPEN, kernel, Point(-1.0, -1.0), 1)
+
+            return backgroundMask
+        } finally {
+            gridRegion.release()
+            hsv.release()
+            saturation.release()
+            kernel.release()
+        }
+    }
+
+    private fun detectGridLinesFromBackground(backgroundMask: Mat, bounds: Rect): Pair<List<Int>, List<Int>> {
+        val height = backgroundMask.height()
+        val width = backgroundMask.width()
+
+        val idealXs = DoubleArray(COLS + 1) { it * width.toDouble() / COLS }
+        val idealYs = DoubleArray(ROWS + 1) { it * height.toDouble() / ROWS }
+
+        val colCounts = IntArray(width)
+        val rowCounts = IntArray(height)
+
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (backgroundMask.get(y, x)[0] == 255.0) {
+                    colCounts[x]++
+                    rowCounts[y]++
+                }
+            }
+        }
+
+        val refinedVerticalLines = ArrayList<Int>()
+        val refinedHorizontalLines = ArrayList<Int>()
+
+        val searchWindowX = max(4, (width.toDouble() / COLS * 0.15).toInt())
+        for (i in 0..COLS) {
+            val idealX = idealXs[i].toInt()
+            if (i == 0 || i == COLS) {
+                refinedVerticalLines.add(idealX)
+                continue
+            }
+            val startX = max(0, idealX - searchWindowX)
+            val endX = min(width - 1, idealX + searchWindowX)
+
+            var maxVal = -1
+            var peakX = idealX
+            for (x in startX..endX) {
+                if (colCounts[x] > maxVal) {
+                    maxVal = colCounts[x]
+                    peakX = x
+                }
+            }
+            refinedVerticalLines.add(peakX)
+        }
+
+        val searchWindowY = max(4, (height.toDouble() / ROWS * 0.15).toInt())
+        for (i in 0..ROWS) {
+            val idealY = idealYs[i].toInt()
+            if (i == 0 || i == ROWS) {
+                refinedHorizontalLines.add(idealY)
+                continue
+            }
+            val startY = max(0, idealY - searchWindowY)
+            val endY = min(height - 1, idealY + searchWindowY)
+
+            var maxVal = -1
+            var peakY = idealY
+            for (y in startY..endY) {
+                if (rowCounts[y] > maxVal) {
+                    maxVal = rowCounts[y]
+                    peakY = y
+                }
+            }
+            refinedHorizontalLines.add(peakY)
+        }
+
+        return Pair(refinedVerticalLines, refinedHorizontalLines)
+    }
+
+    private fun extractAndCategorizeGrid(
+        hsv: Mat, bounds: Rect, 
+        verticalLines: List<Int>, horizontalLines: List<Int>
+    ): Array<IntArray> {
+        
+        val gridRegionHsv = hsv.submat(bounds)
+        val categoryGrid = Array(ROWS) { IntArray(COLS) }
+        val targetHues = colorNames.map { pieceColors[it]!! }
+
+        for (row in 0 until ROWS) {
+            for (col in 0 until COLS) {
+                val cellLeft = verticalLines[col]
+                val cellRight = verticalLines[col + 1]
+                val cellTop = horizontalLines[row]
+                val cellBottom = horizontalLines[row + 1]
+
+                val cellW = cellRight - cellLeft
+                val cellH = cellBottom - cellTop
+
+                val innerLeft = cellLeft + (cellW * 0.3).toInt()
+                val innerRight = cellRight - (cellW * 0.3).toInt()
+                val innerTop = cellTop + (cellH * 0.3).toInt()
+                val innerBottom = cellBottom - (cellH * 0.3).toInt()
+
+                val votes = IntArray(colorNames.size)
+
+                val stepY = max(1, (innerBottom - innerTop) / 4)
+                val stepX = max(1, (innerRight - innerLeft) / 4)
+
+                for (py in innerTop until innerBottom step stepY) {
+                    for (px in innerLeft until innerRight step stepX) {
+                        if (py >= 0 && py < gridRegionHsv.height() && px >= 0 && px < gridRegionHsv.width()) {
+                            val pixel = gridRegionHsv.get(py, px) ?: continue
+                            val h = pixel[0]
+                            val s = pixel[1]
+                            val v = pixel[2]
+
+                            if (s < 40.0 || v < 40.0) continue
+
+                            if (s > 70.0 && v > 50.0) {
+                                var minIndex = 0
+                                var minDist = 999.0
+
+                                for (i in targetHues.indices) {
+                                    val diff = abs(h - targetHues[i])
+                                    val wrapDist = min(diff, 180.0 - diff)
+                                    
+                                    if (wrapDist < minDist) {
+                                        minDist = wrapDist
+                                        minIndex = i
+                                    }
+                                }
+                                val weight = if (s > 100.0) 2 else 1
+                                votes[minIndex] += weight
+                            }
+                        }
+                    }
+                }
+
+                // 🎯 [인덱스 매핑 수정] 기존 매치5 코드(1~5 코드)와 호환되도록 i + 1 보정 처리 (표가 아예 없으면 0)
+                var maxVotes = 0
+                var winningCategory = 0 
+                for (i in votes.indices) {
+                    if (votes[i] > maxVotes) {
+                        maxVotes = votes[i]
+                        winningCategory = i + 1 
+                    }
+                }
+                
+                // 5표 이상 획득 신뢰성 검증 적용
+                categoryGrid[row][col] = if (maxVotes >= 5) winningCategory else 0
+            }
+        }
+
+        gridRegionHsv.release()
+        return categoryGrid
     }
 
     private fun findSimulatedMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
-        // 1. 가로 방향 스와이프 시뮬레이션
         for (r in 0 until rows) {
             for (c in 0 until cols - 1) {
-                // 🎯 [오동작 방지] 두 칸 중 하나라도 장애물이나 빈 공간(0)이면 스와이프 연산 건너뜀
                 if (grid[r][c] == 0 || grid[r][c+1] == 0) continue
                 
                 val temp = grid[r][c]
@@ -442,7 +681,6 @@ class SolverService : Service() {
             }
         }
         
-        // 2. 세로 방향 스와이프 시뮬레이션
         for (r in 0 until rows - 1) {
             for (c in 0 until cols) {
                 if (grid[r][c] == 0 || grid[r+1][c] == 0) continue
