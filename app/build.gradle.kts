@@ -36,14 +36,13 @@ android {
 }
 
 dependencies {
-    // 테마 에러 해결을 위한 핵심 기본 라이브러리
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    
-    // 만약 OpenCV를 모듈 형태로 가져다 쓰신다면 아래 주석을 해제하세요
-    // implementation(project(":openCV"))
+
+    // 🟢 CI 환경(GitHub Actions)에서도 자동으로 OpenCV를 빌드 패키징해 주는 치트키 의존성
+    implementation("com.quickbirdstudios:opencv-android:4.5.3.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
