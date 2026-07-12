@@ -35,24 +35,13 @@ android {
     }
 }
 
+// 🟢 복잡한 인증(credentials, authentication) 블록을 완전히 걷어낸 순정 설정입니다.
 repositories {
     google()
     mavenCentral()
     
-    maven {
-        // 🟢 수정 완료: java.net.URI 대신 Gradle 내장 함수인 uri()를 사용하여 문법 에러를 완전히 해결합니다.
-        url = uri("https://jitpack.io")
-        
-        authentication {
-            // GitHub Actions의 전역 인증 강제 주입 우회
-            clear() 
-        }
-        credentials {
-            // 빈 인증 헤더 조립 방지
-            username = null
-            password = null
-        }
-    }
+    // 공개 저장소이므로 이 한 줄만 있으면 빈 헤더 충돌 없이 안전하게 접근합니다.
+    maven { url = uri("https://jitpack.io") }
 }
 
 dependencies {
@@ -62,7 +51,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 무인증 상태로 안전하게 땡겨올 OpenCV 라이브러리
+    // 깨끗해진 JitPack 경로를 통해 OpenCV 라이브러리가 정상적으로 빌드에 포함됩니다.
     implementation("com.github.jeziellago:opencv-android:4.6.0")
 
     testImplementation("junit:junit:4.13.2")
