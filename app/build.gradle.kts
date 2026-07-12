@@ -35,20 +35,20 @@ android {
     }
 }
 
-// 🟢 여기서 가상 머신(CI)이 강제로 심어놓은 인증 토큰을 원천 차단합니다.
 repositories {
     google()
     mavenCentral()
     
     maven {
-        url = java.net.URI("https://jitpack.io")
+        // 🟢 수정 완료: java.net.URI 대신 Gradle 내장 함수인 uri()를 사용하여 문법 에러를 완전히 해결합니다.
+        url = uri("https://jitpack.io")
         
         authentication {
-            // 1. GitHub Actions가 전역으로 주입한 모든 인증 방식(Basic Auth 등)을 완전히 초기화합니다.
+            // GitHub Actions의 전역 인증 강제 주입 우회
             clear() 
         }
         credentials {
-            // 2. 공백("")이 아닌 완전한 null을 선언하여 인증 헤더가 조립되는 것 자체를 방지합니다.
+            // 빈 인증 헤더 조립 방지
             username = null
             password = null
         }
@@ -62,7 +62,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 이제 깨끗한 무인증 상태로 JitPack 서버에서 정상 다운로드됩니다.
+    // 무인증 상태로 안전하게 땡겨올 OpenCV 라이브러리
     implementation("com.github.jeziellago:opencv-android:4.6.0")
 
     testImplementation("junit:junit:4.13.2")
