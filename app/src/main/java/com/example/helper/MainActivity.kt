@@ -7,6 +7,8 @@ import android.net.Uri
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.widget.Button
 import android.widget.Toast
@@ -16,7 +18,6 @@ import com.example.helper.service.SolverService
 
 class MainActivity : AppCompatActivity() {
 
-    // 1. 화면 공유 권한 요청 런처
     private val captureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -33,13 +34,16 @@ class MainActivity : AppCompatActivity() {
             }
 
             Toast.makeText(this, "화면 공유 분석을 시작합니다.", Toast.LENGTH_SHORT).show()
-            moveTaskToBack(true) // 즉시 홈 화면으로 내려감
+            
+            // 🎯 [핵심 교정] 서비스가 화면 캡처 세션을 안정적으로 결합할 수 있도록 0.5초 후 홈 화면으로 이동합니다.
+            Handler(Looper.getMainLooper()).postDelayed({
+                moveTaskToBack(true)
+            }, 500)
         } else {
             Toast.makeText(this, "화면 공유 권한이 거부되었습니다.", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // 2. 다른 앱 위에 그리기 권한 요청 런처
     private val overlayLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { _ ->
@@ -56,7 +60,6 @@ class MainActivity : AppCompatActivity() {
         val startButton = Button(this).apply {
             text = "매칭 헬퍼 시작하기"
             setOnClickListener {
-                // 🎯 [핵심] 다른 앱 위에 그리기 권한이 있는지 먼저 체크합니다.
                 if (!Settings.canDrawOverlays(this@MainActivity)) {
                     val intent = Intent(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -64,7 +67,6 @@ class MainActivity : AppCompatActivity() {
                     )
                     overlayLauncher.launch(intent)
                 } else {
-                    // 권한이 이미 있다면 화면 공유 시스템 팝업을 띄웁니다.
                     val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                     captureLauncher.launch(mpManager.createScreenCaptureIntent())
                 }
