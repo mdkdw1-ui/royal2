@@ -39,7 +39,6 @@ class SolverService : Service() {
     private var backgroundHandler: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     
-    // 🎯 실시간 힌트를 보여줄 최상단 플로팅 뷰
     private var overlayTextView: TextView? = null
     
     private var reusableBitmap: Bitmap? = null
@@ -52,19 +51,21 @@ class SolverService : Service() {
     override fun onCreate() {
         super.onCreate()
         promoteToForeground("실시간 화면 분석 엔진 준비 중")
+        
+        // 🎯 [실시간 확인] 서비스가 살아나자마자 화면에 안내창부터 무조건 주입합니다.
+        createOverlayLayout()
     }
 
-    // 화면 최상단에 띄울 텍스트 바 생성
     private fun createOverlayLayout() {
         if (!Settings.canDrawOverlays(this)) return
         
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         overlayTextView = TextView(this).apply {
-            text = "🧩 매칭 헬퍼 스캔 대기 중..."
+            text = "🧩 매칭 헬퍼 스캔 엔진 시동 중..."
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#AA000000")) // 반투명 검은색
-            setPadding(30, 15, 30, 15)
-            textSize = 15f
+            setBackgroundColor(Color.parseColor("#AA000000")) 
+            setPadding(40, 20, 40, 20)
+            textSize = 14f
             gravity = Gravity.CENTER
         }
 
@@ -79,10 +80,14 @@ class SolverService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = 150 // 상태바 아래쪽 적당한 높이
+            y = 200 
         }
 
-        windowManager?.addView(overlayTextView, layoutParams)
+        try {
+            windowManager?.addView(overlayTextView, layoutParams)
+        } catch (e: Exception) {
+            Log.e(TAG, "오버레이 뷰 주입 실패", e)
+        }
     }
 
     private fun promoteToForeground(message: String) {
@@ -124,7 +129,9 @@ class SolverService : Service() {
         }
         
         if (resultCode == -1 || dataIntent == null) {
-            stopSelf()
+            overlayTextView?.text = "❌ 오류: 권한 토큰 데이터 누락"
+            overlayTextView?.setBackgroundColor(Color.RED)
+            mainHandler.postDelayed({ stopSelf() }, 3000)
             return START_NOT_STICKY
         }
 
@@ -133,10 +140,9 @@ class SolverService : Service() {
             screenWidth = metrics.widthPixels
             screenHeight = metrics.heightPixels
 
-            // 메인 스레드에서 플로팅 UI 띄우기
-            mainHandler.post { createOverlayLayout() }
-
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            
+            // 🎯 이 지점에서 안드로이드 내부 권한 검증이 일어납니다.
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
             
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
@@ -145,12 +151,12 @@ class SolverService : Service() {
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
                 val currentTime = System.currentTimeMillis()
-                if (currentTime - lastAnalyzeTime >= 1000L) { // 1초 주기로 작동
+                if (currentTime - lastAnalyzeTime >= 1000L) { 
                     lastAnalyzeTime = currentTime
                     try {
                         analyzeScreenFast(reader)
                     } catch (e: Exception) {
-                        Log.e(TAG, "분석 스킵 예외", e)
+                        Log.e(TAG, "분석 예외", e)
                     }
                 } else {
                     try { reader.acquireLatestImage()?.close() } catch (e: Exception) {}
@@ -162,11 +168,18 @@ class SolverService : Service() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, backgroundHandler
             )
             
+            overlayTextView?.text = "🧩 게임 화면 스캔 대기 중..."
             promoteToForeground("실시간 화면 분석 엔진 동작 중")
 
         } catch (e: Exception) {
-            Log.e(TAG, "치명적 오류: 초기화 실패", e)
-            stopSelf()
+            Log.e(TAG, "치명적 오류: 미디어 프로젝션 시동 실패", e)
+            
+            // 🎯 [시각적 디버깅] 에러 발생 시 안내창을 빨간색으로 바꾸고 예외 원인을 노출합니다.
+            overlayTextView?.text = "❌ 시동 실패: ${e.localizedMessage ?: "Security Error"}"
+            overlayTextView?.setBackgroundColor(Color.RED)
+            
+            // 사용자가 에러를 읽을 시간을 준 뒤 안전하게 종료합니다.
+            mainHandler.postDelayed({ stopSelf() }, 5000)
         }
 
         return START_STICKY
@@ -221,10 +234,9 @@ class SolverService : Service() {
                 }
             }
 
-            // 퍼즐 판이 완전히 감지되지 않은 상태면 대기로 표시
             if (detectedBlockCount < 15 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
                 mainHandler.post {
-                    overlayTextView?.text = "🧩 게임 화면 스캔 중..."
+                    overlayTextView?.text = "🧩 퍼즐 판 탐색 중..."
                     overlayTextView?.setBackgroundColor(Color.parseColor("#AA000000"))
                 }
                 return
@@ -250,18 +262,17 @@ class SolverService : Service() {
 
             val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
             
-            // 🎯 발견된 매칭 힌트를 실시간 최상단 뷰에 시각화 표출
             mainHandler.post {
                 if (hint != null) {
                     overlayTextView?.text = "🎯 추천 매칭: [${hint.fromR}, ${hint.fromC}] -> [${hint.toR}, ${hint.toC}]"
-                    overlayTextView?.setBackgroundColor(Color.parseColor("#CC00AA00")) // 녹색 알림
+                    overlayTextView?.setBackgroundColor(Color.parseColor("#CC00AA00")) 
                 } else {
-                    overlayTextView?.text = "🔍 분석 중 (매칭을 찾는 중...)"
-                    overlayTextView?.setBackgroundColor(Color.parseColor("#AA0055AA")) // 청색 상태
+                    overlayTextView?.text = "🔍 분석 중 (5매칭 매칭 탐색 중)"
+                    overlayTextView?.setBackgroundColor(Color.parseColor("#AA0055AA")) 
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "연산 예외 방어", t)
+            Log.e(TAG, "연산 예외", t)
         } finally {
             try { image.close() } catch (e: Exception) {}
         }
