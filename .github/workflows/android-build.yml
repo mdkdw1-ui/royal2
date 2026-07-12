@@ -15,6 +15,10 @@ jobs:
           distribution: 'temurin'
 
       - name: Build with Gradle
+        uses: gradle/actions/gradle-build@v3
+        with:
+          arguments: clean assembleDebug
+
         run: |
           # 1. 래퍼가 없으면 생성 (이게 가장 중요합니다)
           gradle wrapper --gradle-version 8.5
