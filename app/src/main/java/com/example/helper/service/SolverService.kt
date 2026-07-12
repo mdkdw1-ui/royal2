@@ -19,17 +19,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
-import android.util.DisplayMetrics
 import android.util.Log
-import android.view.WindowManager
 import androidx.core.app.NotificationCompat
-import androidx.core.content.IntentCompat
-import com.example.helper.MainActivity
 
 class SolverService : Service() {
     private val TAG = "SolverService"
     
-    private var windowManager: WindowManager? = null
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -40,13 +35,15 @@ class SolverService : Service() {
     private var reusableBitmap: Bitmap? = null
     private var screenWidth = 1080
     private var screenHeight = 2400
+    
+    // 분석 주기를 제어하기 위한 타임스탬프
+    private var lastAnalyzeTime = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        // 서비스 생성 즉시 노티피케이션을 띄워 시스템 백그라운드 킬 방어
-        promoteToForeground("서비스 초기화 중...")
+        promoteToForeground("실시간 화면 분석 엔진 준비 중")
     }
 
     private fun promoteToForeground(message: String) {
@@ -81,89 +78,68 @@ class SolverService : Service() {
         }
 
         val resultCode = intent.getIntExtra("resultCode", -1)
-        val dataIntent = IntentCompat.getParcelableExtra(intent, "data", Intent::class.java)
+        // 안드로이드 버전에 따른 파셀러블 인텐트 무손실 추출 방법 적용
+        val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra("data", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra("data")
+        }
         
         if (resultCode == -1 || dataIntent == null) {
-            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터가 누락되었습니다.")
+            Log.e(TAG, "❌ 오류: 미디어 프로젝션 권한 데이터 누락")
             stopSelf()
             return START_NOT_STICKY
         }
 
         try {
-            windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            var densityDpi = 420
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val bounds = windowManager?.currentWindowMetrics?.bounds
-                screenWidth = bounds?.width() ?: 1080
-                screenHeight = bounds?.height() ?: 2400
-                densityDpi = resources.displayMetrics.densityDpi
-            } else {
-                val metrics = DisplayMetrics()
-                @Suppress("DEPRECATION")
-                windowManager?.defaultDisplay?.getRealMetrics(metrics)
-                screenWidth = metrics.widthPixels
-                screenHeight = metrics.heightPixels
-                densityDpi = metrics.densityDpi
-            }
+            val metrics = resources.displayMetrics
+            screenWidth = metrics.widthPixels
+            screenHeight = metrics.heightPixels
 
             if (screenWidth <= 0) screenWidth = 1080
             if (screenHeight <= 0) screenHeight = 2400
 
-            // 1. 미디어 프로젝션 객체 생성 (실제 화면 공유 세션 열기)
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
             
-            // 2. 비동기 분석을 위한 독립 백그라운드 스레드 생성
             backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
 
-            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    super.onStop()
-                    Log.e(TAG, "⚠️ 캡처 세션이 종료되었습니다.")
-                    stopSelf()
+            // 🎯 [작동 보장 핵심] ImageReader에 리스너를 걸어 스트림을 강제로 활성화 시킵니다.
+            imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+            imageReader?.setOnImageAvailableListener({ reader ->
+                val currentTime = System.currentTimeMillis()
+                // 과부하를 막기 위해 딱 1초(1000ms) 간격으로 분석 연산 실행
+                if (currentTime - lastAnalyzeTime >= 1000L) {
+                    lastAnalyzeTime = currentTime
+                    try {
+                        analyzeScreenFast(reader)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "분석 스킵 예외", e)
+                    }
+                } else {
+                    // 주기가 도래하기 전의 프레임들은 닫아서 즉시 버림 (큐 적체 예방)
+                    try { reader.acquireLatestImage()?.close() } catch (e: Exception) {}
                 }
             }, backgroundHandler)
 
-            // 3. 화면 데이터를 전달받을 가상 디스플레이 연결
-            imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "ScreenCapture", screenWidth, screenHeight, densityDpi,
+                "ScreenCapture", screenWidth, screenHeight, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, backgroundHandler
             )
             
-            // 4. 주기적 분석 루프 시작
-            backgroundHandler?.post(analyzeRunnable)
             promoteToForeground("실시간 화면 분석 엔진 동작 중")
-
-            // 5. [핵심] 화면 공유가 켜졌으므로 메인 화면을 백그라운드로 안전하게 숨김
-            val finishIntent = Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                putExtra("ACTION_FINISH", true)
-            }
-            startActivity(finishIntent)
 
         } catch (e: Exception) {
             Log.e(TAG, "치명적 오류: 프로젝션 레이어 초기화 실패", e)
             stopSelf()
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
-    private val analyzeRunnable = object : Runnable {
-        override fun run() {
-            try { 
-                analyzeScreenFast() 
-            } catch (e: Exception) { 
-                Log.e(TAG, "루프 예외 무시", e) 
-            }
-            backgroundHandler?.postDelayed(this, 1000) // 1초마다 반복 스캔
-        }
-    }
-
-    private fun analyzeScreenFast() {
-        val reader = imageReader ?: return
+    private fun analyzeScreenFast(reader: ImageReader) {
         val image = try { reader.acquireLatestImage() } catch (e: Exception) { null } ?: return
         
         try {
@@ -185,7 +161,7 @@ class SolverService : Service() {
             }
             
             val bitmap = reusableBitmap!!
-            buffer.rewind() 
+            buffer. rewind() 
             bitmap.copyPixelsFromBuffer(buffer)
 
             var minBlockX = screenWidth
@@ -317,7 +293,7 @@ class SolverService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
-            backgroundHandler?.removeCallbacks(analyzeRunnable)
+            imageReader?.setOnImageAvailableListener(null, null)
             backgroundThread?.quitSafely() 
             virtualDisplay?.release()
             imageReader?.close()
