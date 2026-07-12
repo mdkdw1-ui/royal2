@@ -1,5 +1,6 @@
 package com.example.helper.service
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -68,7 +69,7 @@ class SolverService : Service() {
     private var boundsRight = 1000
     private var boundsBottom = 1500
     
-    // 🟢 [요청 기능 3] 사용자가 직접 설정할 가로/세로 격자 칸수 변수
+    // 격자 칸수 변수
     private var gridCols = 7
     private var gridRows = 9
 
@@ -128,13 +129,11 @@ class SolverService : Service() {
             setPadding(12, 12, 12, 12)
         }
 
-        // ==========================================================
-        // 1. 🟢 [요청 기능 2] 접혔을 때 보일 최소화 레이아웃 (아주 작게 구성)
-        // ==========================================================
+        // 1. 접혔을 때 보일 최소화 레이아웃
         collapsedLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE // 초기에는 펼쳐진 상태이므로 숨김
+            visibility = View.GONE 
         }
 
         val btnMaximize = Button(this).apply {
@@ -149,15 +148,11 @@ class SolverService : Service() {
         }
         collapsedLayout?.addView(btnMaximize)
 
-
-        // ==========================================================
-        // 2. 🟢 펼쳐졌을 때 보일 상세 조절 레이아웃 (기존 모양)
-        // ==========================================================
+        // 2. 펼쳐졌을 때 보일 상세 조절 레이아웃
         expandedLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
-        // 상단 시스템 표시 정보바 및 킬스위치 구역
         val topStatusRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -171,7 +166,6 @@ class SolverService : Service() {
         }
         topStatusRow.addView(statusText)
 
-        // 🟢 [요청 기능 2] 누르면 작게 접히는 버튼
         val btnMinimize = Button(this).apply {
             text = "📁 조절판 접기"
             textSize = 11f
@@ -183,7 +177,6 @@ class SolverService : Service() {
         }
         topStatusRow.addView(btnMinimize)
 
-        // 🟢 [요청 기능 4] 서비스를 즉시 파괴하는 킬스위치(Kill Switch)
         val btnKill = Button(this).apply {
             text = "🔴 헬퍼 완전히 끄기"
             textSize = 11f
@@ -196,7 +189,6 @@ class SolverService : Service() {
         topStatusRow.addView(btnKill)
         expandedLayout?.addView(topStatusRow)
 
-        // 실시간 에러 출력용 텍스트 필드
         errorText = TextView(this).apply {
             setTextColor(Color.RED)
             textSize = 11f
@@ -205,7 +197,6 @@ class SolverService : Service() {
         }
         expandedLayout?.addView(errorText)
 
-        // 수치 가이드 모니터링 라벨
         val coordinateInfoText = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 11f
@@ -218,7 +209,6 @@ class SolverService : Service() {
             gridCountStatusText?.text = "현재 격자 설정 ➔  [ 가로: ${gridCols}열 ]  x  [ 세로: ${gridRows}행 ]"
         }
 
-        // 영역 크기/위치 미세조정 행 헬퍼 함수
         fun makeAdjustRow(title: String, onMinus: () -> Unit, onPlus: () -> Unit) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -243,9 +233,6 @@ class SolverService : Service() {
         makeAdjustRow("전체 세로이동", { boundsTop -= 10; boundsBottom -= 10 }, { boundsTop += 10; boundsBottom += 10 })
         makeAdjustRow("세로높이 크기", { boundsTop += 10; boundsBottom -= 10 }, { boundsTop -= 10; boundsBottom += 10 })
 
-        // ----------------------------------------------------------------------
-        // 🟢 [요청 기능 3] 사용자가 직접 격자 개수(행/열)를 설정하는 조절 장치 구역
-        // ----------------------------------------------------------------------
         val gridCustomizerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#33FFFFFF"))
@@ -262,7 +249,6 @@ class SolverService : Service() {
         }
         gridCustomizerContainer.addView(gridCountStatusText)
 
-        // 가로 열 갯수 조절 버튼 배치
         val colControlRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -275,7 +261,6 @@ class SolverService : Service() {
         colControlRow.addView(btnColPlus)
         gridCustomizerContainer.addView(colControlRow)
 
-        // 세로 행 갯수 조절 버튼 배치
         val rowControlRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -291,7 +276,6 @@ class SolverService : Service() {
         expandedLayout?.addView(coordinateInfoText)
         expandedLayout?.addView(gridCustomizerContainer)
 
-        // 최하단 온오프/유틸리티 컨트롤 버튼 행
         val bottomActionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -309,7 +293,6 @@ class SolverService : Service() {
         }
         bottomActionRow.addView(btnToggleGrid)
 
-        // 🟢 [요청 기능 4] 분석 연동 실시간 On/Off 스위치
         val btnToggleAnalysis = Button(this).apply {
             text = "분석 일시정지"
             setTextColor(Color.CYAN)
@@ -331,7 +314,6 @@ class SolverService : Service() {
         bottomActionRow.addView(btnToggleAnalysis)
         expandedLayout?.addView(bottomActionRow)
 
-        // 컨테이너에 두 레이아웃 결합
         controlPanelContainer?.addView(collapsedLayout)
         controlPanelContainer?.addView(expandedLayout)
 
@@ -351,7 +333,6 @@ class SolverService : Service() {
 
     private fun triggerRender() {
         saveSettings()
-        // 변경 데이터를 코어 연산 싱글톤 변수에 주입
         GameConfig.COLS = gridCols
         GameConfig.ROWS = gridRows
         overlayView?.updateGrid(boundsLeft, boundsTop, boundsRight, boundsBottom, emptyList(), isGridVisible, gridCols, gridRows)
@@ -395,14 +376,21 @@ class SolverService : Service() {
         }
     }
 
+    // 🎯 [핵심 교정 구역] resultCode 분석 로직 버그 수정 완료
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
-        val data = intent?.getParcelableExtra<Intent>("data")
+        val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
         
-        if (resultCode != -1 && data != null) {
+        val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra("data", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra<Intent>("data")
+        }
+        
+        // Activity.RESULT_OK(-1)가 정상 반환되었을 때를 정확히 필터링하도록 수정
+        if (resultCode == Activity.RESULT_OK && data != null) {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             
-            // 안드로이드 14 포그라운드 완벽 대기 동기화 처리 (지연 제거 후 즉시 안전 바인딩)
             try {
                 mediaProjection = mpManager.getMediaProjection(resultCode, data)
                 if (mediaProjection == null) {
@@ -417,7 +405,7 @@ class SolverService : Service() {
                 displayErrorToUser("캡처 초기화 에러: ${e.localizedMessage}")
             }
         } else {
-            displayErrorToUser("정상적인 권한 응답 데이터를 받지 못했습니다.")
+            displayErrorToUser("정상적인 권한 응답 데이터를 받지 못했습니다. (코드 값: $resultCode)")
         }
         return START_NOT_STICKY
     }
@@ -457,7 +445,7 @@ class SolverService : Service() {
                 val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
                 processFrame(cleanBitmap)
             } catch (e: Exception) {
-                // 프레임 유실 보호 조치
+                // 프레임 드랍 유실 무시
             }
         }, backgroundHandler)
     }
@@ -545,7 +533,6 @@ class SolverService : Service() {
             super.onDraw(canvas)
             if (!isVisibleMode || bRight <= bLeft || bBottom <= bTop) return
 
-            // 사용자가 입력한 가변 행/열 수치에 의거해 격자선을 정밀 분할 드로잉
             val cellW = (bRight - bLeft) / drawCols.toFloat()
             val cellH = (bBottom - bTop) / drawRows.toFloat()
 
