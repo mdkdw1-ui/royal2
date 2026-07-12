@@ -83,7 +83,6 @@ class SolverService : Service() {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
             else 
                 @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
-            // 🎯 [교정 완료] 잘못 들어간 FLAG_NOT_TOUCH_BOUNDS를 완전히 제거했습니다.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         )
@@ -227,14 +226,15 @@ class SolverService : Service() {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpManager.getMediaProjection(resultCode, dataIntent)
             
-            backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
-            backgroundHandler = Handler(backgroundThread!!.looper)
-
+            // 🎯 [OS 보안 크래시 해결] 가상 디스플레이 활성화 전, 메인 스레드 지연 없이 즉시 콜백 연결!
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     mainHandler.post { statusTextView?.text = "🧩 스캔 엔진 종료됨" }
                 }
-            }, backgroundHandler)
+            }, mainHandler)
+
+            backgroundThread = HandlerThread("Grid_Scanner").apply { start() }
+            backgroundHandler = Handler(backgroundThread!!.looper)
 
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
@@ -244,7 +244,7 @@ class SolverService : Service() {
                 }
 
                 val currentTime = System.currentTimeMillis()
-                if (currentTime - lastAnalyzeTime >= 700L) { 
+                if (currentTime - lastAnalyzeTime >= 600L) { // 실시간 피드백 속도 향상 (0.6초)
                     lastAnalyzeTime = currentTime
                     try {
                         analyzeScreenFast(reader)
@@ -302,8 +302,8 @@ class SolverService : Service() {
 
             val scanLeft = (screenWidth * 0.05f).toInt()
             val scanRight = (screenWidth * 0.95f).toInt()
-            val scanTop = (screenHeight * 0.33f).toInt()    
-            val scanBottom = (screenHeight * 0.82f).toInt() 
+            val scanTop = (screenHeight * 0.30f).toInt()    
+            val scanBottom = (screenHeight * 0.85f).toInt() 
 
             for (y in scanTop until scanBottom step 25) {
                 for (x in scanLeft until scanRight step 25) {
@@ -320,7 +320,7 @@ class SolverService : Service() {
 
             if (!isAnalyzing) return
 
-            if (detectedBlockCount < 12 || (maxBlockX - minBlockX) < screenWidth * 0.5) {
+            if (detectedBlockCount < 10 || (maxBlockX - minBlockX) < screenWidth * 0.4) {
                 mainHandler.post {
                     if (isAnalyzing) {
                         statusTextView?.text = "🧩 퍼즐 판 탐색 중..."
@@ -334,7 +334,7 @@ class SolverService : Service() {
             val boardHeight = maxBlockY - minBlockY
             val approxBlockSize = screenWidth / 9.0f
             val currentGridCols = Math.round(boardWidth.toFloat() / approxBlockSize + 0.3f).coerceIn(5, 11)
-            val currentGridRows = Math.round(boardHeight.toFloat() / approxBlockSize + 0.3f).coerceIn(3, 11)
+            val currentGridRows = Math.round(boardHeight.toFloat() / approxBlockSize + 0.3f).coerceIn(4, 12)
 
             val strideX = if (currentGridCols > 1) boardWidth.toFloat() / (currentGridCols - 1) else approxBlockSize
             val strideY = if (currentGridRows > 1) boardHeight.toFloat() / (currentGridRows - 1) else approxBlockSize
@@ -348,12 +348,13 @@ class SolverService : Service() {
                 }
             }
 
-            val hint = findExactOOXOOMatch5(colorGrid, currentGridRows, currentGridCols)
+            // 🎯 [매칭 엔진 업그레이드] 고도화된 가상 스와이프 시뮬레이션 가동
+            val hint = findSimulatedMatch5(colorGrid, currentGridRows, currentGridCols)
             
             mainHandler.post {
                 if (!isAnalyzing) return@post
                 if (hint != null) {
-                    statusTextView?.text = "🔥 5매칭 발견! 화면의 화살표를 따라 미세요!"
+                    statusTextView?.text = "🔥 5매칭 발견! 화살표대로 움직이세요!"
                     
                     val fromPixelX = minBlockX + (hint.fromC * strideX)
                     val fromPixelY = minBlockY + (hint.fromR * strideY)
@@ -375,9 +376,10 @@ class SolverService : Service() {
 
     private fun getPixelBlockColor(bitmap: Bitmap, cx: Int, cy: Int): Int {
         val votes = IntArray(6)
-        val offsets = intArrayOf(-12, 0, 12) 
-        for (dy in offsets) {
-            for (dx in offsets) {
+        // 🎯 [픽셀 자석 보정] 5x5 그리드로 스캔 반경을 넓혀 비정형 맵에서도 중앙부 색상 순도를 완벽 추적
+        val step = 8
+        for (dy in -2 * step..2 * step step step) {
+            for (dx in -2 * step..2 * step step step) {
                 val px = (cx + dx).coerceIn(0, bitmap.width - 1)
                 val py = (cy + dy).coerceIn(0, bitmap.height - 1)
                 votes[identifyColorHSV(bitmap.getPixel(px, py))]++
@@ -391,14 +393,14 @@ class SolverService : Service() {
                 winner = i
             }
         }
-        return if (maxVote >= 3) winner else 0
+        // 확실히 과반수 이상 채택된 실제 블록 색상만 추출 (배경 노이즈 면역)
+        return if (winner != 0 && votes[winner] >= 7) winner else 0
     }
 
     private fun identifyColorHSV(pixel: Int): Int {
         val r = Color.red(pixel)
         val g = Color.green(pixel)
         val b = Color.blue(pixel)
-        if (r + g + b < 100 || r + g + b > 710) return 0
 
         val hsv = FloatArray(3)
         Color.RGBToHSV(r, g, b, hsv)
@@ -406,52 +408,93 @@ class SolverService : Service() {
         val sat = hsv[1]
         val value = hsv[2]
 
-        if (sat < 0.16f || value < 0.16f) return 0
+        // 🎯 [오탐지 원인 해결] 배경 타일의 흐린 색상을 차단하기 위해 채도 최소 기준을 0.16에서 0.45로 대폭 강화!
+        if (sat < 0.45f || value < 0.40f) return 0
 
         return when {
-            (hue >= 345f || hue <= 15f) -> 1  
-            (hue in 195f..245f) -> 2          
-            (hue in 38f..65f) -> 3            
-            (hue in 90f..145f) -> 4           
-            (hue in 265f..330f) -> 5          
+            (hue >= 345f || hue <= 15f) -> 1  // Red (책)
+            (hue in 195f..245f) -> 2          // Blue (방패)
+            (hue in 35f..65f) -> 3            // Yellow (왕관)
+            (hue in 85f..145f) -> 4           // Green (나뭇잎)
+            (hue in 265f..335f) -> 5          // Pink/Purple (하트 등)
             else -> 0
         }
     }
 
-    private fun findExactOOXOOMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
+    // 🎯 [알고리즘 전면 교체] 전체 판 시뮬레이션 기법 기반 5매칭 감지 추적기
+    private fun findSimulatedMatch5(grid: Array<IntArray>, rows: Int, cols: Int): MatchHint? {
+        // 1. 가로 방향 스와이프 시뮬레이션
         for (r in 0 until rows) {
-            for (c in 0..cols - 5) {
-                val t = grid[r][c]
-                if (t == 0) continue
-                if (grid[r][c+1] == t && grid[r][c+3] == t && grid[r][c+4] == t && grid[r][c+2] != t) {
-                    val targetRow = r
-                    val targetCol = c + 2 
-                    if (targetRow - 1 >= 0 && grid[targetRow - 1][targetCol] == t) {
-                        return MatchHint(targetRow - 1, targetCol, targetRow, targetCol)
-                    }
-                    if (targetRow + 1 < rows && grid[targetRow + 1][targetCol] == t) {
-                        return MatchHint(targetRow + 1, targetCol, targetRow, targetCol)
-                    }
-                }
+            for (c in 0 until cols - 1) {
+                if (grid[r][c] == 0 && grid[r][c+1] == 0) continue
+                
+                // 가상 교환
+                val temp = grid[r][c]
+                grid[r][c] = grid[r][c+1]
+                grid[r][c+1] = temp
+                
+                val success = verify5MatchLine(grid, rows, cols)
+                
+                // 원상 복구
+                grid[r][c+1] = grid[r][c]
+                grid[r][c] = temp
+                
+                if (success) return MatchHint(r, c, r, c + 1)
             }
         }
-        for (c in 0 until cols) {
-            for (r in 0..rows - 5) {
-                val t = grid[r][c]
-                if (t == 0) continue
-                if (grid[r+1][c] == t && grid[r+3][c] == t && grid[r+4][c] == t && grid[r+2][c] != t) {
-                    val targetRow = r + 2 
-                    val targetCol = c
-                    if (targetCol - 1 >= 0 && grid[targetRow][targetCol - 1] == t) {
-                        return MatchHint(targetRow, targetCol - 1, targetRow, targetCol)
-                    }
-                    if (targetCol + 1 < cols && grid[targetRow][targetCol + 1] == t) {
-                        return MatchHint(targetRow, targetCol + 1, targetRow, targetCol)
-                    }
-                }
+        
+        // 2. 세로 방향 스와이프 시뮬레이션
+        for (r in 0 until rows - 1) {
+            for (c in 0 until cols) {
+                if (grid[r][c] == 0 && grid[r+1][c] == 0) continue
+                
+                val temp = grid[r][c]
+                grid[r][c] = grid[r+1][c]
+                grid[r+1][c] = temp
+                
+                val success = verify5MatchLine(grid, rows, cols)
+                
+                grid[r+1][c] = grid[r][c]
+                grid[r][c] = temp
+                
+                if (success) return MatchHint(r, c, r + 1, c)
             }
         }
         return null
+    }
+
+    private fun verify5MatchLine(grid: Array<IntArray>, rows: Int, cols: Int): Boolean {
+        // 가로 방향 5연속 체크
+        for (r in 0 until rows) {
+            var chain = 1
+            var prev = -1
+            for (c in 0 until cols) {
+                val current = grid[r][c]
+                if (current != 0 && current == prev) {
+                    chain++
+                    if (chain >= 5) return true
+                } else {
+                    chain = 1
+                    prev = current
+                }
+            }
+        }
+        // 세로 방향 5연속 체크
+        for (c in 0 until cols) {
+            var chain = 1
+            var prev = -1
+            for (r in 0 until rows) {
+                val current = grid[r][c]
+                if (current != 0 && current == prev) {
+                    chain++
+                    if (chain >= 5) return true
+                } else {
+                    chain = 1
+                    prev = current
+                }
+            }
+        }
+        return false
     }
 
     override fun onDestroy() {
