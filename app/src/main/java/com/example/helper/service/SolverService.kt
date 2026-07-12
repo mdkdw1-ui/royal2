@@ -376,7 +376,6 @@ class SolverService : Service() {
         }
     }
 
-    // 🎯 [핵심 교정 구역] resultCode 분석 로직 버그 수정 완료
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
         
@@ -387,7 +386,6 @@ class SolverService : Service() {
             intent?.getParcelableExtra<Intent>("data")
         }
         
-        // Activity.RESULT_OK(-1)가 정상 반환되었을 때를 정확히 필터링하도록 수정
         if (resultCode == Activity.RESULT_OK && data != null) {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             
@@ -410,6 +408,7 @@ class SolverService : Service() {
         return START_NOT_STICKY
     }
 
+    // 🎯 [핵심 교정 구역] Android 14 미디어 프로젝션 필수 규격 적용 완료
     private fun startCapture() {
         val metrics = resources.displayMetrics
         val width = metrics.widthPixels
@@ -418,6 +417,22 @@ class SolverService : Service() {
 
         try {
             imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            
+            // 🔥 [수정 핵심] 가상 디스플레이 할당 전에 반드시 상태 추적 콜백을 먼저 등록해야 합니다.
+            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    super.onStop()
+                    // 사용자가 시스템 상단바 등에서 화면 캡처를 강제 종료했을 때 안전하게 자원을 해제합니다.
+                    backgroundHandler?.post {
+                        virtualDisplay?.release()
+                        imageReader?.close()
+                        virtualDisplay = null
+                        imageReader = null
+                    }
+                }
+            }, backgroundHandler)
+
+            // 콜백이 무사히 등록된 후 가상 디스플레이를 생성하므로 에러가 해소됩니다.
             virtualDisplay = mediaProjection?.createVirtualDisplay(
                 "ScreenCapture", width, height, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, backgroundHandler
@@ -445,7 +460,7 @@ class SolverService : Service() {
                 val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
                 processFrame(cleanBitmap)
             } catch (e: Exception) {
-                // 프레임 드랍 유실 무시
+                // 프레임 유실 무시
             }
         }, backgroundHandler)
     }
