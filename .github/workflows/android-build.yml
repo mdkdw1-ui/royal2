@@ -14,16 +14,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # 🟢 전역 gradle 명령어 대신 공식 Gradle 액션을 사용하여 안전하게 빌드합니다.
       - name: Build with Gradle
-        run: |
-          # 1. 래퍼가 없으면 생성 (이게 가장 중요합니다)
-          gradle wrapper --gradle-version 8.5
-          
-          # 2. 실행 권한 부여
-          chmod +x gradlew
-          
-          # 3. 빌드 실행
-          ./gradlew assembleDebug
+        uses: gradle/actions/gradle-build@v3
+        with:
+          arguments: assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
