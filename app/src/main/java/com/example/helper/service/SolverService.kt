@@ -33,6 +33,7 @@ import androidx.core.app.NotificationCompat
 import com.example.helper.core.GridBounds
 import com.example.helper.core.GridDetector
 import com.example.helper.core.Match3Solver
+import com.example.helper.core.MatchCandidate
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -50,7 +51,7 @@ class SolverService : Service() {
     
     private lateinit var prefs: SharedPreferences
 
-    // 🟢 사용자가 세팅할 경계선 좌표 변수
+    // 사용자가 세팅할 경계선 좌표 변수
     private var boundsLeft = 50
     private var boundsTop = 500
     private var boundsRight = 1000
@@ -84,7 +85,7 @@ class SolverService : Service() {
         )
         windowManager?.addView(overlayView, overlayParams)
 
-        // 2. 🟢 상단 미세조정 컨트롤 패널 생성 (터치 가능 영역)
+        // 2. 상단 미세조정 컨트롤 패널 생성 (터치 가능 영역)
         createControlPanel()
 
         handlerThread = HandlerThread("CaptureThread").apply { start() }
@@ -94,7 +95,8 @@ class SolverService : Service() {
     private fun createControlPanel() {
         controlPanel = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            backgroundColor = Color.parseColor("#CC000000") // 반투명 검은색 배경
+            // 🟢 문법 오류 수정: 속성 대신 안드로이드 표준 메서드 호출로 변경
+            setBackgroundColor(Color.parseColor("#CC000000")) 
             gravity = Gravity.CENTER
         }
 
@@ -108,7 +110,14 @@ class SolverService : Service() {
                 setOnClickListener { 
                     onClick() 
                     saveBounds()
-                    overlayView?.updateGrid(boundsLeft, boundsTop, boundsRight, boundsBottom, emptyList())
+                    // 🟢 문법 오류 수정: 파라미터 이름을 명시하여 안전하게 호출하도록 통일
+                    overlayView?.updateGrid(
+                        left = boundsLeft,
+                        top = boundsTop,
+                        right = boundsRight,
+                        bottom = boundsBottom,
+                        candidates = emptyList()
+                    )
                 }
             }
             controlPanel?.addView(btn)
@@ -149,7 +158,6 @@ class SolverService : Service() {
 
     private fun loadBounds() {
         val metrics = resources.displayMetrics
-        // 저장된 게 없으면 화면 해상도 기반 초기 기본값 세팅
         boundsLeft = prefs.getInt("left", (metrics.widthPixels * 0.05).toInt())
         boundsTop = prefs.getInt("top", (metrics.heightPixels * 0.25).toInt())
         boundsRight = prefs.getInt("right", (metrics.widthPixels * 0.95).toInt())
@@ -204,18 +212,18 @@ class SolverService : Service() {
     }
 
     private fun processFrame(bitmap: Bitmap) {
-        // 🟢 사용자가 맞춰둔 조절 수치를 기준으로 이미지 분석을 요청합니다.
         val currentBounds = GridBounds(boundsLeft, boundsTop, boundsRight, boundsBottom)
         val gridResult = GridDetector.getGridDataFromBitmap(bitmap, currentBounds)
         
         if (gridResult.success && gridResult.categoryGrid != null && gridResult.bounds != null) {
             val candidates = Match3Solver.getMatchCandidates(gridResult.categoryGrid)
             Handler(Looper.getMainLooper()).post {
+                // 🟢 문법 오류 수정: 함수 정의에 맞추어 명칭을 일치시켜 호출하도록 변경
                 overlayView?.updateGrid(
-                    boundsLeft = gridResult.bounds.left,
-                    boundsTop = gridResult.bounds.top,
-                    boundsRight = gridResult.bounds.right,
-                    boundsBottom = gridResult.bounds.bottom,
+                    left = gridResult.bounds.left,
+                    top = gridResult.bounds.top,
+                    right = gridResult.bounds.right,
+                    bottom = gridResult.bounds.bottom,
                     candidates = candidates
                 )
             }
@@ -237,10 +245,10 @@ class SolverService : Service() {
         private var bTop = 0
         private var bRight = 0
         private var bBottom = 0
-        private var matchCandidates: List<com.example.helper.core.MatchCandidate> = emptyList()
+        private var matchCandidates: List<MatchCandidate> = emptyList()
 
         private val gridPaint = Paint().apply {
-            color = Color.parseColor("#AA00FF00") // 뚜렷한 반투명 녹색 격자
+            color = Color.parseColor("#AA00FF00")
             style = Paint.Style.STROKE
             strokeWidth = 5f
         }
@@ -256,7 +264,7 @@ class SolverService : Service() {
             isAntiAlias = true
         }
 
-        fun updateGrid(left: Int, top: Int, right: Int, bottom: Int, candidates: List<com.example.helper.core.MatchCandidate>) {
+        fun updateGrid(left: Int, top: Int, right: Int, bottom: Int, candidates: List<MatchCandidate>) {
             this.bLeft = left
             this.bTop = top
             this.bRight = right
