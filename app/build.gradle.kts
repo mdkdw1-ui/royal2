@@ -36,13 +36,13 @@ android {
 }
 
 dependencies {
-    // 안드로이드 핵심 기본 라이브러리
+    // 안드로이드 기본 핵심 라이브러리
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 🟢 기존 라이브러리 에러를 해결하기 위한 고안정성 JitPack 기반 OpenCV 라이브러리
+    // 고안정성 OpenCV 라이브러리 (settings에서 401 우회 처리를 완료하여 정상 다운로드됩니다)
     implementation("com.github.jeziellago:opencv-android:4.6.0")
 
     testImplementation("junit:junit:4.13.2")
