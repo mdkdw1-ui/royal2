@@ -42,7 +42,7 @@ repositories {
     mavenCentral()
 }
 
-// 🟢 [수정 완료] project.exec를 명시하여 Kotlin DSL 문법 오류를 해결했습니다.
+// 🟢 [최종 수정] Gradle 9.x의 까다로운 DSL 스코프를 완전히 회피하기 위해 자바 순수 ProcessBuilder를 사용합니다.
 tasks.register("downloadOpenCV") {
     val outputFile = file("libs/opencv-android-4.6.0.aar")
     outputs.file(outputFile)
@@ -50,16 +50,20 @@ tasks.register("downloadOpenCV") {
     doLast {
         if (!outputFile.exists()) {
             outputFile.parentFile.mkdirs()
-            println("🚀 [최종 우회 작전] JVM 오염을 피해 시스템 curl 명령어로 다운로드를 시작합니다.")
+            println("🚀 [우회 작전] Gradle DSL 격리를 피해 Java ProcessBuilder로 curl을 호출합니다.")
             
-            // 앞부분에 명시적으로 project.을 붙여주어 문법 에러를 타파합니다.
-            project.exec {
-                commandLine(
-                    "curl", "-L", "-s", "--fail",
-                    "https://jitpack.io/com/github/jeziellago/opencv-android/4.6.0/opencv-android-4.6.0.aar",
-                    "-o", outputFile.absolutePath
-                )
+            // Gradle API를 쓰지 않으므로 컴파일 에러가 절대 나지 않습니다.
+            val process = ProcessBuilder(
+                "curl", "-L", "-s", "--fail",
+                "https://jitpack.io/com/github/jeziellago/opencv-android/4.6.0/opencv-android-4.6.0.aar",
+                "-o", outputFile.absolutePath
+            ).inheritIO().start() // 로그가 가상 머신 콘솔에 바로 찍히도록 연동
+            
+            val exitCode = process.waitFor()
+            if (exitCode != 0) {
+                throw GradleException("curl 다운로드 명령이 실패했습니다. (Exit Code: $exitCode)")
             }
+            
             println("✅ 다운로드 완료: ${outputFile.absolutePath}")
         }
     }
@@ -76,7 +80,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // 시스템 curl이 빌드 직전 안전하게 다운로드한 로컬 파일과 직접 결합
+    // 다운로드된 로컬 AAR 파일 다이렉트 결합
     implementation(files("libs/opencv-android-4.6.0.aar"))
 
     testImplementation("junit:junit:4.13.2")
