@@ -32,6 +32,7 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -145,27 +146,32 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
+            // 🛠️ [교정] 격자 레이어: Android 12+ 터치 차단 정책 우회를 위해 alpha를 0.79f로 설정
             gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
-            )
+            ).apply {
+                alpha = 0.79f 
+            }
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
+            // 🛠️ [교정] 화살표 레이어: 동일하게 안전 투명도 적용 (0.8 미만이어야 게임 터치가 뚫림)
             hintArrowView = HintArrowView(this)
             val hintParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
-            )
+            ).apply {
+                alpha = 0.79f 
+            }
             windowManager.addView(hintArrowView, hintParams)
 
-            // 🛠️ [교정] 패널 너비를 WRAP_CONTENT로 줄이고, 외곽 터치 패스스루 플래그 조합 적용
             panelParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -179,6 +185,11 @@ class SolverService : Service() {
             }
 
             panelView = inflater.inflate(R.layout.overlay_layout, null)
+            // XML 루트 크기가 퍼지는 버그 원천 차단
+            panelView?.layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
             windowManager.addView(panelView, panelParams)
             
             val pView = panelView ?: return
@@ -236,11 +247,15 @@ class SolverService : Service() {
             if (isEditMode) {
                 btnEditMode.text = "🛠️ 조절 중"
                 btnEditMode.setBackgroundColor(Color.parseColor("#4CAF50"))
+                // 조절 중일 때는 사용자의 조절 터치를 받아야 하므로 플래그 해제 및 선명도 최대화
                 gridParams.flags = gridParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                gridParams.alpha = 1.0f
             } else {
                 btnEditMode.text = "🛠️ 격자 고정"
                 btnEditMode.setBackgroundColor(Color.parseColor("#757575"))
+                // 고정 상태일 때는 완벽히 터치가 통과할 수 있도록 우회 수치(0.79f) 및 플래그 복구
                 gridParams.flags = gridParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                gridParams.alpha = 0.79f
                 snapRequested.set(true)
             }
             gridOverlayView?.let { windowManager.updateViewLayout(it, gridParams) }
@@ -395,7 +410,6 @@ class SolverService : Service() {
         }
     }
 
-    // 🛠️ [교정] 무거운 bitmap.getPixel 제거하고 메모리 고속 Array 탐색 구조로 변경
     private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
         val radius = 12 
         val cX = centerX.toInt()
@@ -408,7 +422,6 @@ class SolverService : Service() {
             for (x in (cX - radius)..(cX + radius)) {
                 if (x < 0 || x >= width || y < 0 || y >= height) continue
                 
-                // JNI 바운더리를 넘지 않고 순수 램 주소에서 픽셀 고속 추출
                 val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
                 
@@ -444,7 +457,6 @@ class SolverService : Service() {
         val width = bitmap.width
         val height = bitmap.height
         
-        // 🛠️ [교정] 단 한 번의 대량 복사로 힙 메모리 버퍼를 확보하여 CPU 점유율을 극적으로 낮춤
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
