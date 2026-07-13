@@ -73,7 +73,7 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
-            // 1. 격자 오버레이 뷰 설정 (처음엔 터치 불가능 상태)
+            // 1. 격자 오버레이 뷰 설정
             gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -120,28 +120,31 @@ class SolverService : Service() {
         val btnEditMode = view.findViewById<Button>(R.id.btnEditMode)
         val btnGridVisibility = view.findViewById<Button>(R.id.btnGridVisibility)
 
-        // 제어판 상단 바 드래그 시 패널 이동
-        var pInitialX = 0; var pInitialY = 0; var pTouchX = 0f; var pTouchY = 0f
         layoutHeader.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    pInitialX = panelParams.x
-                    pInitialY = panelParams.y
-                    pTouchX = event.rawX
-                    pTouchY = event.rawY
+                    val pInitialX = panelParams.x
+                    val pInitialY = panelParams.y
+                    val pTouchX = event.rawX
+                    val pTouchY = event.rawY
+                    layoutHeader.setTag(R.id.btnEditMode, Pair(pInitialX, pInitialY))
+                    layoutHeader.setTag(R.id.btnGridVisibility, Pair(pTouchX, pTouchY))
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    panelParams.x = pInitialX + (event.rawX - pTouchX).toInt()
-                    panelParams.y = pInitialY + (event.rawY - pTouchY).toInt()
-                    panelView?.let { windowManager.updateViewLayout(it, panelParams) }
+                    val initCoords = layoutHeader.getTag(R.id.btnEditMode) as? Pair<*, *>
+                    val touchCoords = layoutHeader.getTag(R.id.btnGridVisibility) as? Pair<*, *>
+                    if (initCoords != null && touchCoords != null) {
+                        panelParams.x = (initCoords.first as Int) + (event.rawX - (touchCoords.first as Float)).toInt()
+                        panelParams.y = (initCoords.second as Int) + (event.rawY - (touchCoords.second as Float)).toInt()
+                        panelView?.let { windowManager.updateViewLayout(it, panelParams) }
+                    }
                     true
                 }
                 else -> false
             }
         }
 
-        // 격자 선 숨기기 / 보이기 토글 버튼
         btnGridVisibility.setOnClickListener {
             gridOverlayView?.let { gov ->
                 gov.showGridLines = !gov.showGridLines
@@ -156,24 +159,20 @@ class SolverService : Service() {
             }
         }
 
-        // 격자 미세조정 드래그 모드 ON/OFF 토글
         btnEditMode.setOnClickListener {
             isEditMode = !isEditMode
             if (isEditMode) {
                 btnEditMode.text = "🛠️ 조절 중"
                 btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50"))
-                // 터치를 격자 뷰가 가로챌 수 있도록 FLAG 변경
                 gridParams.flags = gridParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             } else {
                 btnEditMode.text = "🛠️ 격자 고정"
                 btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#757575"))
-                // 다시 격자 터치 안먹히게 락 걸기
                 gridParams.flags = gridParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             }
             gridOverlayView?.let { windowManager.updateViewLayout(it, gridParams) }
         }
 
-        // 행렬 수치 조절창 접기 / 펼치기
         btnMinimize.setOnClickListener {
             if (layoutExpandedBody.visibility == View.VISIBLE) {
                 layoutExpandedBody.visibility = View.GONE
@@ -185,17 +184,14 @@ class SolverService : Service() {
             panelView?.let { windowManager.updateViewLayout(it, panelParams) }
         }
 
-        // 서비스 강제 종료 버튼
         btnKillService.setOnClickListener { stopSelf() }
 
-        // 행렬 단추 클릭 이벤트들
         view.findViewById<Button>(R.id.btnRowPlus).setOnClickListener { gridOverlayView?.let { it.rows++; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnRowMinus).setOnClickListener { gridOverlayView?.let { if(it.rows > 1) it.rows--; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnColPlus).setOnClickListener { gridOverlayView?.let { it.cols++; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnColMinus).setOnClickListener { gridOverlayView?.let { if(it.cols > 1) it.cols--; updateInfoText(); it.invalidate() } }
     }
 
-    // 시야 방해 없는 스마트 간접 변위 드래그 시스템
     private fun setupAdvancedIndirectTouchListener() {
         var lockedCorner = -1 
         var startStartX = 0f; var startStartY = 0f
@@ -253,19 +249,15 @@ class SolverService : Service() {
         gridOverlayView?.let { tvGridInfo.text = "크기: ${it.rows}행 x ${it.cols}열" }
     }
 
-    // GitHub용 에러 실시간 디스플레이 프레임워크
     private fun handleException(location: String, e: Exception) {
-        Log.e("SolverService_CRASH", "[$location] 에서 크래시 및 예외 감지됨!", e)
-        
+        Log.e("SolverService_CRASH", "[$location] 예외 감지", e)
         Handler(Looper.getMainLooper()).post {
-            val exceptionName = e.javaClass.simpleName
-            val exceptionMessage = e.message ?: "상세 원인 제공 안됨"
-            
+            val exceptionMessage = e.message ?: "상세 원인 없음"
             val debugAlertText = when (e) {
-                is SecurityException -> "❌ [권한 차단] Manifest에 mediaProjection 타입이 없거나 유저가 캡처를 거부했습니다.\n($exceptionMessage)"
-                is NullPointerException -> "❌ [객체 공백] 화면 공유 토큰(MediaProjection) 빌드에 실패해 Null을 반환했습니다."
-                is IllegalStateException -> "❌ [상태 불일치] 닫힌 이미지 리더에 접근했거나 잘못된 스레드에서 호출되었습니다."
-                else -> "❌ [$location 에러 발생]\n유형: $exceptionName\n내용: $exceptionMessage"
+                is SecurityException -> "❌ [권한 차단] 캡처 권한이 거부되었습니다."
+                is NullPointerException -> "❌ [객체 공백] 미디어 프로젝션 토큰이 비어있습니다."
+                is IllegalStateException -> "❌ [상태 불일치] 닫힌 이미지 리더 접근 또는 잘못된 스레드 호출입니다."
+                else -> "❌ [$location 에러]\n내용: $exceptionMessage"
             }
             Toast.makeText(applicationContext, debugAlertText, Toast.LENGTH_LONG).show()
         }
@@ -280,8 +272,7 @@ class SolverService : Service() {
             val density = metrics.densityDpi
 
             imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-            
-            val currentProjection = mediaProjection ?: throw NullPointerException("MediaProjection 토큰이 발급되지 않았습니다.")
+            val currentProjection = mediaProjection ?: throw NullPointerException("MediaProjection 토큰 공백")
             
             virtualDisplay = currentProjection.createVirtualDisplay(
                 "ScreenCaptureEngine", width, height, density,
@@ -289,9 +280,14 @@ class SolverService : Service() {
             )
 
             imageReader?.setOnImageAvailableListener({ reader ->
-                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                // ✨ [방어조치 1]: 닫히는 도중 비동기로 프레임이 올 때 발생하는 튕김 원천 봉쇄
+                val image = try {
+                    reader.acquireLatestImage()
+                } catch (e: IllegalStateException) {
+                    return@setOnImageAvailableListener // 이미 리더가 닫혔으므로 바로 안전 종료
+                } ?: return@setOnImageAvailableListener
+
                 try {
-                    // [튕김 원천 봉쇄]: 조절 모드 도중에는 연산 로직을 스킵하여 인덱스 참조 크래시 방지
                     if (isEditMode || gridOverlayView == null) {
                         image.close()
                         return@setOnImageAvailableListener
@@ -305,16 +301,18 @@ class SolverService : Service() {
                     val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
                     bitmap.copyPixelsFromBuffer(buffer)
 
-                    // ----------------------------------------------------
-                    // 💡 [Match3Solver 분석 연산 구역]
-                    // 여기에 비트맵 가공 및 보드 분석 알고리즘 코드를 연동하시면 됩니다.
-                    // ----------------------------------------------------
+                    // [Match3Solver 분석 연산 구역]
 
                     bitmap.recycle()
                 } catch (e: Exception) {
-                    handleException("ImageProcessingLoop", e)
+                    // 서비스 종료 시 발생하는 부차적 예외는 토스트 팝업 생략하고 로그 처리
+                    if (e is IllegalStateException) {
+                        Log.d("SolverService", "루프 내 안전 이미지 파기 가로챔")
+                    } else {
+                        handleException("ImageProcessingLoop", e)
+                    }
                 } finally {
-                    image.close()
+                    try { image.close() } catch (e: Exception) {}
                 }
             }, backgroundHandler)
 
@@ -334,7 +332,6 @@ class SolverService : Service() {
             return START_NOT_STICKY
         }
         
-        // 상단 알림 바 포어그라운드 시동 필수 구역
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel("HelperEngine", "Grid Engine", NotificationManager.IMPORTANCE_LOW)
@@ -348,12 +345,10 @@ class SolverService : Service() {
             
         startForeground(8888, notification)
 
-        // 미디어 프로젝션 바인딩 딜레이 안전장치
         Handler(Looper.getMainLooper()).postDelayed({
             try {
                 mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
-                
                 startCaptureAndAnalysisLoop()
             } catch (e: Exception) {
                 handleException("MediaProjectionInit", e)
@@ -366,10 +361,16 @@ class SolverService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
-            backgroundThread?.quitSafely()
+            // ✨ [방어조치 2]: 해제 순서 엄격 최적화 (리스너 제거 -> 디스플레이 종료 -> 엔진 파기)
+            imageReader?.setOnImageAvailableListener(null, null) 
             virtualDisplay?.release()
+            virtualDisplay = null
             imageReader?.close()
+            imageReader = null
             mediaProjection?.stop()
+            mediaProjection = null
+            
+            backgroundThread?.quitSafely()
             panelView?.let { windowManager.removeView(it) }
             gridOverlayView?.let { windowManager.removeView(it) }
         } catch (e: Exception) {
