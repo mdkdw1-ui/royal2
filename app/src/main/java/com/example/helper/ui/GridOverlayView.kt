@@ -7,31 +7,31 @@ import android.graphics.Paint
 import android.util.AttributeSet
 import android.view.View
 
-/**
- * 🎯 [핵심 수정] @JvmOverloads constructor(..., attrs: AttributeSet?, ...)가 
- * 반드시 있어야 XML 파일(overlay_layout.xml)에서 이 뷰를 크래시 없이 로드할 수 있습니다.
- */
 class GridOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    var showGridLines: Boolean = true
-        set(value) {
-            field = value
-            invalidate() // 변수 변경 시 화면을 다시 그리도록 갱신
-        }
+    // 실시간 동적 변경 변수들
+    var rows: Int = 9
+    var cols: Int = 11
+    var offsetX: Float = 50f
+    var offsetY: Float = 500f
+    var gridSize: Float = 900f // 격자 전체 가로/세로 네모 박스 크기
 
+    var showGridLines: Boolean = true
     var showMatchHints: Boolean = true
-        set(value) {
-            field = value
-            invalidate()
-        }
 
     private val gridPaint = Paint().apply {
-        color = Color.RED
-        strokeWidth = 4f
+        color = Color.CYAN
+        strokeWidth = 3f
+        style = Paint.Style.STROKE
+    }
+
+    private val borderPaint = Paint().apply {
+        color = Color.YELLOW
+        strokeWidth = 6f
         style = Paint.Style.STROKE
     }
 
@@ -43,23 +43,36 @@ class GridOverlayView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        
-        val w = width.toFloat()
-        val h = height.toFloat()
 
-        // 1. 격자선 그리기 테스트
-        if (showGridLines && w > 0 && h > 0) {
-            // 세로선 2개 (3분할)
-            canvas.drawLine(w / 3f, 0f, w / 3f, h, gridPaint)
-            canvas.drawLine(w * 2f / 3f, 0f, w * 2f / 3f, h, gridPaint)
-            // 가로선 2개 (3분할)
-            canvas.drawLine(0f, h / 3f, w, h / 3f, gridPaint)
-            canvas.drawLine(0f, h * 2f / 3f, w, h * 2f / 3f, gridPaint)
+        val cellWidth = gridSize / cols
+        val cellHeight = gridSize / rows
+
+        // 1. 외곽 경계선 그리기 (위치 잡기용)
+        if (showGridLines) {
+            canvas.drawRect(offsetX, offsetY, offsetX + gridSize, offsetY + gridSize, borderPaint)
+
+            // 내부 가로선/세로선 동적 드로잉
+            for (i in 1 until cols) {
+                val x = offsetX + (i * cellWidth)
+                canvas.drawLine(x, offsetY, x, offsetY + gridSize, gridPaint)
+            }
+            for (i in 1 until rows) {
+                val y = offsetY + (i * cellHeight)
+                canvas.drawLine(offsetX, y, offsetX + gridSize, y, gridPaint)
+            }
         }
 
-        // 2. 매칭 힌트 사각형 그리기 테스트 (중앙에 임시 박스)
-        if (showMatchHints && w > 0 && h > 0) {
-            canvas.drawRect(w / 4f, h / 4f, w * 3f / 4f, h * 3f / 4f, hintPaint)
+        // 2. 힌트 및 OOXOO 매칭 결과 드로잉 구역
+        if (showMatchHints) {
+            // [테스트 예시] 로직이 가동되어 OOXOO 패턴을 감지했을 때 특정 칸에 힌트를 띄우는 예시 박스
+            // 3행 4열 위치에 매칭 힌트 사각형 시각화
+            val sampleRow = 2 
+            val sampleCol = 3
+            val hLeft = offsetX + (sampleCol * cellWidth) + 5
+            val hTop = offsetY + (sampleRow * cellHeight) + 5
+            val hRight = hLeft + cellWidth - 10
+            val hBottom = hTop + cellHeight - 10
+            canvas.drawRect(hLeft, hTop, hRight, hBottom, hintPaint)
         }
     }
 }
