@@ -46,7 +46,7 @@ class SolverService : Service() {
 
     enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 
-    // 🎨 화면에 직접 화살표 가이드를 그리기 위한 커스텀 뷰 클래스 생성
+    // 🎨 화면에 직접 화살표 가이드를 그리기 위한 커스텀 뷰 클래스
     private class HintArrowView(context: Context) : View(context) {
         var startX = 0f; var startY = 0f; var endX = 0f; var endY = 0f
         var shouldDraw = false
@@ -108,7 +108,7 @@ class SolverService : Service() {
     private lateinit var windowManager: WindowManager
     private var panelView: View? = null
     private var gridOverlayView: GridOverlayView? = null
-    private var hintArrowView: HintArrowView? = null // 시각적 가이드 오버레이 뷰 변수
+    private var hintArrowView: HintArrowView? = null 
     private lateinit var tvGridInfo: TextView
     
     private lateinit var panelParams: WindowManager.LayoutParams
@@ -123,6 +123,7 @@ class SolverService : Service() {
     private var backgroundHandler: Handler? = null
 
     private var isEditMode = false 
+    private var lastAnalysisTime = 0L // 분석 주기 조절용 타이머 생성
     
     @Volatile
     private var latestBitmap: Bitmap? = null
@@ -158,7 +159,7 @@ class SolverService : Service() {
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
-            // 🎯 화살표 그리기 전용 투명 레이어 배치
+            // 화살표 그리기 전용 투명 레이어 배치
             hintArrowView = HintArrowView(this)
             val hintParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -326,37 +327,81 @@ class SolverService : Service() {
         gridOverlayView?.let { tvGridInfo.text = "크기: ${it.rows}행 x ${it.cols}열" }
     }
 
-    private fun getMagneticSnappedPoint(bitmap: Bitmap, startX: Float, startY: Float, radius: Int = 40): PointF {
-        val bWidth = bitmap.width
-        val bHeight = bitmap.height
-        val centerX = startX.toInt()
-        val centerY = startY.toInt()
+    /**
+     * 🔍 [누락 복구] 실시간 화면 프레임을 수신하여 분석 파이프라인을 구축하는 심장 핵심 메서드
+     */
+    private fun startCaptureAndAnalysisLoop() {
+        val gov = gridOverlayView ?: return
+        val metrics = DisplayMetrics()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display?.getRealMetrics(metrics)
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+        }
+        
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
+        val density = metrics.densityDpi
 
-        var bestX = startX
-        var bestY = startY
-        var maxGradient = -1f
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        
+        try {
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCapture",
+                width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader?.surface,
+                null, backgroundHandler
+            )
+        } catch (e: Exception) {
+            handleException("CreateVirtualDisplay", e)
+            return
+        }
 
-        for (y in (centerY - radius)..(centerY + radius)) {
-            for (x in (centerX - radius)..(centerX + radius)) {
-                if (x <= 1 || x >= bWidth - 2 || y <= 1 || y >= bHeight - 2) continue
-
-                val getLuminance = { px: Int, py: Int ->
-                    val c = bitmap.getPixel(px, py)
-                    (0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c))
-                }
-
-                val dx = getLuminance(x + 1, y) - getLuminance(x - 1, y)
-                val dy = getLuminance(x, y + 1) - getLuminance(x, y - 1)
-                val gradientMagnitude = Math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
-
-                if (gradientMagnitude > maxGradient) {
-                    maxGradient = gradientMagnitude
-                    bestX = x.toFloat()
-                    bestY = y.toFloat()
+        imageReader?.setOnImageAvailableListener({ reader ->
+            val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
+            if (image != null) {
+                val currentTime = System.currentTimeMillis()
+                // CPU 과부하 방지를 위해 500ms 간격 스로틀링 걸거나 격자 세팅 완료 시 즉시 분석
+                if (currentTime - lastAnalysisTime > 500 || snapRequested.getAndSet(false)) {
+                    lastAnalysisTime = currentTime
+                    processImageFrame(image, gov)
+                } else {
+                    image.close()
                 }
             }
+        }, backgroundHandler)
+    }
+
+    private fun processImageFrame(image: android.media.Image, gov: GridOverlayView) {
+        try {
+            val planes = image.planes
+            val buffer = planes[0].buffer
+            val pixelStride = planes[0].pixelStride
+            val rowStride = planes[0].rowStride
+            val rowPadding = rowStride - pixelStride * image.width
+
+            var bitmap = Bitmap.createBitmap(
+                image.width + rowPadding / pixelStride,
+                image.height,
+                Bitmap.Config.ARGB_8888
+            )
+            bitmap.copyPixelsFromBuffer(buffer)
+            image.close()
+
+            // 가로 버퍼 패딩 제거 처리
+            if (bitmap.width != image.width) {
+                val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+                bitmap.recycle()
+                bitmap = cropped
+            }
+
+            runMatchEngine(bitmap, gov)
+            bitmap.recycle()
+        } catch (e: Exception) {
+            Log.e("SolverService", "화면 프레임 디코딩 중 에러", e)
         }
-        return PointF(bestX, bestY)
     }
 
     private fun detectCellColorROI(bitmap: Bitmap, centerX: Float, centerY: Float): BlockColor {
@@ -419,7 +464,6 @@ class SolverService : Service() {
         var bestMatchScore = 0
         var bestMoveText = "분석 중..."
         
-        // 화살표 좌표 저장용 변수
         var arrowStartX = 0f; var arrowStartY = 0f; var arrowEndX = 0f; var arrowEndY = 0f
         var hasBestMove = false
 
@@ -443,7 +487,7 @@ class SolverService : Service() {
                         hasBestMove = true
                         
                         val tag = when {
-                            totalScore >= 100 -> "🔮 [최고 존엄 디스코볼 생성!!] "
+                            totalScore >= 100 -> "🔮 [디스코볼 생성 최고존엄!!] "
                             totalScore >= 70 -> "🔥 [대폭발 특수 크로스 콤보!!] "
                             totalScore >= 40 -> "⭐ [폭탄/로켓 생성 매칭] "
                             else -> ""
@@ -474,7 +518,7 @@ class SolverService : Service() {
                         hasBestMove = true
                         
                         val tag = when {
-                            totalScore >= 100 -> "🔮 [최고 존엄 디스코볼 생성!!] "
+                            totalScore >= 100 -> "🔮 [디스코볼 생성 최고존엄!!] "
                             totalScore >= 70 -> "🔥 [대폭발 특수 크로스 콤보!!] "
                             totalScore >= 40 -> "⭐ [폭탄/로켓 생성 매칭] "
                             else -> ""
@@ -495,7 +539,6 @@ class SolverService : Service() {
         Handler(Looper.getMainLooper()).post {
             tvGridInfo.text = bestMoveText
             if (hasBestMove) {
-                // 🎯 실시간으로 계산된 픽셀 좌표를 전달하여 화면에 화살표 그리기
                 hintArrowView?.updateArrow(arrowStartX, arrowStartY, arrowEndX, arrowEndY)
             } else {
                 hintArrowView?.clearArrow()
@@ -503,9 +546,6 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 🧠 [교정 포인트 2] 특수 매칭 아이템 생성 우선순위에 맞추어 정교화된 가치 부여 알고리즘
-     */
     private fun calculateComboScore(board: Array<Array<BlockColor>>, r: Int, c: Int, rows: Int, cols: Int): Int {
         val hScore = checkHorizontalMatchScore(board, r, c, cols)
         val vScore = checkVerticalMatchScore(board, r, c, rows)
@@ -514,16 +554,9 @@ class SolverService : Service() {
         val vValid = if (vScore >= 3) vScore else 0
 
         return when {
-            // 1순위: 직선 5연속 이상 매칭 (최고 등급 디스코볼 생성!) -> 100점 부여
             hValid >= 5 || vValid >= 5 -> 100
-            
-            // 2순위: 가로/세로 복합 크로스 매칭 (T자, L자 폭탄 생성!) -> 70점 부여
             hValid >= 3 && vValid >= 3 -> 70
-            
-            // 3순위: 직선 4연속 매칭 (가로/세로 로켓 아이템 생성!) -> 40점 부여
             hValid == 4 || vValid == 4 -> 40
-            
-            // 4순위: 일반적인 3개 매칭
             else -> Math.max(hValid, vValid)
         }
     }
@@ -600,7 +633,7 @@ class SolverService : Service() {
             backgroundThread?.quitSafely()
             panelView?.let { windowManager.removeView(it) }
             gridOverlayView?.let { windowManager.removeView(it) }
-            hintArrowView?.let { windowManager.removeView(it) } // 신설 레이어 해제
+            hintArrowView?.let { windowManager.removeView(it) } 
             
             synchronized(bitmapLock) {
                 latestBitmap?.recycle()
