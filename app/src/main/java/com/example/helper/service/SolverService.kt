@@ -14,6 +14,7 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -50,9 +51,6 @@ class SolverService : Service() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
-    /**
-     * 🎯 [핵심 추가] 안드로이드 스튜디오 없이 핸드폰 화면에 바로 에러를 띄우기 위한 헬퍼 함수
-     */
     private fun showOverlayToast(message: String) {
         Handler(Looper.getMainLooper()).post {
             Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
@@ -102,7 +100,7 @@ class SolverService : Service() {
                 btnToggleHints.text = if (gridOverlayView.showMatchHints) "힌트 숨기기" else "힌트 보이기"
             }
             
-            showOverlayToast("✅ 1단계: 제어판 UI 활성화")
+            showOverlayToast("✅ 1단계: 제어판 UI 활성화 완료")
 
         } catch (e: Exception) {
             showOverlayToast("❌ UI 초기화 에러: ${e.message}")
@@ -110,32 +108,53 @@ class SolverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra("RESULT_CODE", -1) ?: -1
-        val resultData = intent?.getParcelableExtra<Intent>("RESULT_DATA")
+        // 🎯 진입 여부를 무조건 화면에 표시합니다.
+        showOverlayToast("📥 서비스 신호 수신됨 (onStartCommand)")
 
-        if (resultCode == -1 || resultData == null) {
-            // 단순 서비스 재시작일 때는 무시
+        if (intent == null) {
+            showOverlayToast("❌ 에러: 전달된 Intent 데이터가 완전히 비어있음 (Null)")
             return START_NOT_STICKY
         }
 
+        val resultCode = intent.getIntExtra("RESULT_CODE", -1)
+        
+        // 🎯 [핵심 수정] 안드로이드 13(API 33) 이상 버전에 대응하는 안전한 방식으로 데이터 추출
+        val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra("RESULT_DATA", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<Intent>("RESULT_DATA")
+        }
+
+        // 데이터가 누락되었는지 유저가 화면에서 즉시 인지할 수 있도록 토스트 유도
+        showOverlayToast("📦 데이터 검증 -> Code: $resultCode, Data Null 여부: ${resultData == null}")
+
+        if (resultCode == -1 || resultData == null) {
+            showOverlayToast("❌ 에러: 권한 토큰 데이터 추출 실패로 가동 중단")
+            return START_NOT_STICKY
+        }
+
+        // 1. 포그라운드 알림창 선제 가동 (안드로이드 시스템 요구사항)
         startForegroundServiceWithNotification()
 
-        try {
-            mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
-            
-            if (mediaProjection == null) {
-                showOverlayToast("❌ 2단계 실패: MediaProjection 토큰 무효화")
-                stopSelf()
-                return START_NOT_STICKY
+        // 2. 캡처 엔진 가동
+        // 🎯 [핵심 수정] 포그라운드 서비스가 커널에 완전히 등록될 시간을 벌어주기 위해 0.2초의 유예를 둡니다. (안드로이드 14 필수 대응)
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
+                
+                if (mediaProjection == null) {
+                    showOverlayToast("❌ 2단계 실패: 시스템이 MediaProjection 토큰 발급을 거부함")
+                    stopSelf()
+                } else {
+                    showOverlayToast("✅ 2단계: 캡처 엔진 연동 성공!")
+                    startCaptureAndAnalysisLoop()
+                }
+            } catch (e: Exception) {
+                showOverlayToast("❌ 엔진 가동 중 커널 크래시: ${e.message}")
             }
-
-            showOverlayToast("✅ 2단계: 캡처 엔진 토큰 확보")
-            startCaptureAndAnalysisLoop()
-            
-        } catch (e: Exception) {
-            showOverlayToast("❌ 엔진 시동 크래시: ${e.message}")
-        }
+        }, 200)
 
         return START_STICKY
     }
@@ -176,16 +195,12 @@ class SolverService : Service() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader?.surface, null, null
             )
-            
-            // 이 토스트가 뜨면 시스템 레벨에서 화면 캡처 통로가 완전히 뚫린 것입니다.
-            showOverlayToast("🚀 3단계 최종 성공: 실시간 캡처 가동 시작!")
-            
+            showOverlayToast("🚀 3단계 최종 가동: 실시간 화면 공유 시작됨!")
         } catch (e: Exception) {
             showOverlayToast("❌ 3단계 가상 디스플레이 생성 실패: ${e.message}")
             return
         }
 
-        // 첫 프레임 수신 여부 확인용 플래그
         var isFirstFrameCaptured = false
 
         imageReader?.setOnImageAvailableListener({ reader ->
@@ -193,8 +208,7 @@ class SolverService : Service() {
             if (image != null) {
                 try {
                     if (!isFirstFrameCaptured) {
-                        // 최초 1회만 화면 데이터 유입 성공 토스트를 띄웁니다.
-                        showOverlayToast("📸 [실시간 프레임 스트리밍 중]")
+                        showOverlayToast("📸 [실시간 프레임 동기화 완료]")
                         isFirstFrameCaptured = true
                     }
 
@@ -207,11 +221,11 @@ class SolverService : Service() {
                     val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
                     bitmap.copyPixelsFromBuffer(buffer)
 
-                    // TODO: 이 아래에 OpenCV 분석 및 힌트 연동 코드 배치
+                    // 여기에 이미지 분석 알고리즘 추가
 
                     bitmap.recycle()
                 } catch (e: Exception) {
-                    Log.e(TAG, "픽셀 에러", e)
+                    Log.e(TAG, "픽셀 변환 실패", e)
                 } finally {
                     image.close()
                 }
@@ -227,7 +241,7 @@ class SolverService : Service() {
             imageReader?.close()
             mediaProjection?.stop()
             floatingView?.let { windowManager.removeView(it) }
-            showOverlayToast("🛑 서비스 종료 및 자원 해제 완료")
+            showOverlayToast("🛑 서비스 완전 종료")
         } catch (e: Exception) {
             Log.e(TAG, "종료 에러", e)
         }
