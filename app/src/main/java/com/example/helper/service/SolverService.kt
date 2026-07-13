@@ -23,6 +23,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
@@ -42,8 +43,8 @@ class SolverService : Service() {
     }
 
     private lateinit var windowManager: WindowManager
-    private var floatingView: View? = null
-    private lateinit var gridOverlayView: GridOverlayView
+    private var panelView: View? = null
+    private var gridOverlayView: GridOverlayView? = null
     private lateinit var tvGridInfo: TextView
 
     private var mediaProjectionManager: MediaProjectionManager? = null
@@ -54,7 +55,7 @@ class SolverService : Service() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
-    private var isLogicEnabled = true // 로직 온오프 스위치 상태 변수
+    private var isLogicEnabled = true
 
     private fun showOverlayToast(message: String) {
         Handler(Looper.getMainLooper()).post {
@@ -75,31 +76,43 @@ class SolverService : Service() {
         backgroundThread = HandlerThread("ScreenCaptureThread").apply { start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
 
-        // 제어판 인플레이트 및 윈도우 등록
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            floatingView = LayoutInflater.from(this).inflate(R.layout.overlay_layout, null)
-            val view = floatingView ?: return
+            val inflater = LayoutInflater.from(this)
 
-            val layoutParams = WindowManager.LayoutParams(
+            // 🎯 [핵심 설계 변경 1] 화면 전체를 덮는 완벽한 터치 관통형(FLAG_NOT_TOUCHABLE) 격자 레이어 생성
+            val gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
                 PixelFormat.TRANSLUCENT
             )
+            gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
+            windowManager.addView(gridOverlayView, gridParams)
 
-            windowManager.addView(view, layoutParams)
+            // 🎯 [핵심 설계 변경 2] 상단에만 작게 붙어 터치가 작동하는 제어판 레이어 생성 (WRAP_CONTENT)
+            val panelParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            panelParams.gravity = Gravity.TOP
+            panelParams.y = 100 // 상단 바 알림 영역을 가리지 않도록 약간 아래 배치
+
+            panelView = inflater.inflate(R.layout.control_panel_layout, null)
+            windowManager.addView(panelView, panelParams)
             
-            gridOverlayView = view.findViewById(R.id.gridOverlayView)
-            tvGridInfo = view.findViewById(R.id.tvGridInfo)
+            val pView = panelView ?: return
+            tvGridInfo = pView.findViewById(R.id.tvGridInfo)
 
-            // 🎯 조작부 리스너 연결 바인딩
-            initControlPanelListeners(view)
+            initControlPanelListeners(pView)
             updateInfoText()
 
         } catch (e: Exception) {
-            Log.e(TAG, "UI 렌더링 도중 크래시 발생", e)
+            Log.e(TAG, "이중 오버레이 윈도우 생성 실패", e)
         }
     }
 
@@ -108,52 +121,54 @@ class SolverService : Service() {
         val btnToggleGrid = view.findViewById<Button>(R.id.btnToggleGrid)
         val btnKillService = view.findViewById<Button>(R.id.btnKillService)
 
-        // 로직 ON/OFF 토글
         btnToggleLogic.setOnClickListener {
             isLogicEnabled = !isLogicEnabled
-            if (isLogicEnabled) {
-                btnToggleLogic.text = "로직: ON"
-                btnToggleLogic.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50"))
-                gridOverlayView.showMatchHints = true
-            } else {
-                btnToggleLogic.text = "로직: OFF"
-                btnToggleLogic.setBackgroundColor(android.graphics.Color.parseColor("#757575"))
-                gridOverlayView.showMatchHints = false
+            gridOverlayView?.let { gov ->
+                if (isLogicEnabled) {
+                    btnToggleLogic.text = "로직: ON"
+                    btnToggleLogic.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50"))
+                    gov.showMatchHints = true
+                } else {
+                    btnToggleLogic.text = "로직: OFF"
+                    btnToggleLogic.setBackgroundColor(android.graphics.Color.parseColor("#757575"))
+                    gov.showMatchHints = false
+                }
+                gov.invalidate()
             }
-            gridOverlayView.invalidate()
         }
 
-        // 격자선 숨기기/보이기 토글
         btnToggleGrid.setOnClickListener {
-            gridOverlayView.showGridLines = !gridOverlayView.showGridLines
-            btnToggleGrid.text = if (gridOverlayView.showGridLines) "격자 숨기기" else "격자 보이기"
-            gridOverlayView.invalidate()
+            gridOverlayView?.let { gov ->
+                gov.showGridLines = !gov.showGridLines
+                btnToggleGrid.text = if (gov.showGridLines) "격자 숨기기" else "격자 보이기"
+                gov.invalidate()
+            }
         }
 
-        // 킬 스위치 (즉시 완전 종료)
         btnKillService.setOnClickListener {
             showOverlayToast("🛑 서비스를 강제 종료합니다.")
             stopSelf()
         }
 
-        // 위치 및 크기 세부 조정 조이스틱 리스너 (클릭당 15픽셀씩 이동 및 세팅)
-        view.findViewById<Button>(R.id.btnMoveUp).setOnClickListener { gridOverlayView.offsetY -= 15; gridOverlayView.invalidate() }
-        view.findViewById<Button>(R.id.btnMoveDown).setOnClickListener { gridOverlayView.offsetY += 15; gridOverlayView.invalidate() }
-        view.findViewById<Button>(R.id.btnMoveLeft).setOnClickListener { gridOverlayView.offsetX -= 15; gridOverlayView.invalidate() }
-        view.findViewById<Button>(R.id.btnMoveRight).setOnClickListener { gridOverlayView.offsetX += 15; gridOverlayView.invalidate() }
+        // 위치 및 크기 조절 시 터치 패널 관통 레이어 리프레시 연동
+        view.findViewById<Button>(R.id.btnMoveUp).setOnClickListener { gridOverlayView?.let { it.offsetY -= 15; it.invalidate() } }
+        view.findViewById<Button>(R.id.btnMoveDown).setOnClickListener { gridOverlayView?.let { it.offsetY += 15; it.invalidate() } }
+        view.findViewById<Button>(R.id.btnMoveLeft).setOnClickListener { gridOverlayView?.let { it.offsetX -= 15; it.invalidate() } }
+        view.findViewById<Button>(R.id.btnMoveRight).setOnClickListener { gridOverlayView?.let { it.offsetX += 15; it.invalidate() } }
         
-        view.findViewById<Button>(R.id.btnSizePlus).setOnClickListener { gridOverlayView.gridSize += 20; gridOverlayView.invalidate() }
-        view.findViewById<Button>(R.id.btnSizeMinus).setOnClickListener { gridOverlayView.gridSize -= 20; gridOverlayView.invalidate() }
+        view.findViewById<Button>(R.id.btnSizePlus).setOnClickListener { gridOverlayView?.let { it.gridSize += 20; it.invalidate() } }
+        view.findViewById<Button>(R.id.btnSizeMinus).setOnClickListener { gridOverlayView?.let { it.gridSize -= 20; it.invalidate() } }
 
-        // 칸수(행/열) 증감 리스너
-        view.findViewById<Button>(R.id.btnRowPlus).setOnClickListener { gridOverlayView.rows++; updateInfoText(); gridOverlayView.invalidate() }
-        view.findViewById<Button>(R.id.btnRowMinus).setOnClickListener { if(gridOverlayView.rows > 1) gridOverlayView.rows--; updateInfoText(); gridOverlayView.invalidate() }
-        view.findViewById<Button>(R.id.btnColPlus).setOnClickListener { gridOverlayView.cols++; updateInfoText(); gridOverlayView.invalidate() }
-        view.findViewById<Button>(R.id.btnColMinus).setOnClickListener { if(gridOverlayView.cols > 1) gridOverlayView.cols--; updateInfoText(); gridOverlayView.invalidate() }
+        view.findViewById<Button>(R.id.btnRowPlus).setOnClickListener { gridOverlayView?.let { it.rows++; updateInfoText(); it.invalidate() } }
+        view.findViewById<Button>(R.id.btnRowMinus).setOnClickListener { gridOverlayView?.let { if(it.rows > 1) it.rows--; updateInfoText(); it.invalidate() } }
+        view.findViewById<Button>(R.id.btnColPlus).setOnClickListener { gridOverlayView?.let { it.cols++; updateInfoText(); it.invalidate() } }
+        view.findViewById<Button>(R.id.btnColMinus).setOnClickListener { gridOverlayView?.let { if(it.cols > 1) it.cols--; updateInfoText(); it.invalidate() } }
     }
 
     private fun updateInfoText() {
-        tvGridInfo.text = "칸수 설정: ${gridOverlayView.rows}행 x ${gridOverlayView.cols}열"
+        gridOverlayView?.let {
+            tvGridInfo.text = "칸수 설정: ${it.rows}행 x ${it.cols}열"
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -167,7 +182,6 @@ class SolverService : Service() {
             intent.getParcelableExtra<Intent>("RESULT_DATA")
         }
 
-        // 🎯 [핵심 버그 수정] -1은 Activity.RESULT_OK 상태이므로, RESULT_OK가 아닐 때 차단하도록 조건을 고쳤습니다!
         if (resultCode != Activity.RESULT_OK || resultData == null) {
             showOverlayToast("❌ 권한 토큰 획득 실패")
             return START_NOT_STICKY
@@ -231,7 +245,6 @@ class SolverService : Service() {
         imageReader?.setOnImageAvailableListener({ reader ->
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                // 🎯 사용자가 '로직 ON' 일때만 OOXOO 알고리즘 가동
                 if (isLogicEnabled) {
                     val planes = image.planes
                     val buffer = planes[0].buffer
@@ -242,9 +255,8 @@ class SolverService : Service() {
                     val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
                     bitmap.copyPixelsFromBuffer(buffer)
 
-                    // 🛠️ [실시간 격자 동기화 연산 구역]
-                    // 여기서 gridOverlayView.offsetX, offsetY, gridSize, rows, cols 값을 기반으로 
-                    // 비트맵 상의 매칭 블럭 색상 검출 및 OOXOO 알고리즘 연산을 수행하게 됩니다.
+                    // [실시간 격자 동기화 연산 구역]
+                    // gridOverlayView가 독립 실행되므로 메인 데이터 동기화 코드가 이 위치로 들어가게 됩니다.
 
                     bitmap.recycle()
                 }
@@ -262,6 +274,9 @@ class SolverService : Service() {
         virtualDisplay?.release()
         imageReader?.close()
         mediaProjection?.stop()
-        floatingView?.let { windowManager.removeView(it) }
+        
+        // 두 개의 분리된 뷰를 윈도우 매니저에서 완전히 해제
+        panelView?.let { windowManager.removeView(it) }
+        gridOverlayView?.let { windowManager.removeView(it) }
     }
 }
