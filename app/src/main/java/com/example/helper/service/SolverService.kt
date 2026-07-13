@@ -1,4 +1,4 @@
-package com.example.gridhelper // 👈 본인의 프로젝트 패키지명에 맞게 변경하세요.
+package com.example.helper // 👈 패키지 경로를 프로젝트에 맞게 com.example.helper로 고정했습니다.
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -108,7 +108,7 @@ class SolverService : Service() {
     }
 
     /**
-     * 🛠️ [색상 교정 버전] 투명도 0.4의 스펙트럼 왜곡과 연두색 공백 영역을 완벽 복구한 픽셀 판정 함수
+     * 🛠️ 투명도 0.4의 스펙트럼 왜곡과 연두색 공백 영역을 완벽 복구한 픽셀 판정 함수
      */
     private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
         val radius = 12 
@@ -132,7 +132,7 @@ class SolverService : Service() {
                 // 오버레이 불투명도에 따른 배경 노이즈 제거를 위한 필터
                 if (sat < 0.15f || value < 0.15f) continue
 
-                // 🛠️ 0도부터 360도까지 끊김 없이 완전 정렬 + 황록/연두색 스캔 성공
+                // 🛠️ 0도부터 360도까지 끊김 없이 완전 정렬 + 황록/연두색 영역 녹색으로 완전 흡수
                 when {
                     (hue in 0f..20f) || (hue in 340f..360f) -> redCount++    // 빨간 책
                     hue in 21f..70f -> yellowCount++                         // 노란 왕관
@@ -182,7 +182,7 @@ class SolverService : Service() {
                         board[r][c] = board[nr][nc]
                         board[nr][nc] = temp
 
-                        // 🛠️ 스왑된 양측 타일 모두 검사하도록 로직 고도화 (정확도 상향)
+                        // 스왑된 양측 타일 모두 검사하도록 로직 고도화 (정확도 상향)
                         val matchLen1 = checkMaxMatchLength(board, r, c)
                         val matchLen2 = checkMaxMatchLength(board, nr, nc)
                         val maxLen = maxOf(matchLen1, matchLen2)
