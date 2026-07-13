@@ -8,7 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.PixelFormat
+import android.graphics.Color
+importimport android.graphics.PixelFormat
+import android.graphics.PointF
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -35,8 +37,12 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.example.helper.R
 import com.example.helper.ui.GridOverlayView
+import java.util.concurrent.atomic.AtomicBoolean
 
 class SolverService : Service() {
+
+    // 블록 색상 정의 정의
+    enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 
     private lateinit var windowManager: WindowManager
     private var panelView: View? = null
@@ -55,13 +61,21 @@ class SolverService : Service() {
     private var backgroundHandler: Handler? = null
 
     private var isEditMode = false 
+    
+    // 비동기 스레드 간 안전하게 최신 화면을 공유하기 위한 객체
+    @Volatile
+    private var latestBitmap: Bitmap? = null
+    private val bitmapLock = Any()
+    
+    // 마그네틱 자석 정렬 요청 플래그
+    private val snapRequested = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         if (!Settings.canDrawOverlays(this)) { 
-            Toast.makeText(this, "❌ 다른 앱 위에 그리기 권한이 없습니다.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "❌ 권한이 없습니다.", Toast.LENGTH_SHORT).show()
             stopSelf()
             return 
         }
@@ -73,7 +87,6 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
-            // 1. 격자 오버레이 뷰 설정
             gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -84,7 +97,6 @@ class SolverService : Service() {
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
-            // 2. 조작 제어판 뷰 설정
             panelParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -120,15 +132,12 @@ class SolverService : Service() {
         val btnEditMode = view.findViewById<Button>(R.id.btnEditMode)
         val btnGridVisibility = view.findViewById<Button>(R.id.btnGridVisibility)
 
+        // 제어판 드래그 이동 로직
         layoutHeader.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    val pInitialX = panelParams.x
-                    val pInitialY = panelParams.y
-                    val pTouchX = event.rawX
-                    val pTouchY = event.rawY
-                    layoutHeader.setTag(R.id.btnEditMode, Pair(pInitialX, pInitialY))
-                    layoutHeader.setTag(R.id.btnGridVisibility, Pair(pTouchX, pTouchY))
+                    layoutHeader.setTag(R.id.btnEditMode, Pair(panelParams.x, panelParams.y))
+                    layoutHeader.setTag(R.id.btnGridVisibility, Pair(event.rawX, event.rawY))
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -148,13 +157,8 @@ class SolverService : Service() {
         btnGridVisibility.setOnClickListener {
             gridOverlayView?.let { gov ->
                 gov.showGridLines = !gov.showGridLines
-                if (gov.showGridLines) {
-                    btnGridVisibility.text = "👁️ 격자 보임"
-                    btnGridVisibility.setBackgroundColor(android.graphics.Color.parseColor("#2196F3"))
-                } else {
-                    btnGridVisibility.text = "👁️ 격자 숨김"
-                    btnGridVisibility.setBackgroundColor(android.graphics.Color.parseColor("#E91E63"))
-                }
+                btnGridVisibility.text = if (gov.showGridLines) "👁️ 격자 보임" else "👁️ 격자 숨김"
+                btnGridVisibility.setBackgroundColor(Color.parseColor(if (gov.showGridLines) "#2196F3" else "#E91E63"))
                 gov.invalidate()
             }
         }
@@ -163,12 +167,14 @@ class SolverService : Service() {
             isEditMode = !isEditMode
             if (isEditMode) {
                 btnEditMode.text = "🛠️ 조절 중"
-                btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50"))
+                btnEditMode.setBackgroundColor(Color.parseColor("#4CAF50"))
                 gridParams.flags = gridParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             } else {
                 btnEditMode.text = "🛠️ 격자 고정"
-                btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#757575"))
+                btnEditMode.setBackgroundColor(Color.parseColor("#757575"))
                 gridParams.flags = gridParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                // 고정 버튼을 누르는 순간 자석(Magnetic) 효과 즉시 발동 요청
+                snapRequested.set(true)
             }
             gridOverlayView?.let { windowManager.updateViewLayout(it, gridParams) }
         }
@@ -238,6 +244,8 @@ class SolverService : Service() {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { 
                     lockedCorner = -1 
+                    // 손가락을 뗄 때도 미세 조정을 위해 자석 효과 발동 요청
+                    snapRequested.set(true)
                     true 
                 }
                 else -> false
@@ -249,18 +257,45 @@ class SolverService : Service() {
         gridOverlayView?.let { tvGridInfo.text = "크기: ${it.rows}행 x ${it.cols}열" }
     }
 
-    private fun handleException(location: String, e: Exception) {
-        Log.e("SolverService_CRASH", "[$location] 예외 감지", e)
-        Handler(Looper.getMainLooper()).post {
-            val exceptionMessage = e.message ?: "상세 원인 없음"
-            val debugAlertText = when (e) {
-                is SecurityException -> "❌ [권한 차단] 캡처 권한이 거부되었습니다."
-                is NullPointerException -> "❌ [객체 공백] 미디어 프로젝션 토큰이 비어있습니다."
-                is IllegalStateException -> "❌ [상태 불일치] 닫힌 이미지 리더 접근 또는 잘못된 스레드 호출입니다."
-                else -> "❌ [$location 에러]\n내용: $exceptionMessage"
+    /**
+     * 🧲 [핵심 구현 1] 누끼 따듯 경계면에 딱 붙는 마그네틱 자석 효과 함수
+     * 모서리 좌표 주변 탐색 공간(Radius) 내에서 픽셀 명암 변화도(Gradient)가 가장 급격한 '보드게임 외곽선 완벽 매칭점'을 찾아냅니다.
+     */
+    private fun getMagneticSnappedPoint(bitmap: Bitmap, startX: Float, startY: Float, radius: Int = 40): PointF {
+        val bWidth = bitmap.width
+        val bHeight = bitmap.height
+        
+        val centerX = startX.toInt()
+        val centerY = startY.toInt()
+
+        var bestX = startX
+        var bestY = startY
+        var maxGradient = -1f
+
+        // 지정된 반경 격자를 스캔하며 경계 테두리(가장 강한 대비차) 탐색
+        for (y in (centerY - radius)..(centerY + radius)) {
+            for (x in (centerX - radius)..(centerX + radius)) {
+                if (x <= 1 || x >= bWidth - 2 || y <= 1 || y >= bHeight - 2) continue
+
+                // 주변 픽셀들 간의 명암(Luminance) 변화도 계산 (Sobel 필터 약식 계산형)
+                val getLuminance = { px: Int, py: Int ->
+                    val c = bitmap.getPixel(px, py)
+                    (0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c))
+                }
+
+                val dx = getLuminance(x + 1, y) - getLuminance(x - 1, y)
+                val dy = getLuminance(x, y + 1) - getLuminance(x, y - 1)
+                val gradientMagnitude = Math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
+                // 가장 선명한 선(테두리 흔적) 발견 시 갱신
+                if (gradientMagnitude > maxGradient) {
+                    maxGradient = gradientMagnitude
+                    bestX = x.toFloat()
+                    bestY = y.toFloat()
+                }
             }
-            Toast.makeText(applicationContext, debugAlertText, Toast.LENGTH_LONG).show()
         }
+        return PointF(bestX, bestY)
     }
 
     private fun startCaptureAndAnalysisLoop() {
@@ -280,37 +315,55 @@ class SolverService : Service() {
             )
 
             imageReader?.setOnImageAvailableListener({ reader ->
-                // ✨ [방어조치 1]: 닫히는 도중 비동기로 프레임이 올 때 발생하는 튕김 원천 봉쇄
                 val image = try {
                     reader.acquireLatestImage()
                 } catch (e: IllegalStateException) {
-                    return@setOnImageAvailableListener // 이미 리더가 닫혔으므로 바로 안전 종료
+                    return@setOnImageAvailableListener 
                 } ?: return@setOnImageAvailableListener
 
                 try {
-                    if (isEditMode || gridOverlayView == null) {
-                        image.close()
-                        return@setOnImageAvailableListener
-                    }
-
                     val planes = image.planes
                     val buffer = planes[0].buffer
                     val pixelStride = planes[0].pixelStride
                     val rowStride = planes[0].rowStride
                     val rowPadding = rowStride - pixelStride * width
+                    
                     val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
                     bitmap.copyPixelsFromBuffer(buffer)
 
-                    // [Match3Solver 분석 연산 구역]
-
-                    bitmap.recycle()
-                } catch (e: Exception) {
-                    // 서비스 종료 시 발생하는 부차적 예외는 토스트 팝업 생략하고 로그 처리
-                    if (e is IllegalStateException) {
-                        Log.d("SolverService", "루프 내 안전 이미지 파기 가로챔")
-                    } else {
-                        handleException("ImageProcessingLoop", e)
+                    // 비동기 터치 스레드에서 사용할 수 있도록 동기화 잠금 후 비트맵 캐싱
+                    synchronized(bitmapLock) {
+                        latestBitmap?.recycle()
+                        latestBitmap = bitmap
                     }
+
+                    val gov = gridOverlayView
+                    if (gov != null) {
+                        // 🧲 자석 스냅 효과 요청이 들어온 경우 즉각 연산 처리 및 보정 적용
+                        if (snapRequested.getAndSet(false)) {
+                            val snapTL = getMagneticSnappedPoint(bitmap, gov.tlX, gov.tlY)
+                            val snapTR = getMagneticSnappedPoint(bitmap, gov.trX, gov.trY)
+                            val snapBL = getMagneticSnappedPoint(bitmap, gov.blX, gov.blY)
+                            val snapBR = getMagneticSnappedPoint(bitmap, gov.brX, gov.brY)
+
+                            Handler(Looper.getMainLooper()).post {
+                                gov.tlX = snapTL.x; gov.tlY = snapTL.y
+                                gov.trX = snapTR.x; gov.trY = snapTR.y
+                                gov.blX = snapBL.x; gov.blY = snapBL.y
+                                gov.brX = snapBR.x; gov.brY = snapBR.y
+                                gov.invalidate()
+                                Toast.makeText(applicationContext, "🧲 마그네틱 자석 락온 완료!", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+
+                        // 편집 모드 중이 아닐 때만 주기적인 보석 스왑 연산 구동
+                        if (!isEditMode) {
+                            runMatchEngine(bitmap, gov)
+                        }
+                    }
+
+                } catch (e: Exception) {
+                    if (e !is IllegalStateException) handleException("ImageProcessingLoop", e)
                 } finally {
                     try { image.close() } catch (e: Exception) {}
                 }
@@ -321,6 +374,170 @@ class SolverService : Service() {
         }
     }
 
+    /**
+     * 👁️ [핵심 구현 2-1] ROI (Region of Interest) 영역 전수 조사 색상 감지 함수
+     * 단일 픽셀이 아니라 중심점 사방 24x24 픽셀 영역 내부의 HSV 색상 지분율을 정밀 조사합니다.
+     * 이를 통해 보석 하단의 잔디(Green), 장애물 노이즈에 완벽하게 대응합니다.
+     */
+    private fun detectCellColorROI(bitmap: Bitmap, centerX: Float, centerY: Float): BlockColor {
+        val radius = 12 // 조사 범위 반지름 (총 24x24 영역 스캔)
+        val cX = centerX.toInt()
+        val cY = centerY.toInt()
+        
+        var redCount = 0; var blueCount = 0; var yellowCount = 0; var greenCount = 0; var purpleCount = 0
+        val hsv = FloatArray(3)
+
+        for (y in (cY - radius)..(cY + radius)) {
+            for (x in (cX - radius)..(cX + radius)) {
+                if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height) continue
+                
+                val pixel = bitmap.getPixel(x, y)
+                Color.colorToHSV(pixel, hsv)
+                
+                val hue = hsv[0]
+                val sat = hsv[1]
+                val value = hsv[2]
+
+                // 채도와 명도가 극단적으로 낮은 그림자 영역은 통과
+                if (sat < 0.25f || value < 0.25f) continue
+
+                // HSV 색상 스펙트럼 분류 기준표 적용
+                when {
+                    (hue in 0f..12f) || (hue in 345f..360f) -> redCount++
+                    hue in 190f..245f -> blueCount++
+                    hue in 40f..65f -> yellowCount++
+                    hue in 85f..140f -> {
+                        // 💡 게임판 잔디는 명도가 낮거나 탁한 경향이 있으므로 
+                        // 순수한 연두색 블록을 거르기 위해 선명도(채도) 조건을 타이트하게 결합
+                        if (sat > 0.45f) greenCount++
+                    }
+                    hue in 260f..310f -> purpleCount++
+                }
+            }
+        }
+
+        val totalSamples = ((radius * 2) + 1) * ((radius * 2) + 1)
+        val threshold = totalSamples * 0.15f // 최소 지분율 15% 이상 검출 조건 적용
+
+        val counts = mapOf(
+            BlockColor.RED to redCount, BlockColor.BLUE to blueCount,
+            BlockColor.YELLOW to yellowCount, BlockColor.GREEN to greenCount, BlockColor.PURPLE to purpleCount
+        )
+
+        val maxEntry = counts.maxByOrNull { it.value } ?: return BlockColor.UNKNOWN
+        return if (maxEntry.value > threshold) maxEntry.key else BlockColor.UNKNOWN
+    }
+
+    /**
+     * 🧠 [핵심 구현 2-2] OOXOO 5연속 매칭 누락 원천 봉쇄 연산 엔진
+     */
+    private fun runMatchEngine(bitmap: Bitmap, gov: GridOverlayView) {
+        val rows = gov.rows
+        val cols = gov.cols
+        val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
+
+        // 1단계: 가상 2차원 바둑판 배열에 전 좌표 ROI 색상 데이터 주입
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val uMid = (c + 0.5f) / cols
+                val vMid = (r + 0.5f) / rows
+                val p = gov.getInterpolatedPoint(uMid, vMid)
+                board[r][c] = detectCellColorROI(bitmap, p.x, p.y)
+            }
+        }
+
+        // 2단계: 전체 바둑판 시뮬레이션 및 양방향 결합 합산 검사 알고리즘 작동
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val currentColor = board[r][c]
+                if (currentColor == BlockColor.UNKNOWN) continue
+
+                // 오른쪽 칸 블록과 스왑 검사 시뮬레이션
+                if (c + 1 < cols && board[r][c + 1] != BlockColor.UNKNOWN && board[r][c + 1] != currentColor) {
+                    val rightColor = board[r][c + 1]
+                    
+                    // 가상 스왑 단행
+                    board[r][c] = rightColor
+                    board[r][c + 1] = currentColor
+
+                    // 샌드위치 결합형(OOXOO형) 연속 검출을 위한 양방향 합산 점검
+                    val matchLenLeft = checkVerticalMatchScore(board, r, c, rows)
+                    val matchLenRight = checkVerticalMatchScore(board, r, c + 1, rows)
+                    val matchLenHoriz1 = checkHorizontalMatchScore(board, r, c, cols)
+                    val matchLenHoriz2 = checkHorizontalMatchScore(board, r, c + 1, cols)
+
+                    val maxMatchFound = listOf(matchLenLeft, matchLenRight, matchLenHoriz1, matchLenHoriz2).maxOrNull() ?: 0
+
+                    if (maxMatchFound >= 3) {
+                        triggerHintHighlight(r, c, r, c + 1, maxMatchFound)
+                        // 가상 복원 후 종료
+                        board[r][c] = currentColor
+                        board[r][c + 1] = rightColor
+                        return
+                    }
+                    // 가상 상태 복원
+                    board[r][c] = currentColor
+                    board[r][c + 1] = rightColor
+                }
+
+                // 아래쪽 칸 블록과 스왑 검사 시뮬레이션
+                if (r + 1 < rows && board[r + 1][c] != BlockColor.UNKNOWN && board[r + 1][c] != currentColor) {
+                    val downColor = board[r + 1][c]
+
+                    board[r][c] = downColor
+                    board[r + 1][c] = currentColor
+
+                    val matchLenUp = checkHorizontalMatchScore(board, r, c, cols)
+                    val matchLenDown = checkHorizontalMatchScore(board, r + 1, c, cols)
+                    val matchLenVert1 = checkVerticalMatchScore(board, r, c, rows)
+                    val matchLenVert2 = checkVerticalMatchScore(board, r + 1, c, rows)
+
+                    val maxMatchFound = listOf(matchLenUp, matchLenDown, matchLenVert1, matchLenVert2).maxOrNull() ?: 0
+
+                    if (maxMatchFound >= 3) {
+                        triggerHintHighlight(r, c, r + 1, c, maxMatchFound)
+                        board[r][c] = currentColor
+                        board[r + 1][c] = downColor
+                        return
+                    }
+                    board[r][c] = currentColor
+                    board[r + 1][c] = downColor
+                }
+            }
+        }
+    }
+
+    // 💡 [양방향 검증용] 세로선 통합 매칭 연산 로직 (위 연속 + 아래 연속 + 나 자신 = 최종 길이)
+    private fun checkVerticalMatchScore(board: Array<Array<BlockColor>>, row: Int, col: Int, maxRows: Int): Int {
+        val color = board[row][col]
+        if (color == BlockColor.UNKNOWN) return 0
+        var up = 0; var down = 0
+        var r = row - 1
+        while (r >= 0 && board[r][col] == color) { up++; r-- }
+        r = row + 1
+        while (r < maxRows && board[r][col] == color) { down++; r++ }
+        return up + down + 1
+    }
+
+    // 💡 [양방향 검증용] 가로선 통합 매칭 연산 로직 (좌측 연속 + 우측 연속 + 나 자신 = 최종 길이)
+    private fun checkHorizontalMatchScore(board: Array<Array<BlockColor>>, row: Int, col: Int, maxCols: Int): Int {
+        val color = board[row][col]
+        if (color == BlockColor.UNKNOWN) return 0
+        var left = 0; var right = 0
+        var c = col - 1
+        while (c >= 0 && board[row][c] == color) { left++; c-- }
+        c = col + 1
+        while (c < maxCols && board[row][c] == color) { right++; c++ }
+        return left + right + 1
+    }
+
+    private fun triggerHintHighlight(r1: Int, c1: Int, r2: Int, c2: Int, score: Int) {
+        Handler(Looper.getMainLooper()).post {
+            val specialTag = if(score >= 5) "🔥 [최강 5연속 매칭 발견!] " else ""
+            tvGridInfo.text = "${specialTag}추천: ($r1 행, $c1 열) ↔️ ($r2 행, $c2 열) 이동"
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) return START_NOT_STICKY
         val resultCode = intent.getIntExtra("RESULT_CODE", -1)
@@ -328,7 +545,7 @@ class SolverService : Service() {
         val resultData = intent.getParcelableExtra<Intent>("RESULT_DATA")
         
         if (resultCode != Activity.RESULT_OK || resultData == null) {
-            Toast.makeText(this, "❌ 미디어 프로젝션 화면 공유 승인이 취소되었습니다.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "❌ 화면 공유 승인이 취소되었습니다.", Toast.LENGTH_SHORT).show()
             return START_NOT_STICKY
         }
         
@@ -340,7 +557,6 @@ class SolverService : Service() {
         val notification = NotificationCompat.Builder(this, "HelperEngine")
             .setContentTitle("격자 보석 추적 엔진이 동작 중입니다.")
             .setSmallIcon(android.R.drawable.sym_def_app_icon)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
             
         startForeground(8888, notification)
@@ -361,7 +577,6 @@ class SolverService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
-            // ✨ [방어조치 2]: 해제 순서 엄격 최적화 (리스너 제거 -> 디스플레이 종료 -> 엔진 파기)
             imageReader?.setOnImageAvailableListener(null, null) 
             virtualDisplay?.release()
             virtualDisplay = null
@@ -373,8 +588,17 @@ class SolverService : Service() {
             backgroundThread?.quitSafely()
             panelView?.let { windowManager.removeView(it) }
             gridOverlayView?.let { windowManager.removeView(it) }
+            
+            synchronized(bitmapLock) {
+                latestBitmap?.recycle()
+                latestBitmap = null
+            }
         } catch (e: Exception) {
-            Log.e("SolverService", "Destroy 리소스 해제 중 오류", e)
+            Log.e("SolverService", "Destroy 에러", e)
         }
+    }
+
+    private fun handleException(location: String, e: Exception) {
+        Log.e("SolverService_CRASH", "[$location] 예외 감지", e)
     }
 }
