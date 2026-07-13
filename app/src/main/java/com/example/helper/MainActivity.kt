@@ -11,7 +11,6 @@ import android.provider.Settings
 import android.widget.Button
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.example.helper.service.SolverService
 
 // 🎯 깃허브 컴파일러 레이아웃 인식용 R 클래스 임포트
 import com.example.helper.R
@@ -30,7 +29,7 @@ class MainActivity : AppCompatActivity() {
 
         val btnStart = findViewById<Button>(R.id.btnStartService)
         btnStart.setOnClickListener {
-            // 🎯 [핵심] 다른 앱 위에 표시 권한이 있는지 선제적으로 체크합니다.
+            // 🎯 다른 앱 위에 표시 권한이 있는지 선제적으로 체크합니다.
             if (!Settings.canDrawOverlays(this)) {
                 Toast.makeText(this, "다른 앱 위에 표시 권한을 허용해주세요.", Toast.LENGTH_LONG).show()
                 
@@ -73,6 +72,7 @@ class MainActivity : AppCompatActivity() {
         else if (requestCode == REQUEST_MEDIA_PROJECTION) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 
+                // 🛠️ 같은 패키지 폴더에 있으므로 SolverService를 에러 없이 바로 참조합니다.
                 val serviceIntent = Intent(this, SolverService::class.java).apply {
                     putExtra("RESULT_CODE", resultCode)
                     putExtra("RESULT_DATA", data)
