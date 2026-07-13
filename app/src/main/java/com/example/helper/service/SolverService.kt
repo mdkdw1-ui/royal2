@@ -8,7 +8,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.PointF
 import android.hardware.display.DisplayManager
@@ -43,9 +46,69 @@ class SolverService : Service() {
 
     enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 
+    // 🎨 화면에 직접 화살표 가이드를 그리기 위한 커스텀 뷰 클래스 생성
+    private class HintArrowView(context: Context) : View(context) {
+        var startX = 0f; var startY = 0f; var endX = 0f; var endY = 0f
+        var shouldDraw = false
+
+        private val linePaint = Paint().apply {
+            color = Color.parseColor("#00FFCC") // 눈에 확 띄는 네온 민트색
+            strokeWidth = 14f
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            isAntiAlias = true
+            setShadowLayer(10f, 0f, 0f, Color.GREEN) // 글로우 효과
+        }
+
+        private val headPaint = Paint().apply {
+            color = Color.parseColor("#00FFCC")
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
+
+        fun updateArrow(sx: Float, sy: Float, ex: Float, ey: Float) {
+            startX = sx; startY = sy; endX = ex; endY = ey
+            shouldDraw = true
+            invalidate()
+        }
+
+        fun clearArrow() {
+            shouldDraw = false
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (!shouldDraw) return
+            
+            // 1. 추천 이동 경로 중심선 그리기
+            canvas.drawLine(startX, startY, endX, endY, linePaint)
+            
+            // 2. 이동 방향을 나타내는 화살표 촉(삼각형) 그리기
+            val angle = Math.atan2((endY - startY).toDouble(), (endX - startX).toDouble())
+            val arrowLength = 28f
+            val arrowAngle = Math.PI / 6
+
+            val path = Path().apply {
+                moveTo(endX, endY)
+                lineTo(
+                    (endX - arrowLength * Math.cos(angle - arrowAngle)).toFloat(),
+                    (endY - arrowLength * Math.sin(angle - arrowAngle)).toFloat()
+                )
+                lineTo(
+                    (endX - arrowLength * Math.cos(angle + arrowAngle)).toFloat(),
+                    (endY - arrowLength * Math.sin(angle + arrowAngle)).toFloat()
+                )
+                close()
+            }
+            canvas.drawPath(path, headPaint)
+        }
+    }
+
     private lateinit var windowManager: WindowManager
     private var panelView: View? = null
     private var gridOverlayView: GridOverlayView? = null
+    private var hintArrowView: HintArrowView? = null // 시각적 가이드 오버레이 뷰 변수
     private lateinit var tvGridInfo: TextView
     
     private lateinit var panelParams: WindowManager.LayoutParams
@@ -84,6 +147,7 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
+            // 격자 그리기 뷰 배치
             gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -93,6 +157,17 @@ class SolverService : Service() {
             )
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
+
+            // 🎯 화살표 그리기 전용 투명 레이어 배치
+            hintArrowView = HintArrowView(this)
+            val hintParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            windowManager.addView(hintArrowView, hintParams)
 
             panelParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -254,7 +329,6 @@ class SolverService : Service() {
     private fun getMagneticSnappedPoint(bitmap: Bitmap, startX: Float, startY: Float, radius: Int = 40): PointF {
         val bWidth = bitmap.width
         val bHeight = bitmap.height
-        
         val centerX = startX.toInt()
         val centerY = startY.toInt()
 
@@ -285,79 +359,6 @@ class SolverService : Service() {
         return PointF(bestX, bestY)
     }
 
-    private fun startCaptureAndAnalysisLoop() {
-        try {
-            val metrics = DisplayMetrics()
-            windowManager.defaultDisplay.getRealMetrics(metrics)
-            val width = metrics.widthPixels
-            val height = metrics.heightPixels
-            val density = metrics.densityDpi
-
-            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-            val currentProjection = mediaProjection ?: throw NullPointerException("MediaProjection 토큰 공백")
-            
-            virtualDisplay = currentProjection.createVirtualDisplay(
-                "ScreenCaptureEngine", width, height, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, null
-            )
-
-            imageReader?.setOnImageAvailableListener({ reader ->
-                val image = try {
-                    reader.acquireLatestImage()
-                } catch (e: IllegalStateException) {
-                    return@setOnImageAvailableListener 
-                } ?: return@setOnImageAvailableListener
-
-                try {
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * width
-                    
-                    val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-                    bitmap.copyPixelsFromBuffer(buffer)
-
-                    synchronized(bitmapLock) {
-                        latestBitmap?.recycle()
-                        latestBitmap = bitmap
-                    }
-
-                    val gov = gridOverlayView
-                    if (gov != null) {
-                        if (snapRequested.getAndSet(false)) {
-                            val snapTL = getMagneticSnappedPoint(bitmap, gov.tlX, gov.tlY)
-                            val snapTR = getMagneticSnappedPoint(bitmap, gov.trX, gov.trY)
-                            val snapBL = getMagneticSnappedPoint(bitmap, gov.blX, gov.blY)
-                            val snapBR = getMagneticSnappedPoint(bitmap, gov.brX, gov.brY)
-
-                            Handler(Looper.getMainLooper()).post {
-                                gov.tlX = snapTL.x; gov.tlY = snapTL.y
-                                gov.trX = snapTR.x; gov.trY = snapTR.y
-                                gov.blX = snapBL.x; gov.blY = snapBL.y
-                                gov.brX = snapBR.x; gov.brY = snapBR.y
-                                gov.invalidate()
-                                Toast.makeText(applicationContext, "🧲 마그네틱 자석 락온 완료!", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-
-                        if (!isEditMode) {
-                            runMatchEngine(bitmap, gov)
-                        }
-                    }
-
-                } catch (e: Exception) {
-                    if (e !is IllegalStateException) handleException("ImageProcessingLoop", e)
-                } finally {
-                    try { image.close() } catch (e: Exception) {}
-                }
-            }, backgroundHandler)
-
-        } catch (e: Exception) {
-            handleException("CreateVirtualDisplay", e)
-        }
-    }
-
     private fun detectCellColorROI(bitmap: Bitmap, centerX: Float, centerY: Float): BlockColor {
         val radius = 12 
         val cX = centerX.toInt()
@@ -383,7 +384,6 @@ class SolverService : Service() {
                     (hue in 0f..22f) || (hue in 345f..360f) -> redCount++
                     hue in 23f..65f -> yellowCount++
                     hue in 190f..245f -> blueCount++
-                    // 💚 [교정 포인트 1] 엄격했던 채도 제한(sat > 0.45f)을 철폐하여 음영 진 녹색까지 완벽 스캔
                     hue in 85f..140f -> greenCount++
                     hue in 260f..310f -> purpleCount++
                 }
@@ -402,9 +402,6 @@ class SolverService : Service() {
         return if (maxEntry.value > threshold) maxEntry.key else BlockColor.UNKNOWN
     }
 
-    /**
-     * 🧠 [교정 포인트 2] 단일 라인 최댓값 계산 방식에서 다중 교차 콤보(T자, L자, 십자형) 보너스 점수 가산 엔진으로 업그레이드
-     */
     private fun runMatchEngine(bitmap: Bitmap, gov: GridOverlayView) {
         val rows = gov.rows
         val cols = gov.cols
@@ -420,7 +417,11 @@ class SolverService : Service() {
         }
 
         var bestMatchScore = 0
-        var bestMoveText = "크기: ${rows}행 x ${cols}열 (분석 중...)"
+        var bestMoveText = "분석 중..."
+        
+        // 화살표 좌표 저장용 변수
+        var arrowStartX = 0f; var arrowStartY = 0f; var arrowEndX = 0f; var arrowEndY = 0f
+        var hasBestMove = false
 
         for (r in 0 until rows) {
             for (c in 0 until cols) {
@@ -430,7 +431,6 @@ class SolverService : Service() {
                 // 1. 오른쪽 스왑 시뮬레이션
                 if (c + 1 < cols && board[r][c + 1] != BlockColor.UNKNOWN && board[r][c + 1] != currentColor) {
                     val rightColor = board[r][c + 1]
-                    
                     board[r][c] = rightColor
                     board[r][c + 1] = currentColor
 
@@ -440,10 +440,19 @@ class SolverService : Service() {
 
                     if (totalScore >= 3 && totalScore > bestMatchScore) {
                         bestMatchScore = totalScore
-                        val tag = if (score1 >= 50 || score2 >= 50) "🔥 [대폭발 특수 크로스 콤보!!] " 
-                                  else if (totalScore >= 5) "⭐ [5연속 매칭] " 
-                                  else if (totalScore == 4) "✨ [4연속 매칭] " else ""
+                        hasBestMove = true
+                        
+                        val tag = when {
+                            totalScore >= 100 -> "🔮 [최고 존엄 디스코볼 생성!!] "
+                            totalScore >= 70 -> "🔥 [대폭발 특수 크로스 콤보!!] "
+                            totalScore >= 40 -> "⭐ [폭탄/로켓 생성 매칭] "
+                            else -> ""
+                        }
                         bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 1}행, ${c + 2}열) 이동"
+                        
+                        val p1 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 0.5f) / rows)
+                        val p2 = gov.getInterpolatedPoint((c + 1.5f) / cols, (r + 0.5f) / rows)
+                        arrowStartX = p1.x; arrowStartY = p1.y; arrowEndX = p2.x; arrowEndY = p2.y
                     }
 
                     board[r][c] = currentColor
@@ -453,7 +462,6 @@ class SolverService : Service() {
                 // 2. 아래쪽 스왑 시뮬레이션
                 if (r + 1 < rows && board[r + 1][c] != BlockColor.UNKNOWN && board[r + 1][c] != currentColor) {
                     val downColor = board[r + 1][c]
-
                     board[r][c] = downColor
                     board[r + 1][c] = currentColor
 
@@ -463,10 +471,19 @@ class SolverService : Service() {
 
                     if (totalScore >= 3 && totalScore > bestMatchScore) {
                         bestMatchScore = totalScore
-                        val tag = if (score1 >= 50 || score2 >= 50) "🔥 [대폭발 특수 크로스 콤보!!] " 
-                                  else if (totalScore >= 5) "⭐ [5연속 매칭] " 
-                                  else if (totalScore == 4) "✨ [4연속 매칭] " else ""
+                        hasBestMove = true
+                        
+                        val tag = when {
+                            totalScore >= 100 -> "🔮 [최고 존엄 디스코볼 생성!!] "
+                            totalScore >= 70 -> "🔥 [대폭발 특수 크로스 콤보!!] "
+                            totalScore >= 40 -> "⭐ [폭탄/로켓 생성 매칭] "
+                            else -> ""
+                        }
                         bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 2}행, ${c + 1}열) 이동"
+                        
+                        val p1 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 0.5f) / rows)
+                        val p2 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 1.5f) / rows)
+                        arrowStartX = p1.x; arrowStartY = p1.y; arrowEndX = p2.x; arrowEndY = p2.y
                     }
 
                     board[r][c] = currentColor
@@ -477,11 +494,17 @@ class SolverService : Service() {
 
         Handler(Looper.getMainLooper()).post {
             tvGridInfo.text = bestMoveText
+            if (hasBestMove) {
+                // 🎯 실시간으로 계산된 픽셀 좌표를 전달하여 화면에 화살표 그리기
+                hintArrowView?.updateArrow(arrowStartX, arrowStartY, arrowEndX, arrowEndY)
+            } else {
+                hintArrowView?.clearArrow()
+            }
         }
     }
 
     /**
-     * 가로와 세로의 매칭 여부를 복합 분석하여 교차 매칭(T자, L자, 십자형) 발생 시 엄청난 가산점을 리턴합니다.
+     * 🧠 [교정 포인트 2] 특수 매칭 아이템 생성 우선순위에 맞추어 정교화된 가치 부여 알고리즘
      */
     private fun calculateComboScore(board: Array<Array<BlockColor>>, r: Int, c: Int, rows: Int, cols: Int): Int {
         val hScore = checkHorizontalMatchScore(board, r, c, cols)
@@ -490,11 +513,19 @@ class SolverService : Service() {
         val hValid = if (hScore >= 3) hScore else 0
         val vValid = if (vScore >= 3) vScore else 0
 
-        if (hValid >= 3 && vValid >= 3) {
-            // 십자형(Cross) 및 복합 콤보 생성 성공 시 가로 길이 + 세로 길이 + 가산점 50점 부여
-            return hValid + vValid + 50
+        return when {
+            // 1순위: 직선 5연속 이상 매칭 (최고 등급 디스코볼 생성!) -> 100점 부여
+            hValid >= 5 || vValid >= 5 -> 100
+            
+            // 2순위: 가로/세로 복합 크로스 매칭 (T자, L자 폭탄 생성!) -> 70점 부여
+            hValid >= 3 && vValid >= 3 -> 70
+            
+            // 3순위: 직선 4연속 매칭 (가로/세로 로켓 아이템 생성!) -> 40점 부여
+            hValid == 4 || vValid == 4 -> 40
+            
+            // 4순위: 일반적인 3개 매칭
+            else -> Math.max(hValid, vValid)
         }
-        return Math.max(hValid, vValid)
     }
 
     private fun checkVerticalMatchScore(board: Array<Array<BlockColor>>, row: Int, col: Int, maxRows: Int): Int {
@@ -569,6 +600,7 @@ class SolverService : Service() {
             backgroundThread?.quitSafely()
             panelView?.let { windowManager.removeView(it) }
             gridOverlayView?.let { windowManager.removeView(it) }
+            hintArrowView?.let { windowManager.removeView(it) } // 신설 레이어 해제
             
             synchronized(bitmapLock) {
                 latestBitmap?.recycle()
