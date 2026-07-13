@@ -25,9 +25,11 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
@@ -47,6 +49,7 @@ class SolverService : Service() {
     private var panelView: View? = null
     private var gridOverlayView: GridOverlayView? = null
     private lateinit var tvGridInfo: TextView
+    private lateinit var panelParams: WindowManager.LayoutParams
 
     private var mediaProjectionManager: MediaProjectionManager? = null
     private var mediaProjection: MediaProjection? = null
@@ -57,7 +60,10 @@ class SolverService : Service() {
     private var backgroundHandler: Handler? = null
 
     private var isLogicEnabled = true
-    private var activeCorner = 0 // 0:좌상(TL), 1:우상(TR), 2:좌하(BL), 3:우하(BR)
+    private var activeCorner = 0 // 0:좌상, 1:우상, 2:좌하, 3:우하
+    
+    // ✨ 이동 감도 조절 변수 (기본값 20픽셀)
+    private var currentMoveAmount = 20f
 
     private fun showOverlayToast(message: String) {
         Handler(Looper.getMainLooper()).post {
@@ -82,7 +88,7 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
-            // 1. 터치 관통형 격자 레이어 생성
+            // 1. 격자 뷰 레이어 생성
             val gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -93,16 +99,18 @@ class SolverService : Service() {
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
-            // 2. 상단 조작 제어판 레이어 생성
-            val panelParams = WindowManager.LayoutParams(
+            // 2. 조작 제어판 레이어 생성 (자유 드래그 추적을 위해 좌상단 절대좌표 Gravity 배치)
+            panelParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
-            )
-            panelParams.gravity = Gravity.TOP
-            panelParams.y = 100
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 0
+                y = 150
+            }
 
             panelView = inflater.inflate(R.layout.control_panel_layout, null)
             windowManager.addView(panelView, panelParams)
@@ -119,9 +127,63 @@ class SolverService : Service() {
     }
 
     private fun initControlPanelListeners(view: View) {
+        val layoutHeader = view.findViewById<LinearLayout>(R.id.layoutHeader)
+        val layoutExpandedBody = view.findViewById<LinearLayout>(R.id.layoutExpandedBody)
+        val btnMinimize = view.findViewById<Button>(R.id.btnMinimize)
+        val btnKillService = view.findViewById<Button>(R.id.btnKillService)
         val btnToggleLogic = view.findViewById<Button>(R.id.btnToggleLogic)
         val btnToggleGrid = view.findViewById<Button>(R.id.btnToggleGrid)
-        val btnKillService = view.findViewById<Button>(R.id.btnKillService)
+        val btnSensitivity = view.findViewById<Button>(R.id.btnSensitivity)
+
+        // ✨ 1. 제어판 자유 드래그 이동 구현 코드
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+
+        layoutHeader.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = panelParams.x
+                    initialY = panelParams.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    panelParams.x = initialX + (event.rawX - initialTouchX).toInt()
+                    panelParams.y = initialY + (event.rawY - initialTouchY).toInt()
+                    panelView?.let { windowManager.updateViewLayout(it, panelParams) }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        // ✨ 2. 접기 / 펼치기 토글 로직
+        btnMinimize.setOnClickListener {
+            if (layoutExpandedBody.visibility == View.VISIBLE) {
+                layoutExpandedBody.visibility = View.GONE
+                btnMinimize.text = "펼치기 ▼"
+            } else {
+                layoutExpandedBody.visibility = View.VISIBLE
+                btnMinimize.text = "접기 ▲"
+            }
+            // LayoutParams가 재계산되도록 갱신 전송
+            panelView?.let { windowManager.updateViewLayout(it, panelParams) }
+        }
+
+        // ✨ 3. 이동 감도(보폭) 스위칭 순환 매핑 (1px -> 5px -> 20px -> 50px)
+        btnSensitivity.setOnClickListener {
+            currentMoveAmount = when(currentMoveAmount) {
+                20f -> 50f
+                50f -> 1f
+                1f -> 5f
+                5f -> 20f
+                else -> 20f
+            }
+            btnSensitivity.text = "이동: ${currentMoveAmount.toInt()}px"
+        }
 
         btnToggleLogic.setOnClickListener {
             isLogicEnabled = !isLogicEnabled
@@ -152,7 +214,6 @@ class SolverService : Service() {
             stopSelf()
         }
 
-        // 모서리 선택 라디오 버튼 리스너
         val rgCornerSelect = view.findViewById<RadioGroup>(R.id.rgCornerSelect)
         rgCornerSelect.setOnCheckedChangeListener { _, checkedId ->
             activeCorner = when (checkedId) {
@@ -164,12 +225,11 @@ class SolverService : Service() {
             }
         }
 
-        // 선택된 모서리 좌표 제어용 방향키 리스너 (문제가 되었던 구형 크기조절 코드는 완전히 비워져 있습니다)
-        val moveAmount = 12f
+        // 가변 감도 변수(currentMoveAmount)를 적용한 조이스틱 로직
         view.findViewById<Button>(R.id.btnMoveUp).setOnClickListener {
             gridOverlayView?.let {
                 when(activeCorner) {
-                    0 -> it.tlY -= moveAmount; 1 -> it.trY -= moveAmount; 2 -> it.blY -= moveAmount; 3 -> it.brY -= moveAmount
+                    0 -> it.tlY -= currentMoveAmount; 1 -> it.trY -= currentMoveAmount; 2 -> it.blY -= currentMoveAmount; 3 -> it.brY -= currentMoveAmount
                 }
                 it.invalidate()
             }
@@ -177,7 +237,7 @@ class SolverService : Service() {
         view.findViewById<Button>(R.id.btnMoveDown).setOnClickListener {
             gridOverlayView?.let {
                 when(activeCorner) {
-                    0 -> it.tlY += moveAmount; 1 -> it.trY += moveAmount; 2 -> it.blY += moveAmount; 3 -> it.brY += moveAmount
+                    0 -> it.tlY += currentMoveAmount; 1 -> it.trY += currentMoveAmount; 2 -> it.blY += currentMoveAmount; 3 -> it.brY += currentMoveAmount
                 }
                 it.invalidate()
             }
@@ -185,7 +245,7 @@ class SolverService : Service() {
         view.findViewById<Button>(R.id.btnMoveLeft).setOnClickListener {
             gridOverlayView?.let {
                 when(activeCorner) {
-                    0 -> it.tlX -= moveAmount; 1 -> it.trX -= moveAmount; 2 -> it.blX -= moveAmount; 3 -> it.brX -= moveAmount
+                    0 -> it.tlX -= currentMoveAmount; 1 -> it.trX -= currentMoveAmount; 2 -> it.blX -= currentMoveAmount; 3 -> it.brX -= currentMoveAmount
                 }
                 it.invalidate()
             }
@@ -193,13 +253,12 @@ class SolverService : Service() {
         view.findViewById<Button>(R.id.btnMoveRight).setOnClickListener {
             gridOverlayView?.let {
                 when(activeCorner) {
-                    0 -> it.tlX += moveAmount; 1 -> it.trX += moveAmount; 2 -> it.blX += moveAmount; 3 -> it.brX += moveAmount
+                    0 -> it.tlX += currentMoveAmount; 1 -> it.trX += currentMoveAmount; 2 -> it.blX += currentMoveAmount; 3 -> it.brX += currentMoveAmount
                 }
                 it.invalidate()
             }
         }
 
-        // 행렬 크기 조절 리스너
         view.findViewById<Button>(R.id.btnRowPlus).setOnClickListener { gridOverlayView?.let { it.rows++; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnRowMinus).setOnClickListener { gridOverlayView?.let { if(it.rows > 1) it.rows--; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnColPlus).setOnClickListener { gridOverlayView?.let { it.cols++; updateInfoText(); it.invalidate() } }
@@ -208,7 +267,7 @@ class SolverService : Service() {
 
     private fun updateInfoText() {
         gridOverlayView?.let {
-            tvGridInfo.text = "칸수 설정: ${it.rows}행 x ${it.cols}열"
+            tvGridInfo.text = "칸수: ${it.rows}행 x ${it.cols}열"
         }
     }
 
@@ -276,7 +335,7 @@ class SolverService : Service() {
                     val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
                     bitmap.copyPixelsFromBuffer(buffer)
 
-                    // [실시간 격자 동기화 연산 구역]
+                    // 연산 구역
 
                     bitmap.recycle()
                 }
