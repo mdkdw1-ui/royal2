@@ -9,26 +9,105 @@
         android:layout_height="match_parent" />
 
     <LinearLayout
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|center_horizontal"
-        android:layout_marginTop="50dp"
-        android:background="#A0000000"
-        android:orientation="horizontal"
-        android:padding="8dp">
+        android:layout_gravity="top"
+        android:layout_marginTop="30dp"
+        android:layout_marginHorizontal="10dp"
+        android:background="#E61A1A1A"
+        android:orientation="vertical"
+        android:padding="8dp"
+        android:elevation="10dp">
 
-        <Button
-            android:id="@+id/btnToggleGrid"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:text="격자 숨기기" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="6dp">
 
-        <Button
-            android:id="@+id/btnToggleHints"
-            android:layout_width="wrap_content"
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="🎛️ 매칭 헬퍼 제어판"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/btnToggleLogic"
+                android:layout_width="wrap_content"
+                android:layout_height="35dp"
+                android:backgroundTint="#4CAF50"
+                android:text="로직: ON"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:layout_marginEnd="4dp"/>
+
+            <Button
+                android:id="@+id/btnToggleGrid"
+                android:layout_width="wrap_content"
+                android:layout_height="35dp"
+                android:backgroundTint="#2196F3"
+                android:text="격자 숨기기"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:layout_marginEnd="4dp"/>
+
+            <Button
+                android:id="@+id/btnKillService"
+                android:layout_width="wrap_content"
+                android:layout_height="35dp"
+                android:backgroundTint="#F44336"
+                android:text="종료(Kill)"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="힌트 숨기기" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="4dp">
+
+            <TextView
+                android:id="@+id/tvGridInfo"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="칸수: 9x11"
+                android:textColor="#CCCCCC"
+                android:textSize="12sp" />
+
+            <Button android:id="@+id/btnRowMinus" android:layout_width="40dp" android:layout_height="35dp" android:text="행-" android:textSize="10sp" android:padding="0dp"/>
+            <Button android:id="@+id/btnRowPlus" android:layout_width="40dp" android:layout_height="35dp" android:text="행+" android:textSize="10sp" android:padding="0dp" android:layout_marginEnd="8dp"/>
+
+            <Button android:id="@+id/btnColMinus" android:layout_width="40dp" android:layout_height="35dp" android:text="열-" android:textSize="10sp" android:padding="0dp"/>
+            <Button android:id="@+id/btnColPlus" android:layout_width="40dp" android:layout_height="35dp" android:text="열+" android:textSize="10sp" android:padding="0dp" android:layout_marginEnd="8dp"/>
+
+            <Button android:id="@+id/btnSizeMinus" android:layout_width="45dp" android:layout_height="35dp" android:text="크기-" android:textSize="10sp" android:padding="0dp"/>
+            <Button android:id="@+id/btnSizePlus" android:layout_width="45dp" android:layout_height="35dp" android:text="크기+" android:textSize="10sp" android:padding="0dp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <Button android:id="@+id/btnMoveLeft" android:layout_width="50dp" android:layout_height="35dp" android:text="◀ 좌" android:textSize="11sp" android:padding="0dp"/>
+            <LinearLayout 
+                android:layout_width="wrap_content" 
+                android:layout_height="wrap_content" 
+                android:orientation="vertical"
+                android:layout_marginHorizontal="10dp">
+                <Button android:id="@+id/btnMoveUp" android:layout_width="50dp" android:layout_height="33dp" android:text="▲ 상" android:textSize="11sp" android:padding="0dp"/>
+                <Button android:id="@+id/btnMoveDown" android:layout_width="50dp" android:layout_height="33dp" android:text="▼ 하" android:textSize="11sp" android:padding="0dp"/>
+            </LinearLayout>
+            <Button android:id="@+id/btnMoveRight" android:layout_width="50dp" android:layout_height="35dp" android:text="▶ 우" android:textSize="11sp" android:padding="0dp"/>
+        </LinearLayout>
+
     </LinearLayout>
-
 </FrameLayout>
