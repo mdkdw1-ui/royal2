@@ -54,7 +54,6 @@ class SolverService : Service() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
-    private var isLogicEnabled = true
     private var isEditMode = false 
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -64,6 +63,7 @@ class SolverService : Service() {
         if (!Settings.canDrawOverlays(this)) { stopSelf(); return }
 
         backgroundThread = HandlerThread("ScreenCaptureThread").apply { start() }
+        backgroundThread!!.start()
         backgroundHandler = Handler(backgroundThread!!.looper)
 
         try {
@@ -88,7 +88,7 @@ class SolverService : Service() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = 0; y = 100
+                x = 0; y = 150
             }
 
             panelView = inflater.inflate(R.layout.overlay_layout, null)
@@ -98,7 +98,7 @@ class SolverService : Service() {
             tvGridInfo = pView.findViewById(R.id.tvGridInfo)
 
             initControlPanelListeners(pView)
-            setupAdvancedIndirectTouchListener() // ✨ 비가림 원격 드래그 매핑
+            setupAdvancedIndirectTouchListener() 
             updateInfoText()
 
         } catch (e: Exception) { Log.e("SolverService", "초기화 에러", e) }
@@ -109,11 +109,10 @@ class SolverService : Service() {
         val layoutExpandedBody = view.findViewById<LinearLayout>(R.id.layoutExpandedBody)
         val btnMinimize = view.findViewById<Button>(R.id.btnMinimize)
         val btnKillService = view.findViewById<Button>(R.id.btnKillService)
-        val btnToggleLogic = view.findViewById<Button>(R.id.btnToggleLogic)
         val btnEditMode = view.findViewById<Button>(R.id.btnEditMode)
-        val btnInstantGridToggle = view.findViewById<Button>(R.id.btnInstantGridToggle)
+        val btnGridVisibility = view.findViewById<Button>(R.id.btnGridVisibility)
 
-        // 제어판 헤더 드래그 무빙
+        // 패널 드래그 이동
         var pInitialX = 0; var pInitialY = 0; var pTouchX = 0f; var pTouchY = 0f
         layoutHeader.setOnTouchListener { _, event ->
             when (event.action) {
@@ -132,50 +131,45 @@ class SolverService : Service() {
             }
         }
 
-        // ✨ 즉시 격자 숨김/보임 토글 단추 로직
-        btnInstantGridToggle.setOnClickListener {
+        // ✨ 격자 선 숨기기 / 보이기 토글 버튼 로직
+        btnGridVisibility.setOnClickListener {
             gridOverlayView?.let { gov ->
                 gov.showGridLines = !gov.showGridLines
                 if (gov.showGridLines) {
-                    btnInstantGridToggle.text = "격자 ON"
-                    btnInstantGridToggle.setBackgroundColor(android.graphics.Color.parseColor("#2196F3"))
+                    btnGridVisibility.text = "👁️ 격자 보임"
+                    btnGridVisibility.setBackgroundColor(android.graphics.Color.parseColor("#2196F3"))
                 } else {
-                    btnInstantGridToggle.text = "격자 OFF"
-                    btnInstantGridToggle.setBackgroundColor(android.graphics.Color.parseColor("#757575"))
+                    btnGridVisibility.text = "👁️ 격자 숨김"
+                    btnGridVisibility.setBackgroundColor(android.graphics.Color.parseColor("#E91E63"))
                 }
                 gov.invalidate()
             }
         }
 
-        btnMinimize.setOnClickListener {
-            if (layoutExpandedBody.visibility == View.VISIBLE) {
-                layoutExpandedBody.visibility = View.GONE
-                btnMinimize.text = "펼치기 ▼"
-            } else {
-                layoutExpandedBody.visibility = View.VISIBLE
-                btnMinimize.text = "접기 ▲"
-            }
-            panelView?.let { windowManager.updateViewLayout(it, panelParams) }
-        }
-
+        // 격자 드래그 편집 모드 토글
         btnEditMode.setOnClickListener {
             isEditMode = !isEditMode
             if (isEditMode) {
-                btnEditMode.text = "조절 중 (화면 드래그)"
-                btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#E91E63"))
+                btnEditMode.text = "🛠️ 조절 중"
+                btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50"))
                 gridParams.flags = gridParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             } else {
-                btnEditMode.text = "격자 고정 상태"
+                btnEditMode.text = "🛠️ 격자 고정"
                 btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#757575"))
                 gridParams.flags = gridParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             }
             gridOverlayView?.let { windowManager.updateViewLayout(it, gridParams) }
         }
 
-        btnToggleLogic.setOnClickListener {
-            isLogicEnabled = !isLogicEnabled
-            btnToggleLogic.text = if (isLogicEnabled) "로직: ON" else "로직: OFF"
-            btnToggleLogic.setBackgroundColor(android.graphics.Color.parseColor(if (isLogicEnabled) "#4CAF50" else "#757575"))
+        btnMinimize.setOnClickListener {
+            if (layoutExpandedBody.visibility == View.VISIBLE) {
+                layoutExpandedBody.visibility = View.GONE
+                btnMinimize.text = "행렬 ▼"
+            } else {
+                layoutExpandedBody.visibility = View.VISIBLE
+                btnMinimize.text = "행렬 ▲"
+            }
+            panelView?.let { windowManager.updateViewLayout(it, panelParams) }
         }
 
         btnKillService.setOnClickListener { stopSelf() }
@@ -186,10 +180,9 @@ class SolverService : Service() {
         view.findViewById<Button>(R.id.btnColMinus).setOnClickListener { gridOverlayView?.let { if(it.cols > 1) it.cols--; updateInfoText(); it.invalidate() } }
     }
 
-    // ✨ [시야 무방해 원격 드래그 엔진]
-    // 모서리를 손으로 직접 안 만져도 됩니다. 화면을 터치하면 가장 가까운 모서리가 타겟팅되어 움직입니다.
+    // 시야 가림 없는 간접 드래그 시스템
     private fun setupAdvancedIndirectTouchListener() {
-        var lockedCorner = -1 // 0:TL, 1:TR, 2:BL, 3:BR
+        var lockedCorner = -1 
         var startStartX = 0f; var startStartY = 0f
         var origX = 0f; var origY = 0f
 
@@ -200,7 +193,6 @@ class SolverService : Service() {
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     startStartX = event.x; startStartY = event.y
-                    // 누른 위치에서 제일 가까운 꼭짓점 매칭 알고리즘
                     val dTL = Math.hypot((startStartX - gov.tlX).toDouble(), (startStartY - gov.tlY).toDouble())
                     val dTR = Math.hypot((startStartX - gov.trX).toDouble(), (startStartY - gov.trY).toDouble())
                     val dBL = Math.hypot((startStartX - gov.blX).toDouble(), (startStartY - gov.blY).toDouble())
@@ -209,7 +201,6 @@ class SolverService : Service() {
                     val minVal = listOf(dTL, dTR, dBL, dBR).minOrNull() ?: return@setOnTouchListener false
                     lockedCorner = listOf(dTL, dTR, dBL, dBR).indexOf(minVal)
 
-                    // 잠금된 모서리의 원래 위치 확보
                     when(lockedCorner) {
                         0 -> { origX = gov.tlX; origY = gov.tlY }
                         1 -> { origX = gov.trX; origY = gov.trY }
@@ -223,7 +214,6 @@ class SolverService : Service() {
                     val dx = event.x - startStartX
                     val dy = event.y - startStartY
 
-                    // 손가락 이동량 변위만큼 원격으로 오프셋 연산 적용
                     when(lockedCorner) {
                         0 -> { gov.tlX = origX + dx; gov.tlY = origY + dy }
                         1 -> { gov.trX = origX + dx; gov.trY = origY + dy }
@@ -233,10 +223,7 @@ class SolverService : Service() {
                     gov.invalidate()
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    lockedCorner = -1
-                    true
-                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { lockedCorner = -1; true }
                 else -> false
             }
         }
@@ -246,5 +233,77 @@ class SolverService : Service() {
         gridOverlayView?.let { tvGridInfo.text = "크기: ${it.rows}행 x ${it.cols}열" }
     }
 
-    // ... (이하 온스타트커맨드 및 이미지캡처 루프 생략 - 이전과 동일) ...
+    private fun startCaptureAndAnalysisLoop() {
+        val metrics = DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        val width = metrics.widthPixels; val height = metrics.heightPixels; val density = metrics.densityDpi
+
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "ScreenCapture", width, height, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, null
+        )
+
+        imageReader?.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                // ✨ [핵심 수정: 크래시 원천 차단]
+                // 사용자가 격자를 조절 중(isEditMode)일 때는 픽셀 매핑을 중단하고 즉시 리턴하여 튕김을 막습니다.
+                if (isEditMode || gridOverlayView == null) {
+                    image.close()
+                    return@setOnImageAvailableListener
+                }
+
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val rowPadding = rowStride - pixelStride * width
+                val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
+                bitmap.copyPixelsFromBuffer(buffer)
+
+                // OOXOO 연산 구역 (이전 코드 연동)
+
+                bitmap.recycle()
+            } catch (e: Exception) { Log.e("SolverService", "루프 에러", e) } finally { image.close() }
+        }, backgroundHandler)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null) return START_NOT_STICKY
+        val resultCode = intent.getIntExtra("RESULT_CODE", -1)
+        @Suppress("DEPRECATION")
+        val resultData = intent.getParcelableExtra<Intent>("RESULT_DATA")
+        if (resultCode != Activity.RESULT_OK || resultData == null) return START_NOT_STICKY
+        
+        // 포어그라운드 노티 시동
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel("HelperEngine", "Engine", NotificationManager.IMPORTANCE_LOW)
+            manager.createNotificationChannel(channel)
+        }
+        val notification = NotificationCompat.Builder(this, "HelperEngine")
+            .setContentTitle("엔진 구동중").setSmallIcon(android.R.drawable.sym_def_app_icon).build()
+        startForeground(8888, notification)
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
+                startCaptureAndAnalysisLoop()
+            } catch (e: Exception) { Log.e("SolverService", "시동 에러", e) }
+        }, 200)
+
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        backgroundThread?.quitSafely()
+        virtualDisplay?.release()
+        imageReader?.close()
+        mediaProjection?.stop()
+        panelView?.let { windowManager.removeView(it) }
+        gridOverlayView?.let { windowManager.removeView(it) }
+    }
 }
