@@ -11,6 +11,9 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.example.helper.service.SolverService
 
+// 🎯 [핵심 수정] 깃허브 컴파일러가 레이아웃을 찾지 못하는 문제를 해결하기 위해 R 클래스를 강제 명시 임포트합니다.
+import com.example.helper.R
+
 class MainActivity : AppCompatActivity() {
 
     private val REQUEST_MEDIA_PROJECTION = 1001
@@ -18,10 +21,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 🎯 R.layout.activity_main 참조 확인
         setContentView(R.layout.activity_main)
 
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
+        // 🎯 R.id.btnStartService 참조 확인
         val btnStart = findViewById<Button>(R.id.btnStartService)
         btnStart.setOnClickListener {
             // 화면 공유 권한 요청 팝업 띄우기
@@ -52,8 +57,7 @@ class MainActivity : AppCompatActivity() {
 
                 Toast.makeText(this, "분석기가 활성화되었습니다. 게임을 켜주세요.", Toast.LENGTH_SHORT).show()
 
-                // 🎯 [핵심 수정] 권한을 받자마자 이 앱을 백그라운드로 내립니다.
-                // 그래야 뒤에 있던 게임 화면이 보이면서 실시간 캡처(화면 변화)가 시작됩니다.
+                // 권한을 받자마자 이 앱을 백그라운드로 내려서 게임 화면이 보이도록 처리
                 moveTaskToBack(true)
 
             } else {
