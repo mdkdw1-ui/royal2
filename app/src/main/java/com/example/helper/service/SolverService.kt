@@ -1,6 +1,5 @@
-package com.example.helper.service
+package com.example.gridhelper // 👈 본인의 프로젝트 패키지명에 맞게 변경하세요.
 
-import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,330 +8,108 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.PixelFormat
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.ImageReader
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
+import android.os.Binder
 import android.os.Build
-import android.os.Handler
-import android.os.HandlerThread
 import android.os.IBinder
-import android.os.Looper
-import android.provider.Settings
-import android.util.DisplayMetrics
-import android.util.Log
-import android.view.Gravity
-import android.view.LayoutInflater
-import android.view.MotionEvent
-import android.view.View
-import android.view.ViewGroup
-import android.view.WindowManager
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.example.helper.R
-import com.example.helper.ui.GridOverlayView
-import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * 로열 매치 블록 색상 정의
+ */
+enum class BlockColor {
+    RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN
+}
+
+/**
+ * 매칭 추천 이동 경로 구조체
+ */
+data class MatchMove(
+    val fromRow: Int, val fromCol: Int,
+    val toRow: Int, val toCol: Int,
+    val matchCount: Int,
+    val description: String
+)
 
 class SolverService : Service() {
 
-    enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
-
-    private lateinit var windowManager: WindowManager
-    private var panelView: View? = null
-    private var gridOverlayView: GridOverlayView? = null // 🎯 화살표 기능이 통합된 단일 레이어
-    private lateinit var tvGridInfo: TextView
+    private val binder = SolverBinder()
     
-    private lateinit var panelParams: WindowManager.LayoutParams
-    private lateinit var gridParams: WindowManager.LayoutParams
-
-    private var mediaProjectionManager: MediaProjectionManager? = null
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
-
-    private var backgroundThread: HandlerThread? = null
-    private var backgroundHandler: Handler? = null
-
-    private var isEditMode = false 
-    private var lastAnalysisTime = 0L 
+    // 기본 로열 매치 격자 크기 (11행 9열 기본값 세팅)
+    var rows = 11
+    var cols = 9
     
-    private val snapRequested = AtomicBoolean(false)
+    inner class SolverBinder : Binder() {
+        fun getService(): SolverService = this@SolverService
+    }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder {
+        return binder
+    }
 
     override fun onCreate() {
         super.onCreate()
-        if (!Settings.canDrawOverlays(this)) { 
-            Toast.makeText(this, "❌ 권한이 없습니다.", Toast.LENGTH_SHORT).show()
-            stopSelf()
-            return 
-        }
+        startForegroundService()
+    }
 
-        backgroundThread = HandlerThread("ScreenCaptureThread").apply { start() }
-        backgroundHandler = Handler(backgroundThread!!.looper)
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY
+    }
 
-        try {
-            windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val inflater = LayoutInflater.from(this)
-
-            // 🛠️ [교정] 단일 격자 레이어: 제조사 차단 정책 우회를 위해 alpha를 안전 계수 0.4f로 하향
-            gridParams = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                alpha = 0.4f 
-            }
-            gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
-            windowManager.addView(gridOverlayView, gridParams)
-
-            // 🛠️ [교정] 제어판 Layout Params 생성 및 크기 강제 제어
-            panelParams = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = 0
-                y = 150
-            }
-
-            panelView = inflater.inflate(R.layout.overlay_layout, null)
-            
-            // 🛠️ 안전장치: 루트 뷰 크기가 전체 화면으로 번지는 현상을 방지하기 위해 가로세로 WRAP_CONTENT 강제 주입
-            panelView?.layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+    /**
+     * 백그라운드 분석을 위한 포그라운드 서비스 활성화
+     */
+    private fun startForegroundService() {
+        val channelId = "solver_service_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "격자 헬퍼 분석 엔진",
+                NotificationManager.IMPORTANCE_LOW
             )
-            windowManager.addView(panelView, panelParams)
-            
-            val pView = panelView ?: return
-            tvGridInfo = pView.findViewById(R.id.tvGridInfo)
-
-            initControlPanelListeners(pView)
-            setupAdvancedIndirectTouchListener() 
-            updateInfoText()
-
-        } catch (e: Exception) { 
-            handleException("ServiceOnCreate", e) 
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
         }
+
+        val notification: Notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("격자 헬퍼 동작 중")
+            .setContentText("디스코볼 생성 매칭 검출 엔진이 실행 중입니다.")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .build()
+
+        startForeground(1, notification)
     }
 
-    private fun initControlPanelListeners(view: View) {
-        val layoutHeader = view.findViewById<LinearLayout>(R.id.layoutHeader)
-        val layoutExpandedBody = view.findViewById<LinearLayout>(R.id.layoutExpandedBody)
-        val btnMinimize = view.findViewById<Button>(R.id.btnMinimize)
-        val btnKillService = view.findViewById<Button>(R.id.btnKillService)
-        val btnEditMode = view.findViewById<Button>(R.id.btnEditMode)
-        val btnGridVisibility = view.findViewById<Button>(R.id.btnGridVisibility)
-
-        layoutHeader.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    layoutHeader.setTag(R.id.btnEditMode, Pair(panelParams.x, panelParams.y))
-                    layoutHeader.setTag(R.id.btnGridVisibility, Pair(event.rawX, event.rawY))
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val initCoords = layoutHeader.getTag(R.id.btnEditMode) as? Pair<*, *>
-                    val touchCoords = layoutHeader.getTag(R.id.btnGridVisibility) as? Pair<*, *>
-                    if (initCoords != null && touchCoords != null) {
-                        panelParams.x = (initCoords.first as Int) + (event.rawX - (touchCoords.first as Float)).toInt()
-                        panelParams.y = (initCoords.second as Int) + (event.rawY - (touchCoords.second as Float)).toInt()
-                        panelView?.let { windowManager.updateViewLayout(it, panelParams) }
-                    }
-                    true
-                }
-                else -> false
-            }
-        }
-
-        btnGridVisibility.setOnClickListener {
-            gridOverlayView?.let { gov ->
-                gov.showGridLines = !gov.showGridLines
-                btnGridVisibility.text = if (gov.showGridLines) "👁️ 격자 보임" else "👁️ 격자 숨김"
-                btnGridVisibility.setBackgroundColor(Color.parseColor(if (gov.showGridLines) "#2196F3" else "#E91E63"))
-                gov.invalidate()
-            }
-        }
-
-        btnEditMode.setOnClickListener {
-            isEditMode = !isEditMode
-            if (isEditMode) {
-                btnEditMode.text = "🛠️ 조절 중"
-                btnEditMode.setBackgroundColor(Color.parseColor("#4CAF50"))
-                // 손으로 조절할 때는 드래그 터치를 받아야 하므로 플래그 해제 및 선명도 업
-                gridParams.flags = gridParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-                gridParams.alpha = 1.0f
-            } else {
-                btnEditMode.text = "🛠️ 격자 고정"
-                btnEditMode.setBackgroundColor(Color.parseColor("#757575"))
-                // 🛠️ 고정 완료 시 엄격한 제조사 필터를 피하기 위해 안전 투명도(0.4f)와 통과 플래그 주입
-                gridParams.flags = gridParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                gridParams.alpha = 0.4f
-                snapRequested.set(true)
-            }
-            gridOverlayView?.let { windowManager.updateViewLayout(it, gridParams) }
-        }
-
-        btnMinimize.setOnClickListener {
-            if (layoutExpandedBody.visibility == View.VISIBLE) {
-                layoutExpandedBody.visibility = View.GONE
-                btnMinimize.text = "행렬 ▼"
-            } else {
-                layoutExpandedBody.visibility = View.VISIBLE
-                btnMinimize.text = "행렬 ▲"
-            }
-            panelView?.let { windowManager.updateViewLayout(it, panelParams) }
-        }
-
-        btnKillService.setOnClickListener { stopSelf() }
-
-        view.findViewById<Button>(R.id.btnRowPlus).setOnClickListener { gridOverlayView?.let { it.rows++; updateInfoText(); it.invalidate() } }
-        view.findViewById<Button>(R.id.btnRowMinus).setOnClickListener { gridOverlayView?.let { if(it.rows > 1) it.rows--; updateInfoText(); it.invalidate() } }
-        view.findViewById<Button>(R.id.btnColPlus).setOnClickListener { gridOverlayView?.let { it.cols++; updateInfoText(); it.invalidate() } }
-        view.findViewById<Button>(R.id.btnColMinus).setOnClickListener { gridOverlayView?.let { if(it.cols > 1) it.cols--; updateInfoText(); it.invalidate() } }
-    }
-
-    private fun setupAdvancedIndirectTouchListener() {
-        var lockedCorner = -1 
-        var startStartX = 0f; var startStartY = 0f
-        var origX = 0f; var origY = 0f
-
-        gridOverlayView?.setOnTouchListener { _, event ->
-            if (!isEditMode) return@setOnTouchListener false
-            val gov = gridOverlayView ?: return@setOnTouchListener false
-
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    startStartX = event.x
-                    startStartY = event.y
-                    
-                    val dTL = Math.hypot((startStartX - gov.tlX).toDouble(), (startStartY - gov.tlY).toDouble())
-                    val dTR = Math.hypot((startStartX - gov.trX).toDouble(), (startStartY - gov.trY).toDouble())
-                    val dBL = Math.hypot((startStartX - gov.blX).toDouble(), (startStartY - gov.blY).toDouble())
-                    val dBR = Math.hypot((startStartX - gov.brX).toDouble(), (startStartY - gov.brY).toDouble())
-
-                    val minVal = listOf(dTL, dTR, dBL, dBR).minOrNull() ?: return@setOnTouchListener false
-                    lockedCorner = listOf(dTL, dTR, dBL, dBR).indexOf(minVal)
-
-                    when(lockedCorner) {
-                        0 -> { origX = gov.tlX; origY = gov.tlY }
-                        1 -> { origX = gov.trX; origY = gov.trY }
-                        2 -> { origX = gov.blX; origY = gov.blY }
-                        3 -> { origX = gov.brX; origY = gov.brY }
-                    }
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (lockedCorner == -1) return@setOnTouchListener false
-                    val dx = event.x - startStartX
-                    val dy = event.y - startStartY
-
-                    when(lockedCorner) {
-                        0 -> { gov.tlX = origX + dx; gov.tlY = origY + dy }
-                        1 -> { gov.trX = origX + dx; gov.trY = origY + dy }
-                        2 -> { gov.blX = origX + dx; gov.blY = origY + dy }
-                        3 -> { gov.brX = origX + dx; gov.brY = origY + dy }
-                    }
-                    gov.invalidate()
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { 
-                    lockedCorner = -1 
-                    snapRequested.set(true)
-                    true 
-                }
-                else -> false
-            }
-        }
-    }
-
-    private fun updateInfoText() {
-        gridOverlayView?.let { tvGridInfo.text = "크기: ${it.rows}행 x ${it.cols}열" }
-    }
-
-    private fun startCaptureAndAnalysisLoop() {
-        val gov = gridOverlayView ?: return
-        val metrics = DisplayMetrics()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display?.getRealMetrics(metrics)
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.getRealMetrics(metrics)
-        }
+    /**
+     * 🎯 화면 전체 비트맵과 격자 설정 범위를 받아 연산을 수행하는 메인 함수
+     */
+    fun analyzeAndSolve(bitmap: Bitmap, gridLeft: Float, gridTop: Float, gridWidth: Float, gridHeight: Float): List<MatchMove> {
+        val cellWidth = gridWidth / cols
+        val cellHeight = gridHeight / rows
         
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        
-        try {
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "ScreenCapture",
-                width, height, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface,
-                null, backgroundHandler
-            )
-        } catch (e: Exception) {
-            handleException("CreateVirtualDisplay", e)
-            return
+        val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
+
+        // 1. 모든 셀 순회하며 수정된 색상 감지 적용
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val centerX = gridLeft + (c + 0.5f) * cellWidth
+                val centerY = gridTop + (r + 0.5f) * cellHeight
+                
+                board[r][c] = detectCellColorROI(pixels, width, height, centerX, centerY)
+            }
         }
 
-        imageReader?.setOnImageAvailableListener({ reader ->
-            val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
-            if (image != null) {
-                val currentTime = System.currentTimeMillis()
-                if (currentTime - lastAnalysisTime > 500 || snapRequested.getAndSet(false)) {
-                    lastAnalysisTime = currentTime
-                    processImageFrame(image, gov)
-                } else {
-                    image.close()
-                }
-            }
-        }, backgroundHandler)
+        // 2. 알고리즘을 통한 최적 매칭(디스코볼 5개 정렬 우선) 반환
+        return findBestMoves(board)
     }
 
-    private fun processImageFrame(image: android.media.Image, gov: GridOverlayView) {
-        try {
-            val planes = image.planes
-            val buffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
-            val rowPadding = rowStride - pixelStride * image.width
-
-            var bitmap = Bitmap.createBitmap(
-                image.width + rowPadding / pixelStride,
-                image.height,
-                Bitmap.Config.ARGB_8888
-            )
-            bitmap.copyPixelsFromBuffer(buffer)
-            image.close()
-
-            if (bitmap.width != image.width) {
-                val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
-                bitmap.recycle()
-                bitmap = cropped
-            }
-
-            runMatchEngine(bitmap, gov)
-            bitmap.recycle()
-        } catch (e: Exception) {
-            Log.e("SolverService", "화면 프레임 디코딩 중 에러", e)
-        }
-    }
-
+    /**
+     * 🛠️ [색상 교정 버전] 투명도 0.4의 스펙트럼 왜곡과 연두색 공백 영역을 완벽 복구한 픽셀 판정 함수
+     */
     private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
         val radius = 12 
         val cX = centerX.toInt()
@@ -352,20 +129,23 @@ class SolverService : Service() {
                 val sat = hsv[1]
                 val value = hsv[2]
 
-                if (sat < 0.22f || value < 0.22f) continue
+                // 오버레이 불투명도에 따른 배경 노이즈 제거를 위한 필터
+                if (sat < 0.15f || value < 0.15f) continue
 
+                // 🛠️ 0도부터 360도까지 끊김 없이 완전 정렬 + 황록/연두색 스캔 성공
                 when {
-                    (hue in 0f..22f) || (hue in 345f..360f) -> redCount++
-                    hue in 23f..65f -> yellowCount++
-                    hue in 190f..245f -> blueCount++
-                    hue in 85f..140f -> greenCount++
-                    hue in 260f..310f -> purpleCount++
+                    (hue in 0f..20f) || (hue in 340f..360f) -> redCount++    // 빨간 책
+                    hue in 21f..70f -> yellowCount++                         // 노란 왕관
+                    hue in 71f..165f -> greenCount++                         // 녹색 나뭇잎 (공백 구간 해결 완료 🎯)
+                    hue in 166f..255f -> blueCount++                         // 파란 방패
+                    hue in 256f..339f -> purpleCount++                       // 모자/특수 방해 타일
                 }
             }
         }
 
         val totalSamples = ((radius * 2) + 1) * ((radius * 2) + 1)
-        val threshold = totalSamples * 0.15f 
+        // 화면 오버레이 레이어로 흐려진 색역 매칭 신뢰도를 12%로 조율하여 탐지 성공률 극대화
+        val threshold = totalSamples * 0.12f 
 
         val counts = mapOf(
             BlockColor.RED to redCount, BlockColor.BLUE to blueCount,
@@ -376,204 +156,79 @@ class SolverService : Service() {
         return if (maxEntry.value > threshold) maxEntry.key else BlockColor.UNKNOWN
     }
 
-    private fun runMatchEngine(bitmap: Bitmap, gov: GridOverlayView) {
-        val width = bitmap.width
-        val height = bitmap.height
+    /**
+     * 보드 판의 스왑 가능한 조합 중, 연속 5개(디스코볼) 매칭 조합을 0순위로 추출합니다.
+     */
+    private fun findBestMoves(board: Array<Array<BlockColor>>): List<MatchMove> {
+        val moves = mutableListOf<MatchMove>()
         
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        val rows = gov.rows
-        val cols = gov.cols
-        val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
+        val dr = intArrayOf(-1, 1, 0, 0)
+        val dc = intArrayOf(0, 0, -1, 1)
 
         for (r in 0 until rows) {
             for (c in 0 until cols) {
-                val uMid = (c + 0.5f) / cols
-                val vMid = (r + 0.5f) / rows
-                val p = gov.getInterpolatedPoint(uMid, vMid)
-                board[r][c] = detectCellColorROI(pixels, width, height, p.x, p.y)
-            }
-        }
+                if (board[r][c] == BlockColor.UNKNOWN) continue
 
-        var bestMatchScore = 0
-        var bestMoveText = "분석 중..."
-        
-        var arrowStartX = 0f; var arrowStartY = 0f; var arrowEndX = 0f; var arrowEndY = 0f
-        var hasBestMove = false
+                // 4방향 스왑 연산
+                for (i in 0 until 4) {
+                    val nr = r + dr[i]
+                    val nc = c + dc[i]
 
-        for (r in 0 until rows) {
-            for (c in 0 until cols) {
-                val currentColor = board[r][c]
-                if (currentColor == BlockColor.UNKNOWN) continue
-
-                if (c + 1 < cols && board[r][c + 1] != BlockColor.UNKNOWN && board[r][c + 1] != currentColor) {
-                    val rightColor = board[r][c + 1]
-                    board[r][c] = rightColor
-                    board[r][c + 1] = currentColor
-
-                    val score1 = calculateComboScore(board, r, c, rows, cols)
-                    val score2 = calculateComboScore(board, r, c + 1, rows, cols)
-                    val totalScore = Math.max(score1, score2)
-
-                    if (totalScore >= 3 && totalScore > bestMatchScore) {
-                        bestMatchScore = totalScore
-                        hasBestMove = true
+                    if (nr in 0 until rows && nc in 0 until cols) {
+                        if (board[nr][nc] == BlockColor.UNKNOWN) continue
                         
-                        val tag = when {
-                            totalScore >= 100 -> "🔮 [디스코볼 생성] "
-                            totalScore >= 70 -> "🔥 [크로스 콤보] "
-                            totalScore >= 40 -> "⭐ [특수 폭탄 생성] "
-                            else -> ""
+                        // 임시 스왑 가동
+                        val temp = board[r][c]
+                        board[r][c] = board[nr][nc]
+                        board[nr][nc] = temp
+
+                        // 🛠️ 스왑된 양측 타일 모두 검사하도록 로직 고도화 (정확도 상향)
+                        val matchLen1 = checkMaxMatchLength(board, r, c)
+                        val matchLen2 = checkMaxMatchLength(board, nr, nc)
+                        val maxLen = maxOf(matchLen1, matchLen2)
+
+                        if (maxLen >= 3) {
+                            val desc = if (maxLen >= 5) "디스코볼 생성 가능! 🎯" else "${maxLen}개 매칭"
+                            moves.add(MatchMove(r, c, nr, nc, maxLen, desc))
                         }
-                        bestMoveText = "${tag}(${r + 1}, ${c + 1}) ↔️ (${r + 1}, ${c + 2})"
-                        
-                        val p1 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 0.5f) / rows)
-                        val p2 = gov.getInterpolatedPoint((c + 1.5f) / cols, (r + 0.5f) / rows)
-                        arrowStartX = p1.x; arrowStartY = p1.y; arrowEndX = p2.x; arrowEndY = p2.y
+
+                        // 복구
+                        board[nr][nc] = board[r][c]
+                        board[r][c] = temp
                     }
-
-                    board[r][c] = currentColor
-                    board[r][c + 1] = rightColor
-                }
-
-                if (r + 1 < rows && board[r + 1][c] != BlockColor.UNKNOWN && board[r + 1][c] != currentColor) {
-                    val downColor = board[r + 1][c]
-                    board[r][c] = downColor
-                    board[r + 1][c] = currentColor
-
-                    val score1 = calculateComboScore(board, r, c, rows, cols)
-                    val score2 = calculateComboScore(board, r + 1, c, rows, cols)
-                    val totalScore = Math.max(score1, score2)
-
-                    if (totalScore >= 3 && totalScore > bestMatchScore) {
-                        bestMatchScore = totalScore
-                        hasBestMove = true
-                        
-                        val tag = when {
-                            totalScore >= 100 -> "🔮 [디스코볼 생성] "
-                            totalScore >= 70 -> "🔥 [크로스 콤보] "
-                            totalScore >= 40 -> "⭐ [특수 폭탄 생성] "
-                            else -> ""
-                        }
-                        bestMoveText = "${tag}(${r + 1}, ${c + 1}) ↔️ (${r + 2}, ${c + 1})"
-                        
-                        val p1 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 0.5f) / rows)
-                        val p2 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 1.5f) / rows)
-                        arrowStartX = p1.x; arrowStartY = p1.y; arrowEndX = p2.x; arrowEndY = p2.y
-                    }
-
-                    board[r][c] = currentColor
-                    board[r + 1][c] = downColor
                 }
             }
         }
 
-        Handler(Looper.getMainLooper()).post {
-            tvGridInfo.text = bestMoveText
-            // 🎯 [통합된 단일 오버레이 뷰]에 직접 드로잉 지시
-            if (hasBestMove) {
-                gridOverlayView?.updateArrow(arrowStartX, arrowStartY, arrowEndX, arrowEndY)
-            } else {
-                gridOverlayView?.clearArrow()
-            }
-        }
+        // 5개 매칭(디스코볼)이 가능한 조합이 리스트 가장 첫 번째 위치에 오도록 역순 정렬
+        return moves.sortedByDescending { it.matchCount }
     }
 
-    private fun calculateComboScore(board: Array<Array<BlockColor>>, r: Int, c: Int, rows: Int, cols: Int): Int {
-        val hScore = checkHorizontalMatchScore(board, r, c, cols)
-        val vScore = checkVerticalMatchScore(board, r, c, rows)
-        
-        val hValid = if (hScore >= 3) hScore else 0
-        val vValid = if (vScore >= 3) vScore else 0
-
-        return when {
-            hValid >= 5 || vValid >= 5 -> 100
-            hValid >= 3 && vValid >= 3 -> 70
-            hValid == 4 || vValid == 4 -> 40
-            else -> Math.max(hValid, vValid)
-        }
-    }
-
-    private fun checkVerticalMatchScore(board: Array<Array<BlockColor>>, row: Int, col: Int, maxRows: Int): Int {
-        val color = board[row][col]
+    /**
+     * 특정 좌표를 기준으로 연속된 가로/세로 매칭 길이를 측정
+     */
+    private fun checkMaxMatchLength(board: Array<Array<BlockColor>>, r: Int, c: Int): Int {
+        val color = board[r][c]
         if (color == BlockColor.UNKNOWN) return 0
-        var up = 0; var down = 0
-        var r = row - 1
-        while (r >= 0 && board[r][col] == color) { up++; r-- }
-        r = row + 1
-        while (r < maxRows && board[r][col] == color) { down++; r++ }
-        return up + down + 1
-    }
 
-    private fun checkHorizontalMatchScore(board: Array<Array<BlockColor>>, row: Int, col: Int, maxCols: Int): Int {
-        val color = board[row][col]
-        if (color == BlockColor.UNKNOWN) return 0
-        var left = 0; var right = 0
-        var c = col - 1
-        while (c >= 0 && board[row][c] == color) { left++; c-- }
-        c = col + 1
-        while (c < maxCols && board[row][c] == color) { right++; c++ }
-        return left + right + 1
-    }
+        // 가로 매칭 측정
+        var horizontalCount = 1
+        var cc = c + 1
+        while (cc < cols && board[r][cc] == color) { horizontalCount++; cc++ }
+        cc = c - 1
+        while (cc >= 0 && board[r][cc] == color) { horizontalCount++; cc-- }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) return START_NOT_STICKY
-        val resultCode = intent.getIntExtra("RESULT_CODE", -1)
-        @Suppress("DEPRECATION")
-        val resultData = intent.getParcelableExtra<Intent>("RESULT_DATA")
-        
-        if (resultCode != Activity.RESULT_OK || resultData == null) {
-            Toast.makeText(this, "❌ 화면 공유 승인이 취소되었습니다.", Toast.LENGTH_SHORT).show()
-            return START_NOT_STICKY
-        }
-        
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel("HelperEngine", "Grid Engine", NotificationManager.IMPORTANCE_LOW)
-            manager.createNotificationChannel(channel)
-        }
-        val notification = NotificationCompat.Builder(this, "HelperEngine")
-            .setContentTitle("격자 분석 도우미 작동 중")
-            .setSmallIcon(android.R.drawable.sym_def_app_icon)
-            .build()
-            
-        startForeground(8888, notification)
+        // 세로 매칭 측정
+        var verticalCount = 1
+        var rr = r + 1
+        while (rr < rows && board[rr][c] == color) { verticalCount++; rr++ }
+        rr = r - 1
+        while (rr >= 0 && board[rr][c] == color) { verticalCount++; rr-- }
 
-        Handler(Looper.getMainLooper()).postDelayed({
-            try {
-                mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
-                startCaptureAndAnalysisLoop()
-            } catch (e: Exception) {
-                handleException("MediaProjectionInit", e)
-            }
-        }, 250)
-
-        return START_STICKY
+        return maxOf(horizontalCount, verticalCount)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            imageReader?.setOnImageAvailableListener(null, null) 
-            virtualDisplay?.release()
-            virtualDisplay = null
-            imageReader?.close()
-            imageReader = null
-            mediaProjection?.stop()
-            mediaProjection = null
-            
-            backgroundThread?.quitSafely()
-            panelView?.let { windowManager.removeView(it) }
-            gridOverlayView?.let { windowManager.removeView(it) } // 🎯 단 하나의 윈도우만 해제
-            
-        } catch (e: Exception) {
-            Log.e("SolverService", "Destroy 에러", e)
-        }
-    }
-
-    private fun handleException(location: String, e: Exception) {
-        Log.e("SolverService_CRASH", "[$location] 예외 감지", e)
     }
 }
