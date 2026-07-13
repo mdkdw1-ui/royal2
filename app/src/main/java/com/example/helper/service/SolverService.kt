@@ -60,16 +60,20 @@ class SolverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        if (!Settings.canDrawOverlays(this)) { stopSelf(); return }
+        if (!Settings.canDrawOverlays(this)) { 
+            Toast.makeText(this, "❌ 다른 앱 위에 그리기 권한이 없습니다.", Toast.LENGTH_SHORT).show()
+            stopSelf()
+            return 
+        }
 
         backgroundThread = HandlerThread("ScreenCaptureThread").apply { start() }
-        backgroundThread!!.start()
         backgroundHandler = Handler(backgroundThread!!.looper)
 
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
+            // 1. 격자 오버레이 뷰 설정 (처음엔 터치 불가능 상태)
             gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -80,6 +84,7 @@ class SolverService : Service() {
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
+            // 2. 조작 제어판 뷰 설정
             panelParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -88,7 +93,8 @@ class SolverService : Service() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = 0; y = 150
+                x = 0
+                y = 150
             }
 
             panelView = inflater.inflate(R.layout.overlay_layout, null)
@@ -101,7 +107,9 @@ class SolverService : Service() {
             setupAdvancedIndirectTouchListener() 
             updateInfoText()
 
-        } catch (e: Exception) { Log.e("SolverService", "초기화 에러", e) }
+        } catch (e: Exception) { 
+            handleException("ServiceOnCreate", e) 
+        }
     }
 
     private fun initControlPanelListeners(view: View) {
@@ -112,13 +120,15 @@ class SolverService : Service() {
         val btnEditMode = view.findViewById<Button>(R.id.btnEditMode)
         val btnGridVisibility = view.findViewById<Button>(R.id.btnGridVisibility)
 
-        // 패널 드래그 이동
+        // 제어판 상단 바 드래그 시 패널 이동
         var pInitialX = 0; var pInitialY = 0; var pTouchX = 0f; var pTouchY = 0f
         layoutHeader.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    pInitialX = panelParams.x; pInitialY = panelParams.y
-                    pTouchX = event.rawX; pTouchY = event.rawY
+                    pInitialX = panelParams.x
+                    pInitialY = panelParams.y
+                    pTouchX = event.rawX
+                    pTouchY = event.rawY
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -131,7 +141,7 @@ class SolverService : Service() {
             }
         }
 
-        // ✨ 격자 선 숨기기 / 보이기 토글 버튼 로직
+        // 격자 선 숨기기 / 보이기 토글 버튼
         btnGridVisibility.setOnClickListener {
             gridOverlayView?.let { gov ->
                 gov.showGridLines = !gov.showGridLines
@@ -146,21 +156,24 @@ class SolverService : Service() {
             }
         }
 
-        // 격자 드래그 편집 모드 토글
+        // 격자 미세조정 드래그 모드 ON/OFF 토글
         btnEditMode.setOnClickListener {
             isEditMode = !isEditMode
             if (isEditMode) {
                 btnEditMode.text = "🛠️ 조절 중"
                 btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50"))
+                // 터치를 격자 뷰가 가로챌 수 있도록 FLAG 변경
                 gridParams.flags = gridParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             } else {
                 btnEditMode.text = "🛠️ 격자 고정"
                 btnEditMode.setBackgroundColor(android.graphics.Color.parseColor("#757575"))
+                // 다시 격자 터치 안먹히게 락 걸기
                 gridParams.flags = gridParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             }
             gridOverlayView?.let { windowManager.updateViewLayout(it, gridParams) }
         }
 
+        // 행렬 수치 조절창 접기 / 펼치기
         btnMinimize.setOnClickListener {
             if (layoutExpandedBody.visibility == View.VISIBLE) {
                 layoutExpandedBody.visibility = View.GONE
@@ -172,15 +185,17 @@ class SolverService : Service() {
             panelView?.let { windowManager.updateViewLayout(it, panelParams) }
         }
 
+        // 서비스 강제 종료 버튼
         btnKillService.setOnClickListener { stopSelf() }
 
+        // 행렬 단추 클릭 이벤트들
         view.findViewById<Button>(R.id.btnRowPlus).setOnClickListener { gridOverlayView?.let { it.rows++; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnRowMinus).setOnClickListener { gridOverlayView?.let { if(it.rows > 1) it.rows--; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnColPlus).setOnClickListener { gridOverlayView?.let { it.cols++; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnColMinus).setOnClickListener { gridOverlayView?.let { if(it.cols > 1) it.cols--; updateInfoText(); it.invalidate() } }
     }
 
-    // 시야 가림 없는 간접 드래그 시스템
+    // 시야 방해 없는 스마트 간접 변위 드래그 시스템
     private fun setupAdvancedIndirectTouchListener() {
         var lockedCorner = -1 
         var startStartX = 0f; var startStartY = 0f
@@ -192,7 +207,9 @@ class SolverService : Service() {
 
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    startStartX = event.x; startStartY = event.y
+                    startStartX = event.x
+                    startStartY = event.y
+                    
                     val dTL = Math.hypot((startStartX - gov.tlX).toDouble(), (startStartY - gov.tlY).toDouble())
                     val dTR = Math.hypot((startStartX - gov.trX).toDouble(), (startStartY - gov.trY).toDouble())
                     val dBL = Math.hypot((startStartX - gov.blX).toDouble(), (startStartY - gov.blY).toDouble())
@@ -223,7 +240,10 @@ class SolverService : Service() {
                     gov.invalidate()
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { lockedCorner = -1; true }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { 
+                    lockedCorner = -1 
+                    true 
+                }
                 else -> false
             }
         }
@@ -233,40 +253,74 @@ class SolverService : Service() {
         gridOverlayView?.let { tvGridInfo.text = "크기: ${it.rows}행 x ${it.cols}열" }
     }
 
+    // GitHub용 에러 실시간 디스플레이 프레임워크
+    private fun handleException(location: String, e: Exception) {
+        Log.e("SolverService_CRASH", "[$location] 에서 크래시 및 예외 감지됨!", e)
+        
+        Handler(Looper.getMainLooper()).post {
+            val exceptionName = e.javaClass.simpleName
+            val exceptionMessage = e.message ?: "상세 원인 제공 안됨"
+            
+            val debugAlertText = when (e) {
+                is SecurityException -> "❌ [권한 차단] Manifest에 mediaProjection 타입이 없거나 유저가 캡처를 거부했습니다.\n($exceptionMessage)"
+                is NullPointerException -> "❌ [객체 공백] 화면 공유 토큰(MediaProjection) 빌드에 실패해 Null을 반환했습니다."
+                is IllegalStateException -> "❌ [상태 불일치] 닫힌 이미지 리더에 접근했거나 잘못된 스레드에서 호출되었습니다."
+                else -> "❌ [$location 에러 발생]\n유형: $exceptionName\n내용: $exceptionMessage"
+            }
+            Toast.makeText(applicationContext, debugAlertText, Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun startCaptureAndAnalysisLoop() {
-        val metrics = DisplayMetrics()
-        windowManager.defaultDisplay.getRealMetrics(metrics)
-        val width = metrics.widthPixels; val height = metrics.heightPixels; val density = metrics.densityDpi
+        try {
+            val metrics = DisplayMetrics()
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            val width = metrics.widthPixels
+            val height = metrics.heightPixels
+            val density = metrics.densityDpi
 
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenCapture", width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, null
-        )
+            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            
+            val currentProjection = mediaProjection ?: throw NullPointerException("MediaProjection 토큰이 발급되지 않았습니다.")
+            
+            virtualDisplay = currentProjection.createVirtualDisplay(
+                "ScreenCaptureEngine", width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, null
+            )
 
-        imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                // ✨ [핵심 수정: 크래시 원천 차단]
-                // 사용자가 격자를 조절 중(isEditMode)일 때는 픽셀 매핑을 중단하고 즉시 리턴하여 튕김을 막습니다.
-                if (isEditMode || gridOverlayView == null) {
+            imageReader?.setOnImageAvailableListener({ reader ->
+                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                try {
+                    // [튕김 원천 봉쇄]: 조절 모드 도중에는 연산 로직을 스킵하여 인덱스 참조 크래시 방지
+                    if (isEditMode || gridOverlayView == null) {
+                        image.close()
+                        return@setOnImageAvailableListener
+                    }
+
+                    val planes = image.planes
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * width
+                    val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
+                    bitmap.copyPixelsFromBuffer(buffer)
+
+                    // ----------------------------------------------------
+                    // 💡 [Match3Solver 분석 연산 구역]
+                    // 여기에 비트맵 가공 및 보드 분석 알고리즘 코드를 연동하시면 됩니다.
+                    // ----------------------------------------------------
+
+                    bitmap.recycle()
+                } catch (e: Exception) {
+                    handleException("ImageProcessingLoop", e)
+                } finally {
                     image.close()
-                    return@setOnImageAvailableListener
                 }
+            }, backgroundHandler)
 
-                val planes = image.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
-                val rowPadding = rowStride - pixelStride * width
-                val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-                bitmap.copyPixelsFromBuffer(buffer)
-
-                // OOXOO 연산 구역 (이전 코드 연동)
-
-                bitmap.recycle()
-            } catch (e: Exception) { Log.e("SolverService", "루프 에러", e) } finally { image.close() }
-        }, backgroundHandler)
+        } catch (e: Exception) {
+            handleException("CreateVirtualDisplay", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -274,36 +328,52 @@ class SolverService : Service() {
         val resultCode = intent.getIntExtra("RESULT_CODE", -1)
         @Suppress("DEPRECATION")
         val resultData = intent.getParcelableExtra<Intent>("RESULT_DATA")
-        if (resultCode != Activity.RESULT_OK || resultData == null) return START_NOT_STICKY
         
-        // 포어그라운드 노티 시동
+        if (resultCode != Activity.RESULT_OK || resultData == null) {
+            Toast.makeText(this, "❌ 미디어 프로젝션 화면 공유 승인이 취소되었습니다.", Toast.LENGTH_SHORT).show()
+            return START_NOT_STICKY
+        }
+        
+        // 상단 알림 바 포어그라운드 시동 필수 구역
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel("HelperEngine", "Engine", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel("HelperEngine", "Grid Engine", NotificationManager.IMPORTANCE_LOW)
             manager.createNotificationChannel(channel)
         }
         val notification = NotificationCompat.Builder(this, "HelperEngine")
-            .setContentTitle("엔진 구동중").setSmallIcon(android.R.drawable.sym_def_app_icon).build()
+            .setContentTitle("격자 보석 추적 엔진이 동작 중입니다.")
+            .setSmallIcon(android.R.drawable.sym_def_app_icon)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+            
         startForeground(8888, notification)
 
+        // 미디어 프로젝션 바인딩 딜레이 안전장치
         Handler(Looper.getMainLooper()).postDelayed({
             try {
                 mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
+                
                 startCaptureAndAnalysisLoop()
-            } catch (e: Exception) { Log.e("SolverService", "시동 에러", e) }
-        }, 200)
+            } catch (e: Exception) {
+                handleException("MediaProjectionInit", e)
+            }
+        }, 250)
 
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        backgroundThread?.quitSafely()
-        virtualDisplay?.release()
-        imageReader?.close()
-        mediaProjection?.stop()
-        panelView?.let { windowManager.removeView(it) }
-        gridOverlayView?.let { windowManager.removeView(it) }
+        try {
+            backgroundThread?.quitSafely()
+            virtualDisplay?.release()
+            imageReader?.close()
+            mediaProjection?.stop()
+            panelView?.let { windowManager.removeView(it) }
+            gridOverlayView?.let { windowManager.removeView(it) }
+        } catch (e: Exception) {
+            Log.e("SolverService", "Destroy 리소스 해제 중 오류", e)
+        }
     }
 }
