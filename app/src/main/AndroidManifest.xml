@@ -1,16 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.helper">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
-    
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/sym_def_app_icon"
         android:label="매칭 헬퍼"
         android:theme="@style/Theme.AppCompat.NoActionBar">
         
@@ -27,5 +24,7 @@
             android:name=".service.SolverService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection" /> </application>
+            android:foregroundServiceType="mediaProjection" />
+
+    </application>
 </manifest>
