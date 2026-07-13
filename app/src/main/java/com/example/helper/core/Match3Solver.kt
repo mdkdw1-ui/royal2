@@ -1,65 +1,90 @@
 package com.example.helper.core
 
-import com.example.helper.core.GameConfig.EMPTY
 import com.example.helper.core.GameConfig.HOLE
 
 data class MatchCandidate(
     val row: Int,
     val col: Int,
-    val move: String,
+    val direction: String, // SolverService 연동 규격 준수
     val score: Int
 )
 
 object Match3Solver {
-    private fun rowRangeClamped(row: Int): Int = minOf(maxOf(0, row), GameConfig.ROWS - 1)
-    private fun colRangeClamped(col: Int): Int = minOf(maxOf(0, col), GameConfig.COLS - 1)
 
     /**
-     * 보드판 상태에서 특정 위치를 스왑했을 때 터지는 블록 개수와 대박 매칭 보너스 점수를 통합 계산합니다.
+     * 9x11 그리드 전체를 탐색하여 모든 유효한 스왑 후보군을 점수 높은 순으로 추출합니다.
+     */
+    fun getMatchCandidates(grid: Array<IntArray>): List<MatchCandidate> {
+        val candidates = mutableListOf<MatchCandidate>()
+        val rows = grid.size
+        val cols = if (rows > 0) grid[0].size else 0
+        
+        // 9행 11열 전체를 한 칸도 빠짐없이 전수조사합니다.
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                for (direction in listOf("down", "right")) {
+                    val score = swapScore(direction, r, c, grid)
+                    if (score > 0) {
+                        candidates.add(MatchCandidate(r, c, direction, score))
+                    }
+                }
+            }
+        }
+        return candidates
+    }
+
+    /**
+     * 특정 위치를 스왑했을 때 터지는 블록 개수와 5개 연속 매칭(OO-OO 완성) 보너스를 통합 계산합니다.
      */
     fun swapScore(direction: String, r: Int, c: Int, grid: Array<IntArray>): Int {
+        val rows = grid.size
+        val cols = if (rows > 0) grid[0].size else 0
+
         val tile = grid[r][c]
-        if (tile == HOLE || tile == EMPTY) return 0
+        if (tile == HOLE) return 0 // 장애물(벽)은 스왑 대상에서 제외
 
         var targetRow = r
         var targetCol = c
 
-        if (direction == "down") targetRow = rowRangeClamped(r + 1)
-        if (direction == "right") targetCol = colRangeClamped(c + 1)
+        // 9x11 경계 안에서만 움직이도록 안전 바운더리 체크
+        if (direction == "down") targetRow = minOf(maxOf(0, r + 1), rows - 1)
+        if (direction == "right") targetCol = minOf(maxOf(0, c + 1), cols - 1)
 
-        // 경계를 벗어나 제자리 걸음이거나 벽/공백 타일인 경우 스왑 불가
+        // 제자리 걸음이거나 같은 색상의 블록이면 스왑 무효
         if (targetRow == r && targetCol == c) return 0
         
         val targetTile = grid[targetRow][targetCol]
-        if (targetTile == HOLE || targetTile == EMPTY || tile == targetTile) return 0
+        if (targetTile == HOLE || tile == targetTile) return 0
 
-        // 1. 가상 스왑 매트릭스 복사 생성
-        val testGrid = Array(GameConfig.ROWS) { row -> grid[row].clone() }
+        // 가상 스왑 매트릭스 생성 (9x11 크기 동적 복사)
+        val testGrid = Array(rows) { row -> grid[row].clone() }
         testGrid[r][c] = targetTile
         testGrid[targetRow][targetCol] = tile
 
-        // 2. 이 스왑으로 인해 연쇄 파괴되는 타일들의 좌표 뭉치 추출
+        // 이 스왑으로 터지게 되는 모든 타일들의 좌표 수집
         val eliminated = findEliminatedTiles(testGrid)
         if (eliminated.isEmpty()) return 0
 
-        // 3. 4개/5개 연속 매칭 길이를 정밀 측정하여 가중치 점수 부여
+        // 5개 연속 매칭 정밀 측정 및 초고전역 가중치 부여
         return calculateAdvancedScore(testGrid, eliminated)
     }
 
     /**
-     * 가로 및 세로 방향을 전수조사하여 3개 이상 연속된 모든 타일의 좌표(Pair)를 찾아냅니다.
+     * 확장된 9x11 보드판에서 3개 이상 연속된 모든 타일의 좌표를 찾아냅니다.
      */
     private fun findEliminatedTiles(grid: Array<IntArray>): Set<Pair<Int, Int>> {
         val eliminated = mutableSetOf<Pair<Int, Int>>()
+        val rows = grid.size
+        val cols = if (rows > 0) grid[0].size else 0
 
-        // 가로 스캔
-        for (r in 0 until GameConfig.ROWS) {
+        // 가로 방향 정밀 스캔 (11열 끝까지 탐색)
+        for (r in 0 until rows) {
             var c = 0
-            while (c < GameConfig.COLS) {
+            while (c < cols) {
                 val tile = grid[r][c]
-                if (tile != HOLE && tile != EMPTY) {
+                if (tile != HOLE) {
                     var matchLen = 1
-                    while (c + matchLen < GameConfig.COLS && grid[r][c + matchLen] == tile) {
+                    while (c + matchLen < cols && grid[r][c + matchLen] == tile) {
                         matchLen++
                     }
                     if (matchLen >= 3) {
@@ -74,14 +99,14 @@ object Match3Solver {
             }
         }
 
-        // 세로 스캔
-        for (c in 0 until GameConfig.COLS) {
+        // 세로 방향 정밀 스캔 (9행 끝까지 탐색)
+        for (c in 0 until cols) {
             var r = 0
-            while (r < GameConfig.ROWS) {
+            while (r < rows) {
                 val tile = grid[r][c]
-                if (tile != HOLE && tile != EMPTY) {
+                if (tile != HOLE) {
                     var matchLen = 1
-                    while (r + matchLen < GameConfig.ROWS && grid[r + matchLen][c] == tile) {
+                    while (r + matchLen < rows && grid[r + matchLen][c] == tile) {
                         matchLen++
                     }
                     if (matchLen >= 3) {
@@ -100,16 +125,18 @@ object Match3Solver {
     }
 
     /**
-     * 매칭된 타일 그룹 중 단일 라인의 '최대 연속 길이'를 측정하고, 4/5개 매칭에 압도적인 가중치를 선사합니다.
+     * 터지는 타일 중 '한 줄로 정렬된 최대 길이'를 판별하여, 5개 매칭에 무조건적인 최우선 순위를 부여합니다.
      */
     private fun calculateAdvancedScore(grid: Array<IntArray>, eliminated: Set<Pair<Int, Int>>): Int {
-        var maxMatchLen = 3
+        val rows = grid.size
+        val cols = if (rows > 0) grid[0].size else 0
+        var maxMatchLen = 0
         
-        // 가로방향 최대 단일 컴포넌트 길이 측정
-        for (r in 0 until GameConfig.ROWS) {
+        // 가로축 단일 컴포넌트 최대 길이 측정
+        for (r in 0 until rows) {
             var currentLen = 0
             var lastTile = -2
-            for (c in 0 until GameConfig.COLS) {
+            for (c in 0 until cols) {
                 if (eliminated.contains(Pair(r, c))) {
                     val tile = grid[r][c]
                     if (tile == lastTile) {
@@ -128,11 +155,11 @@ object Match3Solver {
             if (currentLen > maxMatchLen) maxMatchLen = currentLen
         }
 
-        // 세로방향 최대 단일 컴포넌트 길이 측정
-        for (c in 0 until GameConfig.COLS) {
+        // 세로축 단일 컴포넌트 최대 길이 측정
+        for (c in 0 until cols) {
             var currentLen = 0
             var lastTile = -2
-            for (r in 0 until GameConfig.ROWS) {
+            for (r in 0 until rows) {
                 if (eliminated.contains(Pair(r, c))) {
                     val tile = grid[r][c]
                     if (tile == lastTile) {
@@ -151,33 +178,15 @@ object Match3Solver {
             if (currentLen > maxMatchLen) maxMatchLen = currentLen
         }
 
-        // 기본 점수 = 순수 터진 블록 개수
         var finalScore = eliminated.size
 
-        // 🎯 [핵심 교정] 4개 매칭은 +1000점, 5개 매칭은 +50000점의 초고배율 보너스 지급!
-        when (maxMatchLen) {
-            5 -> finalScore += 50000 
-            4 -> finalScore += 1000
+        // 🎯 [핵심] OO-OO 사이를 매꿔 5개 매칭(특수 블록 생성)이 되는 순간 다른 모든 매칭을 제치고 1순위로 띄웁니다.
+        if (maxMatchLen >= 5) {
+            finalScore += 5000000 // 점수를 5백만 점으로 대폭 상향하여 무조건 선점
+        } else if (maxMatchLen == 4) {
+            finalScore += 10000
         }
 
         return finalScore
-    }
-
-    /**
-     * 보드 전체를 탐색하여 모든 유효한 스왑 후보군을 점수 순서대로 추출합니다.
-     */
-    fun getMatchCandidates(grid: Array<IntArray>): List<MatchCandidate> {
-        val candidates = mutableListOf<MatchCandidate>()
-        for (r in 0 until GameConfig.ROWS) {
-            for (c in 0 until GameConfig.COLS) {
-                for (direction in listOf("down", "right")) {
-                    val score = swapScore(direction, r, c, grid)
-                    if (score > 0) {
-                        candidates.add(MatchCandidate(r, c, direction, score))
-                    }
-                }
-            }
-        }
-        return candidates
     }
 }
