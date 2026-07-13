@@ -381,12 +381,10 @@ class SolverService : Service() {
 
                 when {
                     (hue in 0f..22f) || (hue in 345f..360f) -> redCount++
-                    // 👑 [교정 포인트 1] 진한 황금빛 오렌지색 계열(23~39도)을 노란색 범주로 완벽 결합
                     hue in 23f..65f -> yellowCount++
                     hue in 190f..245f -> blueCount++
-                    hue in 85f..140f -> {
-                        if (sat > 0.45f) greenCount++
-                    }
+                    // 💚 [교정 포인트 1] 엄격했던 채도 제한(sat > 0.45f)을 철폐하여 음영 진 녹색까지 완벽 스캔
+                    hue in 85f..140f -> greenCount++
                     hue in 260f..310f -> purpleCount++
                 }
             }
@@ -405,7 +403,7 @@ class SolverService : Service() {
     }
 
     /**
-     * 🧠 [교정 포인트 2] 조기 종료를 폐지하고 화면 전체를 전수조사하여 최상의 콤보를 선택하는 엔진
+     * 🧠 [교정 포인트 2] 단일 라인 최댓값 계산 방식에서 다중 교차 콤보(T자, L자, 십자형) 보너스 점수 가산 엔진으로 업그레이드
      */
     private fun runMatchEngine(bitmap: Bitmap, gov: GridOverlayView) {
         val rows = gov.rows
@@ -436,18 +434,15 @@ class SolverService : Service() {
                     board[r][c] = rightColor
                     board[r][c + 1] = currentColor
 
-                    val score = listOf(
-                        checkVerticalMatchScore(board, r, c, rows),
-                        checkVerticalMatchScore(board, r, c + 1, rows),
-                        checkHorizontalMatchScore(board, r, c, cols),
-                        checkHorizontalMatchScore(board, r, c + 1, cols)
-                    ).maxOrNull() ?: 0
+                    val score1 = calculateComboScore(board, r, c, rows, cols)
+                    val score2 = calculateComboScore(board, r, c + 1, rows, cols)
+                    val totalScore = Math.max(score1, score2)
 
-                    // 기존 발견한 매칭보다 파괴력이 더 큰 콤보가 나왔을 때만 갱신
-                    if (score >= 3 && score > bestMatchScore) {
-                        bestMatchScore = score
-                        val tag = if (score >= 5) "🔥 [최강 5연속 매칭!] " else if (score == 4) "⭐ [4연속 매칭] " else ""
-                        // 💡 사용자가 직관적으로 세기 좋도록 1부터 시작하는 좌표계로 보정 (+1 처리)
+                    if (totalScore >= 3 && totalScore > bestMatchScore) {
+                        bestMatchScore = totalScore
+                        val tag = if (score1 >= 50 || score2 >= 50) "🔥 [대폭발 특수 크로스 콤보!!] " 
+                                  else if (totalScore >= 5) "⭐ [5연속 매칭] " 
+                                  else if (totalScore == 4) "✨ [4연속 매칭] " else ""
                         bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 1}행, ${c + 2}열) 이동"
                     }
 
@@ -462,16 +457,15 @@ class SolverService : Service() {
                     board[r][c] = downColor
                     board[r + 1][c] = currentColor
 
-                    val score = listOf(
-                        checkHorizontalMatchScore(board, r, c, cols),
-                        checkHorizontalMatchScore(board, r + 1, c, cols),
-                        checkVerticalMatchScore(board, r, c, rows),
-                        checkVerticalMatchScore(board, r + 1, c, rows)
-                    ).maxOrNull() ?: 0
+                    val score1 = calculateComboScore(board, r, c, rows, cols)
+                    val score2 = calculateComboScore(board, r + 1, c, rows, cols)
+                    val totalScore = Math.max(score1, score2)
 
-                    if (score >= 3 && score > bestMatchScore) {
-                        bestMatchScore = score
-                        val tag = if (score >= 5) "🔥 [최강 5연속 매칭!] " else if (score == 4) "⭐ [4연속 매칭] " else ""
+                    if (totalScore >= 3 && totalScore > bestMatchScore) {
+                        bestMatchScore = totalScore
+                        val tag = if (score1 >= 50 || score2 >= 50) "🔥 [대폭발 특수 크로스 콤보!!] " 
+                                  else if (totalScore >= 5) "⭐ [5연속 매칭] " 
+                                  else if (totalScore == 4) "✨ [4연속 매칭] " else ""
                         bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 2}행, ${c + 1}열) 이동"
                     }
 
@@ -481,10 +475,26 @@ class SolverService : Service() {
             }
         }
 
-        // 전체 스캔 완료 후 메인 스레드에서 가장 가치가 높은 단 하나의 힌트만 깔끔하게 노출
         Handler(Looper.getMainLooper()).post {
             tvGridInfo.text = bestMoveText
         }
+    }
+
+    /**
+     * 가로와 세로의 매칭 여부를 복합 분석하여 교차 매칭(T자, L자, 십자형) 발생 시 엄청난 가산점을 리턴합니다.
+     */
+    private fun calculateComboScore(board: Array<Array<BlockColor>>, r: Int, c: Int, rows: Int, cols: Int): Int {
+        val hScore = checkHorizontalMatchScore(board, r, c, cols)
+        val vScore = checkVerticalMatchScore(board, r, c, rows)
+        
+        val hValid = if (hScore >= 3) hScore else 0
+        val vValid = if (vScore >= 3) vScore else 0
+
+        if (hValid >= 3 && vValid >= 3) {
+            // 십자형(Cross) 및 복합 콤보 생성 성공 시 가로 길이 + 세로 길이 + 가산점 50점 부여
+            return hValid + vValid + 50
+        }
+        return Math.max(hValid, vValid)
     }
 
     private fun checkVerticalMatchScore(board: Array<Array<BlockColor>>, row: Int, col: Int, maxRows: Int): Int {
