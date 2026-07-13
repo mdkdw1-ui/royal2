@@ -28,6 +28,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -56,6 +57,7 @@ class SolverService : Service() {
     private var backgroundHandler: Handler? = null
 
     private var isLogicEnabled = true
+    private var activeCorner = 0 // 0:좌상(TL), 1:우상(TR), 2:좌하(BL), 3:우하(BR)
 
     private fun showOverlayToast(message: String) {
         Handler(Looper.getMainLooper()).post {
@@ -80,7 +82,7 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
-            // 🎯 [핵심 설계 변경 1] 화면 전체를 덮는 완벽한 터치 관통형(FLAG_NOT_TOUCHABLE) 격자 레이어 생성
+            // 1. 터치 관통형 격자 레이어 생성
             val gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -91,7 +93,7 @@ class SolverService : Service() {
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
-            // 🎯 [핵심 설계 변경 2] 상단에만 작게 붙어 터치가 작동하는 제어판 레이어 생성 (WRAP_CONTENT)
+            // 2. 상단 조작 제어판 레이어 생성
             val panelParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -100,7 +102,7 @@ class SolverService : Service() {
                 PixelFormat.TRANSLUCENT
             )
             panelParams.gravity = Gravity.TOP
-            panelParams.y = 100 // 상단 바 알림 영역을 가리지 않도록 약간 아래 배치
+            panelParams.y = 100
 
             panelView = inflater.inflate(R.layout.control_panel_layout, null)
             windowManager.addView(panelView, panelParams)
@@ -112,7 +114,7 @@ class SolverService : Service() {
             updateInfoText()
 
         } catch (e: Exception) {
-            Log.e(TAG, "이중 오버레이 윈도우 생성 실패", e)
+            Log.e(TAG, "이중 오버레이 생성 실패", e)
         }
     }
 
@@ -150,15 +152,54 @@ class SolverService : Service() {
             stopSelf()
         }
 
-        // 위치 및 크기 조절 시 터치 패널 관통 레이어 리프레시 연동
-        view.findViewById<Button>(R.id.btnMoveUp).setOnClickListener { gridOverlayView?.let { it.offsetY -= 15; it.invalidate() } }
-        view.findViewById<Button>(R.id.btnMoveDown).setOnClickListener { gridOverlayView?.let { it.offsetY += 15; it.invalidate() } }
-        view.findViewById<Button>(R.id.btnMoveLeft).setOnClickListener { gridOverlayView?.let { it.offsetX -= 15; it.invalidate() } }
-        view.findViewById<Button>(R.id.btnMoveRight).setOnClickListener { gridOverlayView?.let { it.offsetX += 15; it.invalidate() } }
-        
-        view.findViewById<Button>(R.id.btnSizePlus).setOnClickListener { gridOverlayView?.let { it.gridSize += 20; it.invalidate() } }
-        view.findViewById<Button>(R.id.btnSizeMinus).setOnClickListener { gridOverlayView?.let { it.gridSize -= 20; it.invalidate() } }
+        // 모서리 선택 라디오 버튼 리스너
+        val rgCornerSelect = view.findViewById<RadioGroup>(R.id.rgCornerSelect)
+        rgCornerSelect.setOnCheckedChangeListener { _, checkedId ->
+            activeCorner = when (checkedId) {
+                R.id.rbTL -> 0
+                R.id.rbTR -> 1
+                R.id.rbBL -> 2
+                R.id.rbBR -> 3
+                else -> 0
+            }
+        }
 
+        // 선택된 모서리 좌표 제어용 방향키 리스너 (문제가 되었던 구형 크기조절 코드는 완전히 비워져 있습니다)
+        val moveAmount = 12f
+        view.findViewById<Button>(R.id.btnMoveUp).setOnClickListener {
+            gridOverlayView?.let {
+                when(activeCorner) {
+                    0 -> it.tlY -= moveAmount; 1 -> it.trY -= moveAmount; 2 -> it.blY -= moveAmount; 3 -> it.brY -= moveAmount
+                }
+                it.invalidate()
+            }
+        }
+        view.findViewById<Button>(R.id.btnMoveDown).setOnClickListener {
+            gridOverlayView?.let {
+                when(activeCorner) {
+                    0 -> it.tlY += moveAmount; 1 -> it.trY += moveAmount; 2 -> it.blY += moveAmount; 3 -> it.brY += moveAmount
+                }
+                it.invalidate()
+            }
+        }
+        view.findViewById<Button>(R.id.btnMoveLeft).setOnClickListener {
+            gridOverlayView?.let {
+                when(activeCorner) {
+                    0 -> it.tlX -= moveAmount; 1 -> it.trX -= moveAmount; 2 -> it.blX -= moveAmount; 3 -> it.brX -= moveAmount
+                }
+                it.invalidate()
+            }
+        }
+        view.findViewById<Button>(R.id.btnMoveRight).setOnClickListener {
+            gridOverlayView?.let {
+                when(activeCorner) {
+                    0 -> it.tlX += moveAmount; 1 -> it.trX += moveAmount; 2 -> it.blX += moveAmount; 3 -> it.brX += moveAmount
+                }
+                it.invalidate()
+            }
+        }
+
+        // 행렬 크기 조절 리스너
         view.findViewById<Button>(R.id.btnRowPlus).setOnClickListener { gridOverlayView?.let { it.rows++; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnRowMinus).setOnClickListener { gridOverlayView?.let { if(it.rows > 1) it.rows--; updateInfoText(); it.invalidate() } }
         view.findViewById<Button>(R.id.btnColPlus).setOnClickListener { gridOverlayView?.let { it.cols++; updateInfoText(); it.invalidate() } }
@@ -173,7 +214,6 @@ class SolverService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) return START_NOT_STICKY
-
         val resultCode = intent.getIntExtra("RESULT_CODE", -1)
         val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra("RESULT_DATA", Intent::class.java)
@@ -182,28 +222,15 @@ class SolverService : Service() {
             intent.getParcelableExtra<Intent>("RESULT_DATA")
         }
 
-        if (resultCode != Activity.RESULT_OK || resultData == null) {
-            showOverlayToast("❌ 권한 토큰 획득 실패")
-            return START_NOT_STICKY
-        }
-
+        if (resultCode != Activity.RESULT_OK || resultData == null) return START_NOT_STICKY
         startForegroundServiceWithNotification()
 
         Handler(Looper.getMainLooper()).postDelayed({
             try {
                 mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
-                
-                if (mediaProjection == null) {
-                    showOverlayToast("❌ 시스템 미디어 서버 거부")
-                    stopSelf()
-                } else {
-                    showOverlayToast("🚀 매칭분석 시스템 가동 시작!")
-                    startCaptureAndAnalysisLoop()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "미디어 프로젝션 시동 실패", e)
-            }
+                startCaptureAndAnalysisLoop()
+            } catch (e: Exception) { Log.e(TAG, "시동 에러", e) }
         }, 200)
 
         return START_STICKY
@@ -212,15 +239,12 @@ class SolverService : Service() {
     private fun startForegroundServiceWithNotification() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Helper Notification", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(CHANNEL_ID, "Helper Engine", NotificationManager.IMPORTANCE_LOW)
             manager.createNotificationChannel(channel)
         }
-
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("매칭 연산 엔진 가동중")
-            .setSmallIcon(android.R.drawable.sym_def_app_icon)
-            .build()
-
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("매칭 연산 엔진 가동중").setSmallIcon(android.R.drawable.sym_def_app_icon).build()
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
@@ -231,21 +255,18 @@ class SolverService : Service() {
     private fun startCaptureAndAnalysisLoop() {
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
+        val width = metrics.widthPixels; val height = metrics.heightPixels; val density = metrics.densityDpi
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "ScreenCapture", width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface, null, null
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, null
         )
 
         imageReader?.setOnImageAvailableListener({ reader ->
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                if (isLogicEnabled) {
+                if (isLogicEnabled && gridOverlayView != null) {
                     val planes = image.planes
                     val buffer = planes[0].buffer
                     val pixelStride = planes[0].pixelStride
@@ -256,15 +277,10 @@ class SolverService : Service() {
                     bitmap.copyPixelsFromBuffer(buffer)
 
                     // [실시간 격자 동기화 연산 구역]
-                    // gridOverlayView가 독립 실행되므로 메인 데이터 동기화 코드가 이 위치로 들어가게 됩니다.
 
                     bitmap.recycle()
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "프레임 분석 루프 에러", e)
-            } finally {
-                image.close()
-            }
+            } catch (e: Exception) { Log.e(TAG, "루프 에러", e) } finally { image.close() }
         }, backgroundHandler)
     }
 
@@ -274,8 +290,6 @@ class SolverService : Service() {
         virtualDisplay?.release()
         imageReader?.close()
         mediaProjection?.stop()
-        
-        // 두 개의 분리된 뷰를 윈도우 매니저에서 완전히 해제
         panelView?.let { windowManager.removeView(it) }
         gridOverlayView?.let { windowManager.removeView(it) }
     }
