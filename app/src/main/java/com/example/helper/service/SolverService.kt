@@ -46,18 +46,17 @@ class SolverService : Service() {
 
     enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 
-    // 🎨 화면에 직접 화살표 가이드를 그리기 위한 커스텀 뷰 클래스
     private class HintArrowView(context: Context) : View(context) {
         var startX = 0f; var startY = 0f; var endX = 0f; var endY = 0f
         var shouldDraw = false
 
         private val linePaint = Paint().apply {
-            color = Color.parseColor("#00FFCC") // 눈에 확 띄는 네온 민트색
+            color = Color.parseColor("#00FFCC") 
             strokeWidth = 14f
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
             isAntiAlias = true
-            setShadowLayer(10f, 0f, 0f, Color.GREEN) // 글로우 효과
+            setShadowLayer(10f, 0f, 0f, Color.GREEN) 
         }
 
         private val headPaint = Paint().apply {
@@ -81,10 +80,8 @@ class SolverService : Service() {
             super.onDraw(canvas)
             if (!shouldDraw) return
             
-            // 1. 추천 이동 경로 중심선 그리기
             canvas.drawLine(startX, startY, endX, endY, linePaint)
             
-            // 2. 이동 방향을 나타내는 화살표 촉(삼각형) 그리기
             val angle = Math.atan2((endY - startY).toDouble(), (endX - startX).toDouble())
             val arrowLength = 28f
             val arrowAngle = Math.PI / 6
@@ -123,7 +120,7 @@ class SolverService : Service() {
     private var backgroundHandler: Handler? = null
 
     private var isEditMode = false 
-    private var lastAnalysisTime = 0L // 분석 주기 조절용 타이머 생성
+    private var lastAnalysisTime = 0L 
     
     @Volatile
     private var latestBitmap: Bitmap? = null
@@ -148,7 +145,6 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
-            // 격자 그리기 뷰 배치
             gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -159,7 +155,6 @@ class SolverService : Service() {
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
-            // 화살표 그리기 전용 투명 레이어 배치
             hintArrowView = HintArrowView(this)
             val hintParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -170,11 +165,12 @@ class SolverService : Service() {
             )
             windowManager.addView(hintArrowView, hintParams)
 
+            // 🛠️ [교정] 패널 너비를 WRAP_CONTENT로 줄이고, 외곽 터치 패스스루 플래그 조합 적용
             panelParams = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
@@ -327,9 +323,6 @@ class SolverService : Service() {
         gridOverlayView?.let { tvGridInfo.text = "크기: ${it.rows}행 x ${it.cols}열" }
     }
 
-    /**
-     * 🔍 [누락 복구] 실시간 화면 프레임을 수신하여 분석 파이프라인을 구축하는 심장 핵심 메서드
-     */
     private fun startCaptureAndAnalysisLoop() {
         val gov = gridOverlayView ?: return
         val metrics = DisplayMetrics()
@@ -363,7 +356,6 @@ class SolverService : Service() {
             val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
             if (image != null) {
                 val currentTime = System.currentTimeMillis()
-                // CPU 과부하 방지를 위해 500ms 간격 스로틀링 걸거나 격자 세팅 완료 시 즉시 분석
                 if (currentTime - lastAnalysisTime > 500 || snapRequested.getAndSet(false)) {
                     lastAnalysisTime = currentTime
                     processImageFrame(image, gov)
@@ -390,7 +382,6 @@ class SolverService : Service() {
             bitmap.copyPixelsFromBuffer(buffer)
             image.close()
 
-            // 가로 버퍼 패딩 제거 처리
             if (bitmap.width != image.width) {
                 val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
                 bitmap.recycle()
@@ -404,7 +395,8 @@ class SolverService : Service() {
         }
     }
 
-    private fun detectCellColorROI(bitmap: Bitmap, centerX: Float, centerY: Float): BlockColor {
+    // 🛠️ [교정] 무거운 bitmap.getPixel 제거하고 메모리 고속 Array 탐색 구조로 변경
+    private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
         val radius = 12 
         val cX = centerX.toInt()
         val cY = centerY.toInt()
@@ -414,9 +406,10 @@ class SolverService : Service() {
 
         for (y in (cY - radius)..(cY + radius)) {
             for (x in (cX - radius)..(cX + radius)) {
-                if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height) continue
+                if (x < 0 || x >= width || y < 0 || y >= height) continue
                 
-                val pixel = bitmap.getPixel(x, y)
+                // JNI 바운더리를 넘지 않고 순수 램 주소에서 픽셀 고속 추출
+                val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
                 
                 val hue = hsv[0]
@@ -448,6 +441,13 @@ class SolverService : Service() {
     }
 
     private fun runMatchEngine(bitmap: Bitmap, gov: GridOverlayView) {
+        val width = bitmap.width
+        val height = bitmap.height
+        
+        // 🛠️ [교정] 단 한 번의 대량 복사로 힙 메모리 버퍼를 확보하여 CPU 점유율을 극적으로 낮춤
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
         val rows = gov.rows
         val cols = gov.cols
         val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
@@ -457,7 +457,7 @@ class SolverService : Service() {
                 val uMid = (c + 0.5f) / cols
                 val vMid = (r + 0.5f) / rows
                 val p = gov.getInterpolatedPoint(uMid, vMid)
-                board[r][c] = detectCellColorROI(bitmap, p.x, p.y)
+                board[r][c] = detectCellColorROI(pixels, width, height, p.x, p.y)
             }
         }
 
@@ -472,7 +472,6 @@ class SolverService : Service() {
                 val currentColor = board[r][c]
                 if (currentColor == BlockColor.UNKNOWN) continue
 
-                // 1. 오른쪽 스왑 시뮬레이션
                 if (c + 1 < cols && board[r][c + 1] != BlockColor.UNKNOWN && board[r][c + 1] != currentColor) {
                     val rightColor = board[r][c + 1]
                     board[r][c] = rightColor
@@ -503,7 +502,6 @@ class SolverService : Service() {
                     board[r][c + 1] = rightColor
                 }
 
-                // 2. 아래쪽 스왑 시뮬레이션
                 if (r + 1 < rows && board[r + 1][c] != BlockColor.UNKNOWN && board[r + 1][c] != currentColor) {
                     val downColor = board[r + 1][c]
                     board[r][c] = downColor
