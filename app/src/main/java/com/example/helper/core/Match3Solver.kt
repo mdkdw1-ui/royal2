@@ -1,71 +1,53 @@
 package com.example.helper.core
 
-import com.example.helper.core.GameConfig.HOLE // 프로젝트에 맞는 HOLE(빈공간) 상수 지정 필요
+import android.graphics.Point
 
-data class MatchCandidate(
-    val row: Int,
-    val col: Int,
-    val move: String, // "up", "down", "left", "right"
-    val score: Int
-)
+class Match3Solver {
 
-object Match3Solver {
+    // 분석 루프에서 호출할 5연쇄 유도 감지기
+    fun findFiveLineSetups(board: Array<IntArray>): List<Point> {
+        val targets = mutableListOf<Point>()
+        val rows = board.size
+        val cols = board[0].size
 
-    /**
-     * 보드판 전체에서 오직 OO X OO 패턴만 찾아내어
-     * 빈칸(X)을 채워 디스코볼(5개 매칭)을 만드는 신의 한 수만 추출합니다.
-     */
-    fun getMatchCandidates(grid: Array<IntArray>): List<MatchCandidate> {
-        val candidates = mutableListOf<MatchCandidate>()
-        val rows = grid.size
-        val cols = if (rows > 0) grid[0].size else 0
-
-        // 1. 가로 방향 [O O X O O] 패턴 스캔
+        // 1. 가로축 OOXOO (A A X A A) 탐색 필터
         for (r in 0 until rows) {
             for (c in 0 until cols - 4) {
-                val color = grid[r][c]
-                if (color == HOLE) continue
-                
-                // O O X O O 구조 조건 검사
-                if (grid[r][c + 1] == color && grid[r][c + 3] == color && grid[r][c + 4] == color) {
-                    val gapRow = r
-                    val gapCol = c + 2
+                val color = board[r][c]
+                if (color == 0) continue // 빈칸 패스
+
+                // 패턴 매칭: 0,1,3,4번 칸의 색상이 일치하고 2번(가운데 X)만 다른 색인가?
+                if (board[r][c+1] == color && board[r][c+3] == color && board[r][c+4] == color && board[r][c+2] != color) {
                     
-                    // 빈칸(X)의 바로 위 칸에 같은 색이 있다면 -> 위 블록을 아래로(down) 이동
-                    if (gapRow - 1 >= 0 && grid[gapRow - 1][gapCol] == color) {
-                        candidates.add(MatchCandidate(gapRow - 1, gapCol, "down", 5000000))
-                    }
-                    // 빈칸(X)의 바로 아래 칸에 같은 색이 있다면 -> 아래 블록을 위로(up) 이동
-                    if (gapRow + 1 < rows && grid[gapRow + 1][gapCol] == color) {
-                        candidates.add(MatchCandidate(gapRow + 1, gapCol, "up", 5000000))
+                    // 완성 유도 조건 검증: 위나 아래 칸에 일치하는 메인 색상이 대기 중인가?
+                    if (r > 0 && board[r-1][c+2] == color) {
+                        targets.add(Point(c+2, r)) // 위 블록을 아래로 내리라고 중앙 좌표 수집!
+                    } else if (r < rows - 1 && board[r+1][c+2] == color) {
+                        targets.add(Point(c+2, r)) // 아래 블록을 위로 올리라고 중앙 좌표 수집!
                     }
                 }
             }
         }
 
-        // 2. 세로 방향 [O O X O O]' 패턴 스캔
+        // 2. 세로축 OOXOO (수직방향 A A X A A) 탐색 필터
         for (c in 0 until cols) {
             for (r in 0 until rows - 4) {
-                val color = grid[r][c]
-                if (color == HOLE) continue
+                val color = board[r][c]
+                if (color == 0) continue
 
-                // 세로형 O O X O O 구조 조건 검사
-                if (grid[r + 1][c] == color && grid[r + 3][c] == color && grid[r + 4][c] == color) {
-                    val gapRow = r + 2
-                    val gapCol = c
-
-                    // 빈칸(X)의 바로 왼쪽 칸에 같은 색이 있다면 -> 왼쪽 블록을 오른쪽으로(right) 이동
-                    if (gapCol - 1 >= 0 && grid[gapRow][gapCol - 1] == color) {
-                        candidates.add(MatchCandidate(gapRow, gapCol - 1, "right", 5000000))
-                    }
-                    // 빈칸(X)의 바로 오른쪽 칸에 같은 색이 있다면 -> 오른쪽 블록을 왼쪽으로(left) 이동
-                    if (gapCol + 1 < cols && grid[gapRow][gapCol + 1] == color) {
-                        candidates.add(MatchCandidate(gapRow, gapCol + 1, "left", 5000000))
+                // 수직 패턴 검증
+                if (board[r+1][c] == color && board[r+3][c] == color && board[r+4][c] == color && board[r+2][c] != color) {
+                    
+                    // 완성 유도 조건 검증: 좌측이나 우측 칸에 일치하는 색상이 대기 중인가?
+                    if (c > 0 && board[r+2][c-1] == color) {
+                        targets.add(Point(c, r+2))
+                    } else if (c < cols - 1 && board[r+2][c+1] == color) {
+                        targets.add(Point(c, r+2))
                     }
                 }
             }
         }
 
-        return candidates
+        return targets // 오직 5연쇄 유도 박스 위치들만 반환 (3, 4 연쇄용 리스트는 아예 수집하지 않음)
     }
 }
