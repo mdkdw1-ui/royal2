@@ -1,36 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
-<set xmlns:android="http://schemas.android.com/apk/res/android">
-    <RelativeLayout
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <com.example.helper.ui.GridOverlayView
+        android:id="@+id/gridOverlayView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_height="match_parent" />
 
-        <com.example.helper.ui.GridOverlayView
-            android:id="@+id/gridOverlayView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="50dp"
+        android:background="#A0000000"
+        android:orientation="horizontal"
+        android:padding="8dp">
 
-        <LinearLayout
+        <Button
+            android:id="@+id/btnToggleGrid"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_alignParentTop="true"
-            android:layout_centerHorizontal="true"
-            android:layout_marginTop="40dp"
-            android:background="#80000000"
-            android:orientation="horizontal"
-            android:padding="8dp">
+            android:layout_marginEnd="8dp"
+            android:text="격자 숨기기" />
 
-            <Button
-                android:id="@+id/btnToggleGrid"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:text="격자 숨기기" />
+        <Button
+            android:id="@+id/btnToggleHints"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="힌트 숨기기" />
+    </LinearLayout>
 
-            <Button
-                android:id="@+id/btnToggleHints"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="힌트 숨기기" />
-        </LinearLayout>
-    </RelativeLayout>
-</set>
+</FrameLayout>
