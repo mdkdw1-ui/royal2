@@ -377,12 +377,13 @@ class SolverService : Service() {
                 val sat = hsv[1]
                 val value = hsv[2]
 
-                if (sat < 0.25f || value < 0.25f) continue
+                if (sat < 0.22f || value < 0.22f) continue
 
                 when {
-                    (hue in 0f..12f) || (hue in 345f..360f) -> redCount++
+                    (hue in 0f..22f) || (hue in 345f..360f) -> redCount++
+                    // 👑 [교정 포인트 1] 진한 황금빛 오렌지색 계열(23~39도)을 노란색 범주로 완벽 결합
+                    hue in 23f..65f -> yellowCount++
                     hue in 190f..245f -> blueCount++
-                    hue in 40f..65f -> yellowCount++
                     hue in 85f..140f -> {
                         if (sat > 0.45f) greenCount++
                     }
@@ -403,6 +404,9 @@ class SolverService : Service() {
         return if (maxEntry.value > threshold) maxEntry.key else BlockColor.UNKNOWN
     }
 
+    /**
+     * 🧠 [교정 포인트 2] 조기 종료를 폐지하고 화면 전체를 전수조사하여 최상의 콤보를 선택하는 엔진
+     */
     private fun runMatchEngine(bitmap: Bitmap, gov: GridOverlayView) {
         val rows = gov.rows
         val cols = gov.cols
@@ -417,57 +421,69 @@ class SolverService : Service() {
             }
         }
 
+        var bestMatchScore = 0
+        var bestMoveText = "크기: ${rows}행 x ${cols}열 (분석 중...)"
+
         for (r in 0 until rows) {
             for (c in 0 until cols) {
                 val currentColor = board[r][c]
                 if (currentColor == BlockColor.UNKNOWN) continue
 
+                // 1. 오른쪽 스왑 시뮬레이션
                 if (c + 1 < cols && board[r][c + 1] != BlockColor.UNKNOWN && board[r][c + 1] != currentColor) {
                     val rightColor = board[r][c + 1]
                     
                     board[r][c] = rightColor
                     board[r][c + 1] = currentColor
 
-                    val matchLenLeft = checkVerticalMatchScore(board, r, c, rows)
-                    val matchLenRight = checkVerticalMatchScore(board, r, c + 1, rows)
-                    val matchLenHoriz1 = checkHorizontalMatchScore(board, r, c, cols)
-                    val matchLenHoriz2 = checkHorizontalMatchScore(board, r, c + 1, cols)
+                    val score = listOf(
+                        checkVerticalMatchScore(board, r, c, rows),
+                        checkVerticalMatchScore(board, r, c + 1, rows),
+                        checkHorizontalMatchScore(board, r, c, cols),
+                        checkHorizontalMatchScore(board, r, c + 1, cols)
+                    ).maxOrNull() ?: 0
 
-                    val maxMatchFound = listOf(matchLenLeft, matchLenRight, matchLenHoriz1, matchLenHoriz2).maxOrNull() ?: 0
-
-                    if (maxMatchFound >= 3) {
-                        triggerHintHighlight(r, c, r, c + 1, maxMatchFound)
-                        board[r][c] = currentColor
-                        board[r][c + 1] = rightColor
-                        return
+                    // 기존 발견한 매칭보다 파괴력이 더 큰 콤보가 나왔을 때만 갱신
+                    if (score >= 3 && score > bestMatchScore) {
+                        bestMatchScore = score
+                        val tag = if (score >= 5) "🔥 [최강 5연속 매칭!] " else if (score == 4) "⭐ [4연속 매칭] " else ""
+                        // 💡 사용자가 직관적으로 세기 좋도록 1부터 시작하는 좌표계로 보정 (+1 처리)
+                        bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 1}행, ${c + 2}열) 이동"
                     }
+
                     board[r][c] = currentColor
                     board[r][c + 1] = rightColor
                 }
 
+                // 2. 아래쪽 스왑 시뮬레이션
                 if (r + 1 < rows && board[r + 1][c] != BlockColor.UNKNOWN && board[r + 1][c] != currentColor) {
                     val downColor = board[r + 1][c]
 
                     board[r][c] = downColor
                     board[r + 1][c] = currentColor
 
-                    val matchLenUp = checkHorizontalMatchScore(board, r, c, cols)
-                    val matchLenDown = checkHorizontalMatchScore(board, r + 1, c, cols)
-                    val matchLenVert1 = checkVerticalMatchScore(board, r, c, rows)
-                    val matchLenVert2 = checkVerticalMatchScore(board, r + 1, c, rows)
+                    val score = listOf(
+                        checkHorizontalMatchScore(board, r, c, cols),
+                        checkHorizontalMatchScore(board, r + 1, c, cols),
+                        checkVerticalMatchScore(board, r, c, rows),
+                        checkVerticalMatchScore(board, r + 1, c, rows)
+                    ).maxOrNull() ?: 0
 
-                    val maxMatchFound = listOf(matchLenUp, matchLenDown, matchLenVert1, matchLenVert2).maxOrNull() ?: 0
-
-                    if (maxMatchFound >= 3) {
-                        triggerHintHighlight(r, c, r + 1, c, maxMatchFound)
-                        board[r][c] = currentColor
-                        board[r + 1][c] = downColor
-                        return
+                    if (score >= 3 && score > bestMatchScore) {
+                        bestMatchScore = score
+                        val tag = if (score >= 5) "🔥 [최강 5연속 매칭!] " else if (score == 4) "⭐ [4연속 매칭] " else ""
+                        bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 2}행, ${c + 1}열) 이동"
                     }
+
                     board[r][c] = currentColor
                     board[r + 1][c] = downColor
                 }
             }
+        }
+
+        // 전체 스캔 완료 후 메인 스레드에서 가장 가치가 높은 단 하나의 힌트만 깔끔하게 노출
+        Handler(Looper.getMainLooper()).post {
+            tvGridInfo.text = bestMoveText
         }
     }
 
@@ -491,13 +507,6 @@ class SolverService : Service() {
         c = col + 1
         while (c < maxCols && board[row][c] == color) { right++; c++ }
         return left + right + 1
-    }
-
-    private fun triggerHintHighlight(r1: Int, c1: Int, r2: Int, c2: Int, score: Int) {
-        Handler(Looper.getMainLooper()).post {
-            val specialTag = if(score >= 5) "🔥 [최강 5연속 매칭 발견!] " else ""
-            tvGridInfo.text = "${specialTag}추천: ($r1 행, $c1 열) ↔️ ($r2 행, $c2 열) 이동"
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
