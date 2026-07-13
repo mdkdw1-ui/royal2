@@ -8,19 +8,14 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.PixelFormat
-import android.graphics.PointF
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -47,66 +42,9 @@ class SolverService : Service() {
 
     enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 
-    private class HintArrowView(context: Context) : View(context) {
-        var startX = 0f; var startY = 0f; var endX = 0f; var endY = 0f
-        var shouldDraw = false
-
-        private val linePaint = Paint().apply {
-            color = Color.parseColor("#00FFCC") 
-            strokeWidth = 14f
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            isAntiAlias = true
-            setShadowLayer(10f, 0f, 0f, Color.GREEN) 
-        }
-
-        private val headPaint = Paint().apply {
-            color = Color.parseColor("#00FFCC")
-            style = Paint.Style.FILL
-            isAntiAlias = true
-        }
-
-        fun updateArrow(sx: Float, sy: Float, ex: Float, ey: Float) {
-            startX = sx; startY = sy; endX = ex; endY = ey
-            shouldDraw = true
-            invalidate()
-        }
-
-        fun clearArrow() {
-            shouldDraw = false
-            invalidate()
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            if (!shouldDraw) return
-            
-            canvas.drawLine(startX, startY, endX, endY, linePaint)
-            
-            val angle = Math.atan2((endY - startY).toDouble(), (endX - startX).toDouble())
-            val arrowLength = 28f
-            val arrowAngle = Math.PI / 6
-
-            val path = Path().apply {
-                moveTo(endX, endY)
-                lineTo(
-                    (endX - arrowLength * Math.cos(angle - arrowAngle)).toFloat(),
-                    (endY - arrowLength * Math.sin(angle - arrowAngle)).toFloat()
-                )
-                lineTo(
-                    (endX - arrowLength * Math.cos(angle + arrowAngle)).toFloat(),
-                    (endY - arrowLength * Math.sin(angle + arrowAngle)).toFloat()
-                )
-                close()
-            }
-            canvas.drawPath(path, headPaint)
-        }
-    }
-
     private lateinit var windowManager: WindowManager
     private var panelView: View? = null
-    private var gridOverlayView: GridOverlayView? = null
-    private var hintArrowView: HintArrowView? = null 
+    private var gridOverlayView: GridOverlayView? = null // 🎯 화살표 기능이 통합된 단일 레이어
     private lateinit var tvGridInfo: TextView
     
     private lateinit var panelParams: WindowManager.LayoutParams
@@ -122,10 +60,6 @@ class SolverService : Service() {
 
     private var isEditMode = false 
     private var lastAnalysisTime = 0L 
-    
-    @Volatile
-    private var latestBitmap: Bitmap? = null
-    private val bitmapLock = Any()
     
     private val snapRequested = AtomicBoolean(false)
 
@@ -146,7 +80,7 @@ class SolverService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val inflater = LayoutInflater.from(this)
 
-            // 🛠️ [교정] 격자 레이어: Android 12+ 터치 차단 정책 우회를 위해 alpha를 0.79f로 설정
+            // 🛠️ [교정] 단일 격자 레이어: 제조사 차단 정책 우회를 위해 alpha를 안전 계수 0.4f로 하향
             gridParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -154,24 +88,12 @@ class SolverService : Service() {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                alpha = 0.79f 
+                alpha = 0.4f 
             }
             gridOverlayView = inflater.inflate(R.layout.grid_overlay_layout, null) as GridOverlayView
             windowManager.addView(gridOverlayView, gridParams)
 
-            // 🛠️ [교정] 화살표 레이어: 동일하게 안전 투명도 적용 (0.8 미만이어야 게임 터치가 뚫림)
-            hintArrowView = HintArrowView(this)
-            val hintParams = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                alpha = 0.79f 
-            }
-            windowManager.addView(hintArrowView, hintParams)
-
+            // 🛠️ [교정] 제어판 Layout Params 생성 및 크기 강제 제어
             panelParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -185,7 +107,8 @@ class SolverService : Service() {
             }
 
             panelView = inflater.inflate(R.layout.overlay_layout, null)
-            // XML 루트 크기가 퍼지는 버그 원천 차단
+            
+            // 🛠️ 안전장치: 루트 뷰 크기가 전체 화면으로 번지는 현상을 방지하기 위해 가로세로 WRAP_CONTENT 강제 주입
             panelView?.layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -247,15 +170,15 @@ class SolverService : Service() {
             if (isEditMode) {
                 btnEditMode.text = "🛠️ 조절 중"
                 btnEditMode.setBackgroundColor(Color.parseColor("#4CAF50"))
-                // 조절 중일 때는 사용자의 조절 터치를 받아야 하므로 플래그 해제 및 선명도 최대화
+                // 손으로 조절할 때는 드래그 터치를 받아야 하므로 플래그 해제 및 선명도 업
                 gridParams.flags = gridParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
                 gridParams.alpha = 1.0f
             } else {
                 btnEditMode.text = "🛠️ 격자 고정"
                 btnEditMode.setBackgroundColor(Color.parseColor("#757575"))
-                // 고정 상태일 때는 완벽히 터치가 통과할 수 있도록 우회 수치(0.79f) 및 플래그 복구
+                // 🛠️ 고정 완료 시 엄격한 제조사 필터를 피하기 위해 안전 투명도(0.4f)와 통과 플래그 주입
                 gridParams.flags = gridParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                gridParams.alpha = 0.79f
+                gridParams.alpha = 0.4f
                 snapRequested.set(true)
             }
             gridOverlayView?.let { windowManager.updateViewLayout(it, gridParams) }
@@ -498,12 +421,12 @@ class SolverService : Service() {
                         hasBestMove = true
                         
                         val tag = when {
-                            totalScore >= 100 -> "🔮 [디스코볼 생성 최고존엄!!] "
-                            totalScore >= 70 -> "🔥 [대폭발 특수 크로스 콤보!!] "
-                            totalScore >= 40 -> "⭐ [폭탄/로켓 생성 매칭] "
+                            totalScore >= 100 -> "🔮 [디스코볼 생성] "
+                            totalScore >= 70 -> "🔥 [크로스 콤보] "
+                            totalScore >= 40 -> "⭐ [특수 폭탄 생성] "
                             else -> ""
                         }
-                        bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 1}행, ${c + 2}열) 이동"
+                        bestMoveText = "${tag}(${r + 1}, ${c + 1}) ↔️ (${r + 1}, ${c + 2})"
                         
                         val p1 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 0.5f) / rows)
                         val p2 = gov.getInterpolatedPoint((c + 1.5f) / cols, (r + 0.5f) / rows)
@@ -528,12 +451,12 @@ class SolverService : Service() {
                         hasBestMove = true
                         
                         val tag = when {
-                            totalScore >= 100 -> "🔮 [디스코볼 생성 최고존엄!!] "
-                            totalScore >= 70 -> "🔥 [대폭발 특수 크로스 콤보!!] "
-                            totalScore >= 40 -> "⭐ [폭탄/로켓 생성 매칭] "
+                            totalScore >= 100 -> "🔮 [디스코볼 생성] "
+                            totalScore >= 70 -> "🔥 [크로스 콤보] "
+                            totalScore >= 40 -> "⭐ [특수 폭탄 생성] "
                             else -> ""
                         }
-                        bestMoveText = "${tag}추천: (${r + 1}행, ${c + 1}열) ↔️ (${r + 2}행, ${c + 1}열) 이동"
+                        bestMoveText = "${tag}(${r + 1}, ${c + 1}) ↔️ (${r + 2}, ${c + 1})"
                         
                         val p1 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 0.5f) / rows)
                         val p2 = gov.getInterpolatedPoint((c + 0.5f) / cols, (r + 1.5f) / rows)
@@ -548,10 +471,11 @@ class SolverService : Service() {
 
         Handler(Looper.getMainLooper()).post {
             tvGridInfo.text = bestMoveText
+            // 🎯 [통합된 단일 오버레이 뷰]에 직접 드로잉 지시
             if (hasBestMove) {
-                hintArrowView?.updateArrow(arrowStartX, arrowStartY, arrowEndX, arrowEndY)
+                gridOverlayView?.updateArrow(arrowStartX, arrowStartY, arrowEndX, arrowEndY)
             } else {
-                hintArrowView?.clearArrow()
+                gridOverlayView?.clearArrow()
             }
         }
     }
@@ -610,7 +534,7 @@ class SolverService : Service() {
             manager.createNotificationChannel(channel)
         }
         val notification = NotificationCompat.Builder(this, "HelperEngine")
-            .setContentTitle("격자 보석 추적 엔진이 동작 중입니다.")
+            .setContentTitle("격자 분석 도우미 작동 중")
             .setSmallIcon(android.R.drawable.sym_def_app_icon)
             .build()
             
@@ -642,13 +566,8 @@ class SolverService : Service() {
             
             backgroundThread?.quitSafely()
             panelView?.let { windowManager.removeView(it) }
-            gridOverlayView?.let { windowManager.removeView(it) }
-            hintArrowView?.let { windowManager.removeView(it) } 
+            gridOverlayView?.let { windowManager.removeView(it) } // 🎯 단 하나의 윈도우만 해제
             
-            synchronized(bitmapLock) {
-                latestBitmap?.recycle()
-                latestBitmap = null
-            }
         } catch (e: Exception) {
             Log.e("SolverService", "Destroy 에러", e)
         }
