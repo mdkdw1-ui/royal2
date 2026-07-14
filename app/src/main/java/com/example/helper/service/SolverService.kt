@@ -128,9 +128,6 @@ class SolverService : Service() {
         return START_STICKY
     }
 
-    /**
-     * 🛡️ 포그라운드 서비스 시작 프로세스 선언 (컴파일 오류 수정처)
-     */
     private fun startForegroundServiceInternal() {
         val channelId = "GridHelperServiceChannel"
         val channelName = "Grid Helper Service"
@@ -338,7 +335,7 @@ class SolverService : Service() {
         val params = overlay.layoutParams as WindowManager.LayoutParams
         if (isCalibrationMode) {
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            showToastOnMainThread("📐 격자점을 조절해 주세요. 자석 기능 활성화 상태입니다.")
+            showToastOnMainThread("📐 격자점을 조절해 주세요. 자석 기능이 부드럽게 가동됩니다.")
         } else {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             showToastOnMainThread("💾 수동 격자 배치 저장 완료!")
@@ -560,7 +557,9 @@ class SolverService : Service() {
         private var currentMoves = listOf<MatchMove>()
         private var selectedCorner: PointF? = null
         private val touchRadius = 70f
-        private val magnetThreshold = 35f 
+        
+        // 🎯 [수정 완료] 자석 정밀 결합 한계 범위 수치 (기존 35f -> 12f로 축소하여 세밀한 조절 제공)
+        private val magnetThreshold = 12f 
 
         fun updateMoves(moves: List<MatchMove>) {
             this.currentMoves = moves
