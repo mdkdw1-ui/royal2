@@ -60,7 +60,6 @@ class SolverService : Service() {
     
     private lateinit var windowManager: WindowManager
     
-    // 윈도우 분리형 구조 (터치 먹통 해결)
     private var floatingControlView: LinearLayout? = null 
     private var visualOverlayView: VisualOverlayView? = null 
 
@@ -71,17 +70,14 @@ class SolverService : Service() {
     private var isCapturing = false
     private var isManualAnalysisRequested = false 
 
-    // 제어 플래그
     private var isLogicEnabled = true
     private var isLargeMode = true
 
-    // [신규] 자동 스캔 제어 관련 플래그 및 타이머 변수
     private var isAutoScanEnabled = true
     private var lastAnalysisTime = 0L
-    private val AUTO_SCAN_INTERVAL_MS = 1000L // 1초 간격으로 백그라운드 자동 분석 (발열 및 CPU 절약 최적치)
-    private var miniScanButton: Button? = null // 미니 모드 버튼 다이내믹 피드백용 참조 변수
+    private val AUTO_SCAN_INTERVAL_MS = 1000L 
+    private var miniScanButton: Button? = null 
 
-    // 격자 제어 모서리 점
     private val ptTL = PointF()
     private val ptTR = PointF()
     private val ptBL = PointF()
@@ -130,6 +126,41 @@ class SolverService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * 🛡️ 포그라운드 서비스 시작 프로세스 선언 (컴파일 오류 수정처)
+     */
+    private fun startForegroundServiceInternal() {
+        val channelId = "GridHelperServiceChannel"
+        val channelName = "Grid Helper Service"
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val chan = NotificationChannel(
+                channelId, 
+                channelName, 
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(chan)
+        }
+
+        val notification: Notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Grid Helper Active")
+            .setContentText("백그라운드 자동 스캔 엔진 가동 중")
+            .setSmallIcon(android.R.drawable.ic_menu_compass) 
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                1001, 
+                notification, 
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(1001, notification)
+        }
     }
 
     private fun createVisualOverlayWindow() {
@@ -216,7 +247,7 @@ class SolverService : Service() {
         view.addView(btnSizeToggle)
 
         if (isLargeMode) {
-            miniScanButton = null // 대형 모드일 때는 미니 참조 비우기
+            miniScanButton = null 
             
             val tvStatus = TextView(context).apply {
                 text = "엔진: ${if(isLogicEnabled) "ON" else "OFF"} / 자동화: ${if(isAutoScanEnabled) "ON" else "OFF"}\n격자: ${rows}x${cols}"
@@ -226,7 +257,6 @@ class SolverService : Service() {
             }
             view.addView(tvStatus)
 
-            // [신규] 자동 스캔 제어 토글 버튼 추가
             val btnAutoToggle = Button(context).apply {
                 text = if (isAutoScanEnabled) "🔄 자동 스캔: ON" else "⏸️ 자동 스캔: OFF"
                 setBackgroundColor(if (isAutoScanEnabled) Color.parseColor("#007F0E") else Color.DKGRAY)
@@ -289,14 +319,12 @@ class SolverService : Service() {
             }
             view.addView(btnKill)
         } else {
-            // [소형 미니 모드 인터페이스] -> 버튼 자체가 인디케이터 역할을 수행하도록 설계
             miniScanButton = Button(context).apply {
                 text = if (isAutoScanEnabled) "🔍 자동 탐지 중" else "⚡ 수동 스캔"
                 textSize = 11f
                 setBackgroundColor(Color.parseColor("#222222"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
-                    // 자동화가 꺼져있어도 수동으로 언제든지 분석 요청 가능
                     isManualAnalysisRequested = true
                 }
             }
@@ -342,7 +370,6 @@ class SolverService : Service() {
             imageReader?.setOnImageAvailableListener({ reader ->
                 val image = reader?.acquireLatestImage() ?: return@setOnImageAvailableListener
                 
-                // 프레임 드롭 가드: 엔진 정지 또는 캡처 중단 시 즉시 이미지 수거 해제(Memory Leak 방지)
                 if (!isCapturing || !isLogicEnabled) {
                     image.close()
                     return@setOnImageAvailableListener
@@ -350,7 +377,6 @@ class SolverService : Service() {
                 
                 try {
                     val currentTime = System.currentTimeMillis()
-                    // [핵심] 수동 클릭 분석 요청이 들어왔거나, 자동 스캔이 켜진 상태에서 주기(1초)가 도래하면 캡처 즉시 분석 처리
                     val shouldAnalyze = isManualAnalysisRequested || 
                         (isAutoScanEnabled && (currentTime - lastAnalysisTime >= AUTO_SCAN_INTERVAL_MS))
 
@@ -369,27 +395,23 @@ class SolverService : Service() {
                         val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                         bitmap.copyPixelsFromBuffer(buffer)
                         
-                        // 기하 보간 역추적 연산
                         val matchedMoves = analyzeAndSolvePerspective(bitmap)
                         
                         mainHandler.post {
                             visualOverlayView?.updateMoves(matchedMoves)
                             
-                            // [신규] 미니 모드 알림 다이내믹 피드백 처리
                             if (!isLargeMode) {
                                 val miniBtn = miniScanButton
                                 if (miniBtn != null) {
                                     if (matchedMoves.isNotEmpty()) {
                                         val bestMove = matchedMoves.first()
-                                        // "⚡[빨강 절대강자 OOXOO] 디스코볼..." -> "⚡ 빨강 OOXOO!" 간소화 알림 텍스트로 축약
                                         val shortMsg = bestMove.description
                                             .replace("⚡[", "")
                                             .replace(" 절대강자 OOXOO] 디스코볼 확정 배치! 💣", "")
                                         
                                         miniBtn.text = "⚡ $shortMsg!"
-                                        miniBtn.setBackgroundColor(Color.parseColor("#FF00DF")) // 핫핑크 깜빡임 강조 효과
+                                        miniBtn.setBackgroundColor(Color.parseColor("#FF00DF")) 
                                     } else {
-                                        // 찾은 최강 수가 없을 때 기본 감시 모드로 복구
                                         miniBtn.text = "🔍 자동 탐지 중"
                                         miniBtn.setBackgroundColor(Color.parseColor("#222222"))
                                     }
@@ -399,8 +421,12 @@ class SolverService : Service() {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "자동 분석 루프 실패: ${e.message}")
+                } catch (e: java.lang.IllegalStateException) {
+                    // 비동기 이미지 취득 레이턴시 방어
                 } finally {
-                    image.close() // 이미지 버퍼 반환 필수 (안하면 파이프라인 정지)
+                    try {
+                        image.close()
+                    } catch (e: Exception) {}
                 }
             }, backgroundHandler)
 
@@ -429,7 +455,6 @@ class SolverService : Service() {
                         board[r][c] = board[nr][nc]
                         board[nr][nc] = temp
 
-                        // 무조건 OOO, OOOO는 배제하고 완벽한 양방향 대칭 OOXOO 만을 찾아 고득점화
                         val hasOoxoo = isStrictOoxooPattern(board, r, c) || isStrictOoxooPattern(board, nr, nc)
 
                         if (hasOoxoo) {
@@ -569,7 +594,6 @@ class SolverService : Service() {
                 canvas.drawCircle(ptBR.x, ptBR.y, 30f, handlePaint)
             }
 
-            // 미니 모드/대형 모드에 무관하게 실시간 힌트 가이드는 화면 중심에 즉시 투영
             if (isLogicEnabled && currentMoves.isNotEmpty()) {
                 val move = currentMoves.first()
                 
