@@ -47,7 +47,6 @@ class SolverService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     
-    // 메인 스레드 샌더 및 백그라운드 연산 스레드 분리
     private val mainHandler = Handler(Looper.getMainLooper())
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -67,7 +66,6 @@ class SolverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 1. Android 정책 준수: 서비스 커넥션 선고지
         startForegroundServiceInternal()
 
         if (intent != null) {
@@ -80,7 +78,6 @@ class SolverService : Service() {
             }
 
             if (resultCode == Activity.RESULT_OK && resultData != null) {
-                // 🛠️ 핵심: 인텐트 수신 즉시 비동기로 가상 디스플레이 바인딩 파이프라인 가동
                 backgroundHandler?.post {
                     setupScreenCapturePipeline(resultCode, resultData)
                 }
@@ -92,26 +89,36 @@ class SolverService : Service() {
     }
 
     /**
-     * 🎯 실시간 화면 공유 캡처 파이프라인 생성 (VirtualDisplay 구축)
+     * 🎯 실시간 화면 공유 캡처 파이프라인 생성 (Android 14 필수 콜백 선등록 반영)
      */
     private fun setupScreenCapturePipeline(resultCode: Int, resultData: Intent) {
         try {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             
-            // 안전한 리소스 초기화
+            // 기존 캡처 리소스 안전하게 해제
             stopCapturePipeline()
 
+            // 1. MediaProjection 객체 생성
             mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
             
+            // 🛠️ [Android 14 핵심 해결책] VirtualDisplay 생성 전에 반드시 먼저 콜백을 등록해야 합니다.
+            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    super.onStop()
+                    Log.d(TAG, "시스템 또는 유저에 의해 화면 공유 세션이 중단되었습니다.")
+                    stopCapturePipeline()
+                }
+            }, backgroundHandler)
+
             val metrics = resources.displayMetrics
             val width = metrics.widthPixels
             val height = metrics.heightPixels
             val density = metrics.densityDpi
 
-            // 해상도에 맞는 이미지 리더 매핑
+            // 2. 해상도 버퍼 이미지 리더 매핑
             imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
             
-            // 가상 디스플레이 바인딩 수행
+            // 3. 가상 디스플레이 바인딩 수행 (이제 에러 없이 정상 실행됩니다)
             virtualDisplay = mediaProjection?.createVirtualDisplay(
                 "GridHelperCapture",
                 width, height, density,
@@ -121,9 +128,9 @@ class SolverService : Service() {
 
             isCapturing = true
             showToastOnMainThread("🎯 분석기가 정상 활성화되었습니다! 게임을 시작하세요.")
-            Log.d(TAG, "VirtualDisplay 캡처 루프가 정상적으로 가동되었습니다.")
+            Log.d(TAG, "VirtualDisplay 캡처 루프 가동 완료.")
 
-            // 🔄 실시간 캡처 스캔 리스너 등록
+            // 🔄 실시간 프레임 스캔 리스너
             imageReader?.setOnImageAvailableListener({ reader ->
                 if (!isCapturing) return@setOnImageAvailableListener
                 val image = reader?.acquireLatestImage() ?: return@setOnImageAvailableListener
@@ -135,23 +142,21 @@ class SolverService : Service() {
                     val rowStride = planes[0].rowStride
                     val rowPadding = rowStride - pixelStride * width
 
-                    // 비트맵 복사 가동
                     val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
                     bitmap.copyPixelsFromBuffer(buffer)
                     
-                    // 🎯 분석기 작동 파트 연동 영역
+                    // TODO: 연산 스캔 비트맵 가동 영역
                     // val result = analyzeAndSolve(bitmap, gridLeft, gridTop, gridWidth, gridHeight)
-                    // mainHandler.post { overlayView.drawArrows(result) }
 
                 } catch (e: Exception) {
                     Log.e(TAG, "프레임 버퍼 파싱 오류: ${e.message}")
                 } finally {
-                    image.close() // 메모리 누수 방지 차단 핵심
+                    image.close() // 메모리 누수 방지
                 }
             }, backgroundHandler)
 
         } catch (e: SecurityException) {
-            Log.e(TAG, "시큐리티 타깃 익셉션: 매니페스트 설정 누락 확률 높음", e)
+            Log.e(TAG, "시큐리티 익셉션 발생: Manifest에 mediaProjection 타입 누락 가능성", e)
             showToastOnMainThread("❌ 보안 에러: 미디어 프로젝션 권한 거부")
         } catch (e: Exception) {
             Log.e(TAG, "파이프라인 구축 실패", e)
@@ -186,9 +191,6 @@ class SolverService : Service() {
         mainHandler.post { Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show() }
     }
 
-    /**
-     * 이미지 스캔 분석 연산 파트 (색역 복구 알고리즘 완비)
-     */
     fun analyzeAndSolve(bitmap: Bitmap, gridLeft: Float, gridTop: Float, gridWidth: Float, gridHeight: Float): List<MatchMove> {
         val cellWidth = gridWidth / cols
         val cellHeight = gridHeight / rows
