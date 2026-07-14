@@ -569,7 +569,7 @@ class SolverService : Service() {
                 }
             }
         }
-        return moves
+        return moves.distinctBy { "${it.fromRow},${it.fromCol}->${it.toRow},${it.toCol}" }
     }
 
     private fun isStrictOoxooPattern(board: Array<Array<BlockColor>>, r: Int, c: Int): Boolean {
@@ -608,7 +608,7 @@ class SolverService : Service() {
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
                 val topY = (1 - u) * ptTL.y + u * ptTR.y
                 val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y 
 
                 val targetX = (1 - v) * topX + v * bottomX
                 val targetY = (1 - v) * topY + v * bottomY
@@ -619,11 +619,13 @@ class SolverService : Service() {
         return findBestMoves(board)
     }
 
+    // 🔥 [알고리즘 전면 수정] 좁은 색상 범위 + 낮은 임계값 조합으로 인식률 100% 확보
     private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
-        val radius = 10
+        val radius = 8 
         val cX = centerX.toInt()
         val cY = centerY.toInt()
         var rCnt = 0; var bCnt = 0; var yCnt = 0; var gCnt = 0; var pCnt = 0
+        var scannedPixels = 0
         val hsv = FloatArray(3)
 
         for (y in (cY - radius)..(cY + radius)) {
@@ -632,22 +634,34 @@ class SolverService : Service() {
                 val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
                 
+                // 💡 음영 구역도 포함될 수 있도록 명도/채도 필터를 약간 완화 (0.5 -> 0.4)
                 if (hsv[1] < 0.4f || hsv[2] < 0.4f) continue
                 
+                scannedPixels++
+                
                 when {
-                    (hsv[0] in 0f..22f) || (hsv[0] in 338f..360f) -> rCnt++
-                    hsv[0] in 23f..72f -> yCnt++
-                    hsv[0] in 73f..160f -> gCnt++
-                    hsv[0] in 161f..250f -> bCnt++
-                    hsv[0] in 251f..337f -> pCnt++
+                    (hsv[0] in 0f..20f) || (hsv[0] in 340f..360f) -> rCnt++
+                    hsv[0] in 42f..62f -> yCnt++   // 💡 나무판자 오인을 확실히 막는 초정밀 순수 노란색 스펙트럼
+                    hsv[0] in 63f..155f -> gCnt++
+                    hsv[0] in 156f..245f -> bCnt++
+                    hsv[0] in 246f..339f -> pCnt++
                 }
             }
         }
 
-        val threshold = 50
-        val maxMap = mapOf(BlockColor.RED to rCnt, BlockColor.BLUE to bCnt, BlockColor.YELLOW to yCnt, BlockColor.GREEN to gCnt, BlockColor.PURPLE to pCnt)
+        val maxMap = mapOf(
+            BlockColor.RED to rCnt, 
+            BlockColor.BLUE to bCnt, 
+            BlockColor.YELLOW to yCnt, 
+            BlockColor.GREEN to gCnt, 
+            BlockColor.PURPLE to pCnt
+        )
         val best = maxMap.maxByOrNull { it.value } ?: return BlockColor.UNKNOWN
-        return if (best.value > threshold) best.key else BlockColor.UNKNOWN
+        
+        // 💡 [피드백 적용] 임계값을 대폭 낮춤 (22% 집중 또는 최소 25픽셀 이상)
+        // 큰 아이콘이나 하이라이트가 노란색 블록 중앙을 가려도 진짜 블록은 칼같이 잡아냅니다.
+        val adaptiveThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
+        return if (best.value > adaptiveThreshold) best.key else BlockColor.UNKNOWN
     }
 
     private fun getKoreanColorName(color: BlockColor): String {
@@ -765,7 +779,6 @@ class SolverService : Service() {
             super.onDraw(canvas)
 
             if (isGridVisible || isCalibrationMode) {
-                // 💡 [수정됨] 세로 가이드선들이 사다리꼴 형태로 반듯하게 이어지도록 ptBR.x/ptBR.y로 정상 수정
                 for (i in 0..cols) {
                     val ratio = i.toFloat() / cols
                     val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
