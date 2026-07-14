@@ -51,7 +51,6 @@ class SolverService : Service() {
     private val TAG = "GridHelper_Service"
     private val binder = SolverBinder()
     
-    // [요구사항 3] 사용자 지정 행렬 (기본값 설정 및 UI에서 +/- 조절 가능)
     var rows = 11
     var cols = 9
 
@@ -61,9 +60,9 @@ class SolverService : Service() {
     
     private lateinit var windowManager: WindowManager
     
-    // 윈도우 분리 구조 (터치 먹통 해결책)
-    private var floatingControlView: LinearLayout? = null // 1. 드래그 가능한 플로팅 제어 패널
-    private var visualOverlayView: VisualOverlayView? = null // 2. 전체화면 게임 오버레이 캔버스
+    // 윈도우 분리형 구조 (터치 먹통 해결)
+    private var floatingControlView: LinearLayout? = null 
+    private var visualOverlayView: VisualOverlayView? = null 
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var backgroundThread: HandlerThread? = null
@@ -72,18 +71,22 @@ class SolverService : Service() {
     private var isCapturing = false
     private var isManualAnalysisRequested = false 
 
-    // [요구사항 1] 로직 온오프 스위치 플래그
+    // 제어 플래그
     private var isLogicEnabled = true
-    
-    // [요구사항 5] 상태바 크기 모드 플래그
     private var isLargeMode = true
 
-    // [요구사항 3] 좌상, 우상, 좌하, 우하 프리폼 격자 제어점
+    // [신규] 자동 스캔 제어 관련 플래그 및 타이머 변수
+    private var isAutoScanEnabled = true
+    private var lastAnalysisTime = 0L
+    private val AUTO_SCAN_INTERVAL_MS = 1000L // 1초 간격으로 백그라운드 자동 분석 (발열 및 CPU 절약 최적치)
+    private var miniScanButton: Button? = null // 미니 모드 버튼 다이내믹 피드백용 참조 변수
+
+    // 격자 제어 모서리 점
     private val ptTL = PointF()
     private val ptTR = PointF()
     private val ptBL = PointF()
     private val ptBR = PointF()
-    private var isCalibrationMode = false // 격자 조정 모드 활성화 여부
+    private var isCalibrationMode = false 
 
     inner class SolverBinder : Binder() {
         fun getService(): SolverService = this@SolverService
@@ -96,10 +99,8 @@ class SolverService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         
         backgroundThread = HandlerThread("SolverBackgroundWorker").apply { start() }
-        backgroundThread!!.start()
         backgroundHandler = Handler(backgroundThread!!.looper)
         
-        // 초기 디바이스 해상도 기반 격자 가이드라인 모서리 기본 위치 계산
         val metrics = resources.displayMetrics
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
@@ -109,7 +110,6 @@ class SolverService : Service() {
         ptBL.set(w * 0.05f, h * 0.75f)
         ptBR.set(w * 0.95f, h * 0.75f)
         
-        // 윈도우 이원화 생성 (터치 차단 원천 봉쇄)
         createVisualOverlayWindow()
         createFloatingControlWindow()
     }
@@ -132,14 +132,9 @@ class SolverService : Service() {
         return START_STICKY
     }
 
-    /**
-     * 1️⃣ [요구사항 2, 5] 무조건 터치가 통과하는 전체화면 시각화 캔버스 윈도우 생성
-     */
     private fun createVisualOverlayWindow() {
         mainHandler.post {
             visualOverlayView = VisualOverlayView(applicationContext)
-            
-            // 핵심: FLAG_NOT_TOUCHABLE을 기본 부여하여 게임 화면 터치를 0%도 방해하지 않음
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -151,9 +146,6 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 2️⃣ [요구사항 1, 5] 화면 어디든 움직이고 크기 조절이 가능한 플로팅 제어 패널 생성
-     */
     private fun createFloatingControlWindow() {
         mainHandler.post {
             val context = applicationContext
@@ -175,7 +167,6 @@ class SolverService : Service() {
                 y = 150
             }
 
-            // 플로팅 무빙 터치 리스너 장착 (드래그 이동)
             floatingControlView?.setOnTouchListener(object : View.OnTouchListener {
                 private var initialX = 0
                 private var initialY = 0
@@ -207,15 +198,11 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 🔄 [요구사항 5] 대형 / 소형 모드 스위칭 갱신 렌더러
-     */
     private fun refreshFloatingPanelUI() {
         val view = floatingControlView ?: return
         view.removeAllViews()
         val context = applicationContext
 
-        // 모드 전환 통합 토글 버튼
         val btnSizeToggle = Button(context).apply {
             text = if (isLargeMode) "◀ 미니 모드" else "▶ 확장 패널"
             textSize = 11f
@@ -229,56 +216,63 @@ class SolverService : Service() {
         view.addView(btnSizeToggle)
 
         if (isLargeMode) {
-            // [대형 모드 인터페이스]
+            miniScanButton = null // 대형 모드일 때는 미니 참조 비우기
+            
             val tvStatus = TextView(context).apply {
-                text = "엔진: ${if(isLogicEnabled) "ON (대기)" else "OFF"}\n격자: ${rows}x${cols}"
+                text = "엔진: ${if(isLogicEnabled) "ON" else "OFF"} / 자동화: ${if(isAutoScanEnabled) "ON" else "OFF"}\n격자: ${rows}x${cols}"
                 setTextColor(Color.WHITE)
                 textSize = 12f
                 setPadding(0, 10, 0, 10)
             }
             view.addView(tvStatus)
 
-            // 수동 스캔 버튼
+            // [신규] 자동 스캔 제어 토글 버튼 추가
+            val btnAutoToggle = Button(context).apply {
+                text = if (isAutoScanEnabled) "🔄 자동 스캔: ON" else "⏸️ 자동 스캔: OFF"
+                setBackgroundColor(if (isAutoScanEnabled) Color.parseColor("#007F0E") else Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    isAutoScanEnabled = !isAutoScanEnabled
+                    text = if (isAutoScanEnabled) "🔄 자동 스캔: ON" else "⏸️ 자동 스캔: OFF"
+                    setBackgroundColor(if (isAutoScanEnabled) Color.parseColor("#007F0E") else Color.DKGRAY)
+                }
+            }
+            view.addView(btnAutoToggle)
+
             val btnScan = Button(context).apply {
-                text = "🎯 수동 격자 매칭 스캔"
+                text = "🎯 즉시 수동 스캔"
                 setBackgroundColor(Color.parseColor("#FF6200EE"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     if (!isLogicEnabled) {
-                        showToastOnMainThread("로직이 OFF 상태입니다. ON으로 변경하세요."); return@setOnClickListener
+                        showToastOnMainThread("로직이 OFF 상태입니다."); return@setOnClickListener
                     }
                     isManualAnalysisRequested = true
-                    showToastOnMainThread("화면 스캔 시작...")
                 }
             }
             view.addView(btnScan)
 
-            // 로직 온오프 스위치 버튼
             val btnLogicToggle = Button(context).apply {
-                text = if (isLogicEnabled) "⚙️ 로직 ON 상태" else "❌ 로직 OFF 상태"
+                text = if (isLogicEnabled) "⚙️ 엔진 활성화" else "❌ 엔진 비활성화"
                 setBackgroundColor(if (isLogicEnabled) Color.parseColor("#007F0E") else Color.DKGRAY)
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     isLogicEnabled = !isLogicEnabled
-                    text = if (isLogicEnabled) "⚙️ 로직 ON 상태" else "❌ 로직 OFF 상태"
+                    text = if (isLogicEnabled) "⚙️ 엔진 활성화" else "❌ 엔진 비활성화"
                     setBackgroundColor(if (isLogicEnabled) Color.parseColor("#007F0E") else Color.DKGRAY)
                     if(!isLogicEnabled) visualOverlayView?.updateMoves(emptyList())
                 }
             }
             view.addView(btnLogicToggle)
 
-            // 격자 수정 모드 토글 버튼
             val btnCalibrate = Button(context).apply {
-                text = if (isCalibrationMode) "💾 격자 설정 완료" else "📐 격자 위치 조절"
+                text = if (isCalibrationMode) "💾 설정 완료" else "📐 격자 맞춤 분할"
                 setBackgroundColor(if (isCalibrationMode) Color.parseColor("#FF00DF") else Color.parseColor("#444444"))
                 setTextColor(Color.WHITE)
-                setOnClickListener {
-                    toggleCalibrationMode()
-                }
+                setOnClickListener { toggleCalibrationMode() }
             }
             view.addView(btnCalibrate)
 
-            // 행열 수치 미세조정 패널
             val matrixBox = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             val btnAddRow = Button(context).apply { text = "행+"; setOnClickListener { rows++; refreshFloatingPanelUI(); visualOverlayView?.invalidate() } }
             val btnSubRow = Button(context).apply { text = "행-"; setOnClickListener { if(rows>3) rows--; refreshFloatingPanelUI(); visualOverlayView?.invalidate() } }
@@ -287,47 +281,39 @@ class SolverService : Service() {
             matrixBox.addView(btnSubRow); matrixBox.addView(btnAddRow); matrixBox.addView(btnSubCol); matrixBox.addView(btnAddCol)
             view.addView(matrixBox)
 
-            // 킬 스위치 (서비스 완전 종료 버튼)
             val btnKill = Button(context).apply {
-                text = "☠️ 헬퍼 프로그램 종료 (킬스위치)"
+                text = "☠️ 헬퍼 프로그램 종료"
                 setBackgroundColor(Color.RED)
                 setTextColor(Color.WHITE)
-                setOnClickListener {
-                    stopSelf()
-                }
+                setOnClickListener { stopSelf() }
             }
             view.addView(btnKill)
         } else {
-            // [소형 모드 인터페이스] -> 오직 화면을 가리지 않게 최소화된 알약 버튼 형태
-            val btnQuickScan = Button(context).apply {
-                text = "⚡ 스캔"
-                textSize = 12f
-                setBackgroundColor(Color.parseColor("#FF6200EE"))
+            // [소형 미니 모드 인터페이스] -> 버튼 자체가 인디케이터 역할을 수행하도록 설계
+            miniScanButton = Button(context).apply {
+                text = if (isAutoScanEnabled) "🔍 자동 탐지 중" else "⚡ 수동 스캔"
+                textSize = 11f
+                setBackgroundColor(Color.parseColor("#222222"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
-                    if (isLogicEnabled) isManualAnalysisRequested = true
+                    // 자동화가 꺼져있어도 수동으로 언제든지 분석 요청 가능
+                    isManualAnalysisRequested = true
                 }
             }
-            view.addView(btnQuickScan)
+            view.addView(miniScanButton)
         }
     }
 
-    /**
-     * 📐 [요구사항 3] 격자 조정 모드 진입 시 전체화면 오버레이에 터치 권한 일시 부여 함수
-     */
     private fun toggleCalibrationMode() {
         isCalibrationMode = !isCalibrationMode
         val overlay = visualOverlayView ?: return
         val params = overlay.layoutParams as WindowManager.LayoutParams
-        
         if (isCalibrationMode) {
-            // 터치를 가로채서 4개의 모서리를 드래그할 수 있도록 차단 해제
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            showToastOnMainThread("📐 모서리를 끌어 퍼즐 영역에 맞추세요. (자석 효과 작동)")
+            showToastOnMainThread("📐 격자점을 조절해 주세요. 자석 기능 활성화 상태입니다.")
         } else {
-            // 조절 완료 시 다시 완전 터치 통과 모드로 복구
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            showToastOnMainThread("💾 격자 좌표가 메모리에 고정되었습니다.")
+            showToastOnMainThread("💾 수동 격자 배치 저장 완료!")
         }
         windowManager.updateViewLayout(overlay, params)
         refreshFloatingPanelUI()
@@ -354,12 +340,23 @@ class SolverService : Service() {
             isCapturing = true
 
             imageReader?.setOnImageAvailableListener({ reader ->
-                if (!isCapturing || !isLogicEnabled) return@setOnImageAvailableListener
                 val image = reader?.acquireLatestImage() ?: return@setOnImageAvailableListener
                 
+                // 프레임 드롭 가드: 엔진 정지 또는 캡처 중단 시 즉시 이미지 수거 해제(Memory Leak 방지)
+                if (!isCapturing || !isLogicEnabled) {
+                    image.close()
+                    return@setOnImageAvailableListener
+                }
+                
                 try {
-                    if (isManualAnalysisRequested) {
+                    val currentTime = System.currentTimeMillis()
+                    // [핵심] 수동 클릭 분석 요청이 들어왔거나, 자동 스캔이 켜진 상태에서 주기(1초)가 도래하면 캡처 즉시 분석 처리
+                    val shouldAnalyze = isManualAnalysisRequested || 
+                        (isAutoScanEnabled && (currentTime - lastAnalysisTime >= AUTO_SCAN_INTERVAL_MS))
+
+                    if (shouldAnalyze) {
                         isManualAnalysisRequested = false
+                        lastAnalysisTime = currentTime
                         
                         val planes = image.planes
                         val buffer = planes[0].buffer
@@ -372,28 +369,46 @@ class SolverService : Service() {
                         val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                         bitmap.copyPixelsFromBuffer(buffer)
                         
-                        // 사용자가 임의 지정한 4점 기하 구조 격자를 바탕으로 스캔 연산 가동
+                        // 기하 보간 역추적 연산
                         val matchedMoves = analyzeAndSolvePerspective(bitmap)
                         
                         mainHandler.post {
                             visualOverlayView?.updateMoves(matchedMoves)
+                            
+                            // [신규] 미니 모드 알림 다이내믹 피드백 처리
+                            if (!isLargeMode) {
+                                val miniBtn = miniScanButton
+                                if (miniBtn != null) {
+                                    if (matchedMoves.isNotEmpty()) {
+                                        val bestMove = matchedMoves.first()
+                                        // "⚡[빨강 절대강자 OOXOO] 디스코볼..." -> "⚡ 빨강 OOXOO!" 간소화 알림 텍스트로 축약
+                                        val shortMsg = bestMove.description
+                                            .replace("⚡[", "")
+                                            .replace(" 절대강자 OOXOO] 디스코볼 확정 배치! 💣", "")
+                                        
+                                        miniBtn.text = "⚡ $shortMsg!"
+                                        miniBtn.setBackgroundColor(Color.parseColor("#FF00DF")) // 핫핑크 깜빡임 강조 효과
+                                    } else {
+                                        // 찾은 최강 수가 없을 때 기본 감시 모드로 복구
+                                        miniBtn.text = "🔍 자동 탐지 중"
+                                        miniBtn.setBackgroundColor(Color.parseColor("#222222"))
+                                    }
+                                }
+                            }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "분석 실패: ${e.message}")
+                    Log.e(TAG, "자동 분석 루프 실패: ${e.message}")
                 } finally {
-                    image.close()
+                    image.close() // 이미지 버퍼 반환 필수 (안하면 파이프라인 정지)
                 }
             }, backgroundHandler)
 
         } catch (e: Exception) {
-            Log.e(TAG, "파이프라인 구축 에러", e)
+            Log.e(TAG, "캡처 서비스 구축 에러", e)
         }
     }
 
-    /**
-     * 🎯 [요구사항 4] 하이엔드 OOXOO 전용 정밀 판별기 (일반 3,4매칭 원천 배제 및 색상 스캔 고도화)
-     */
     private fun findBestMoves(board: Array<Array<BlockColor>>): List<MatchMove> {
         val moves = mutableListOf<MatchMove>()
         val dr = intArrayOf(-1, 1, 0, 0)
@@ -410,12 +425,11 @@ class SolverService : Service() {
                     if (nr in 0 until rows && nc in 0 until cols) {
                         if (board[nr][nc] == BlockColor.UNKNOWN) continue
                         
-                        // 가상 스왑 시뮬레이션
                         val temp = board[r][c]
                         board[r][c] = board[nr][nc]
                         board[nr][nc] = temp
 
-                        // [요구사항 4 적용] OOO, OOOO 매칭은 무시하고, 오직 완벽한 샌드위치 브릿지인 OOXOO 패턴만 필터링 검출
+                        // 무조건 OOO, OOOO는 배제하고 완벽한 양방향 대칭 OOXOO 만을 찾아 고득점화
                         val hasOoxoo = isStrictOoxooPattern(board, r, c) || isStrictOoxooPattern(board, nr, nc)
 
                         if (hasOoxoo) {
@@ -425,7 +439,6 @@ class SolverService : Service() {
                             moves.add(MatchMove(r, c, nr, nc, desc))
                         }
 
-                        // 복구
                         board[nr][nc] = board[r][c]
                         board[r][c] = temp
                     }
@@ -439,12 +452,10 @@ class SolverService : Service() {
         val color = board[r][c]
         if (color == BlockColor.UNKNOWN) return false
 
-        // 가로축 중심 OOXOO 검증 ([c-2]==C && [c-1]==C && [c]==중심 && [c+1]==C && [c+2]==C)
         if (c >= 2 && c < cols - 2) {
             if (board[r][c - 2] == color && board[r][c - 1] == color &&
                 board[r][c + 1] == color && board[r][c + 2] == color) return true
         }
-        // 세로축 중심 OOXOO 검증
         if (r >= 2 && r < rows - 2) {
             if (board[r - 2][c] == color && board[r - 1][c] == color &&
                 board[r + 1][c] == color && board[r + 2][c] == color) return true
@@ -452,10 +463,6 @@ class SolverService : Service() {
         return false
     }
 
-    /**
-     * 📐 [요구사항 3] 양방향 선형 보간(Bilinear Interpolation) 적용 세포점 추출기
-     * 유저가 네 모서리를 찌그러뜨리거나 경사지게 맞추어도, 수학적으로 완벽하게 각 블록의 중심을 추적해 냅니다.
-     */
     private fun analyzeAndSolvePerspective(bitmap: Bitmap): List<MatchMove> {
         val width = bitmap.width
         val height = bitmap.height
@@ -466,11 +473,9 @@ class SolverService : Service() {
 
         for (r in 0 until rows) {
             for (c in 0 until cols) {
-                // 비율 계산 (0.0 ~ 1.0)
                 val u = (c + 0.5f) / cols
                 val v = (r + 0.5f) / rows
 
-                // 4점 공간 상의 위치 보간 연산
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
                 val topY = (1 - u) * ptTL.y + u * ptTR.y
                 val bottomX = (1 - u) * ptBL.x + u * ptBR.x
@@ -521,9 +526,6 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 🎨 격자 가이드 가시화 및 4방향 자석 제어점 캔버스 클래스
-     */
     inner class VisualOverlayView(context: Context) : View(context) {
         private val linePaint = Paint().apply { color = Color.parseColor("#8000FF00"); style = Paint.Style.STROKE; strokeWidth = 3f }
         private val textPaint = Paint().apply { color = Color.YELLOW; textSize = 42f; style = Paint.Style.FILL }
@@ -533,7 +535,7 @@ class SolverService : Service() {
         private var currentMoves = listOf<MatchMove>()
         private var selectedCorner: PointF? = null
         private val touchRadius = 70f
-        private val magnetThreshold = 35f // [요구사항 3] 자석 효과 임계 수치 (35픽셀 이내 근접 시 정렬 결합)
+        private val magnetThreshold = 35f 
 
         fun updateMoves(moves: List<MatchMove>) {
             this.currentMoves = moves
@@ -543,7 +545,6 @@ class SolverService : Service() {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
 
-            // 1. 왜곡 대응형 사선 격자망 가이드라인 드로잉
             for (i in 0..cols) {
                 val ratio = i.toFloat() / cols
                 val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
@@ -561,7 +562,6 @@ class SolverService : Service() {
                 canvas.drawLine(leftX, leftY, rightX, rightY, linePaint)
             }
 
-            // 2. 격자 세팅 모드일 때만 화면 4귀퉁이에 앵커 노브(원형) 렌더링
             if (isCalibrationMode) {
                 canvas.drawCircle(ptTL.x, ptTL.y, 30f, handlePaint)
                 canvas.drawCircle(ptTR.x, ptTR.y, 30f, handlePaint)
@@ -569,11 +569,10 @@ class SolverService : Service() {
                 canvas.drawCircle(ptBR.x, ptBR.y, 30f, handlePaint)
             }
 
-            // 3. [요구사항 5] 미니모드든 대형모드든 힌트 발견 시 화면 중앙 화살표 가이드는 상시 표출
+            // 미니 모드/대형 모드에 무관하게 실시간 힌트 가이드는 화면 중심에 즉시 투영
             if (isLogicEnabled && currentMoves.isNotEmpty()) {
                 val move = currentMoves.first()
                 
-                // 원본 좌표 복원을 위한 격자 셀 중심 역산 구동
                 val uFrom = (move.fromCol + 0.5f) / cols
                 val vFrom = (move.fromRow + 0.5f) / rows
                 val startX = (1-vFrom)*((1-uFrom)*ptTL.x + uFrom*ptTR.x) + vFrom*((1-uFrom)*ptBL.x + uFrom*ptBR.x)
@@ -584,7 +583,6 @@ class SolverService : Service() {
                 val endX = (1-vTo)*((1-uTo)*ptTL.x + uTo*ptTR.x) + vTo*((1-uTo)*ptBL.x + uTo*ptBR.x)
                 val endY = (1-vTo)*((1-uTo)*ptTL.y + uTo*ptTR.y) + vTo*((1-uTo)*ptBR.y + uTo*ptBR.y)
 
-                // 최강 OOXOO 화살표 선명하게 렌더링
                 canvas.drawLine(startX, startY, endX, endY, arrowPaint)
                 canvas.drawCircle(startX, startY, 20f, Paint().apply { color = Color.RED })
                 canvas.drawCircle(endX, endY, 20f, Paint().apply { color = Color.GREEN })
@@ -592,9 +590,6 @@ class SolverService : Service() {
             }
         }
 
-        /**
-         * 📐 [요구사항 3] 마그네틱(Magnetic Snap) 기능 탑재 모서리 드래그 이벤트 핸들러
-         */
         override fun onTouchEvent(event: MotionEvent): Boolean {
             if (!isCalibrationMode) return false
 
@@ -616,23 +611,22 @@ class SolverService : Service() {
                     val corner = selectedCorner ?: return false
                     corner.set(x, y)
 
-                    // 🔥 [마그네틱 스냅 로직 구현] 근접한 수직/수평 좌표 축에 자석처럼 고정
                     when (corner) {
                         ptTL -> {
-                            if (abs(ptTL.x - ptBL.x) < magnetThreshold) ptTL.x = ptBL.x  // 좌측 수직 자석
-                            if (abs(ptTL.y - ptTR.y) < magnetThreshold) ptTL.y = ptTR.y  // 상단 수평 자석
+                            if (abs(ptTL.x - ptBL.x) < magnetThreshold) ptTL.x = ptBL.x
+                            if (abs(ptTL.y - ptTR.y) < magnetThreshold) ptTL.y = ptTR.y
                         }
                         ptTR -> {
-                            if (abs(ptTR.x - ptBR.x) < magnetThreshold) ptTR.x = ptBR.x  // 우측 수직 자석
-                            if (abs(ptTR.y - ptTL.y) < magnetThreshold) ptTR.y = ptTL.y  // 상단 수평 자석
+                            if (abs(ptTR.x - ptBR.x) < magnetThreshold) ptTR.x = ptBR.x
+                            if (abs(ptTR.y - ptTL.y) < magnetThreshold) ptTR.y = ptTL.y
                         }
                         ptBL -> {
-                            if (abs(ptBL.x - ptTL.x) < magnetThreshold) ptBL.x = ptTL.x  // 좌측 수직 자석
-                            if (abs(ptBL.y - ptBR.y) < magnetThreshold) ptBL.y = ptBR.y  // 하단 수평 자석
+                            if (abs(ptBL.x - ptTL.x) < magnetThreshold) ptBL.x = ptTL.x
+                            if (abs(ptBL.y - ptBR.y) < magnetThreshold) ptBL.y = ptBR.y
                         }
                         ptBR -> {
-                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptTR.x  // 우측 수직 자석
-                            if (abs(ptBR.y - ptBL.y) < magnetThreshold) ptBR.y = ptBL.y  // 하단 수평 자석
+                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptTR.x
+                            if (abs(ptBR.y - ptBL.y) < magnetThreshold) ptBR.y = ptBL.y
                         }
                     }
                     invalidate()
@@ -642,6 +636,10 @@ class SolverService : Service() {
             }
             return false
         }
+    }
+
+    private fun showToastOnMainThread(message: String) {
+        mainHandler.post { Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show() }
     }
 
     private fun stopCapturePipeline() {
