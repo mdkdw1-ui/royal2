@@ -13,6 +13,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.PointF
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -26,22 +27,22 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import kotlin.math.abs
 
 enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 
 data class MatchMove(
     val fromRow: Int, val fromCol: Int,
     val toRow: Int, val toCol: Int,
-    val matchCount: Int,
     val description: String
 )
 
@@ -50,6 +51,7 @@ class SolverService : Service() {
     private val TAG = "GridHelper_Service"
     private val binder = SolverBinder()
     
+    // [요구사항 3] 사용자 지정 행렬 (기본값 설정 및 UI에서 +/- 조절 가능)
     var rows = 11
     var cols = 9
 
@@ -58,9 +60,10 @@ class SolverService : Service() {
     private var imageReader: ImageReader? = null
     
     private lateinit var windowManager: WindowManager
-    private var overlayRootView: FrameLayout? = null
-    private var statusTextView: TextView? = null
-    private var visualOverlayView: VisualOverlayView? = null
+    
+    // 윈도우 분리 구조 (터치 먹통 해결책)
+    private var floatingControlView: LinearLayout? = null // 1. 드래그 가능한 플로팅 제어 패널
+    private var visualOverlayView: VisualOverlayView? = null // 2. 전체화면 게임 오버레이 캔버스
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var backgroundThread: HandlerThread? = null
@@ -69,12 +72,18 @@ class SolverService : Service() {
     private var isCapturing = false
     private var isManualAnalysisRequested = false 
 
-    private var screenWidth = 0
-    private var screenHeight = 0
-    private var gridLeft = 0f
-    private var gridTop = 0f
-    private var gridWidth = 0f
-    private var gridHeight = 0f
+    // [요구사항 1] 로직 온오프 스위치 플래그
+    private var isLogicEnabled = true
+    
+    // [요구사항 5] 상태바 크기 모드 플래그
+    private var isLargeMode = true
+
+    // [요구사항 3] 좌상, 우상, 좌하, 우하 프리폼 격자 제어점
+    private val ptTL = PointF()
+    private val ptTR = PointF()
+    private val ptBL = PointF()
+    private val ptBR = PointF()
+    private var isCalibrationMode = false // 격자 조정 모드 활성화 여부
 
     inner class SolverBinder : Binder() {
         fun getService(): SolverService = this@SolverService
@@ -87,23 +96,26 @@ class SolverService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         
         backgroundThread = HandlerThread("SolverBackgroundWorker").apply { start() }
+        backgroundThread!!.start()
         backgroundHandler = Handler(backgroundThread!!.looper)
         
+        // 초기 디바이스 해상도 기반 격자 가이드라인 모서리 기본 위치 계산
         val metrics = resources.displayMetrics
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
+        val w = metrics.widthPixels.toFloat()
+        val h = metrics.heightPixels.toFloat()
         
-        gridWidth = screenWidth * 0.92f
-        gridHeight = screenHeight * 0.52f
-        gridLeft = (screenWidth - gridWidth) / 2f
-        gridTop = (screenHeight - gridHeight) / 2f
+        ptTL.set(w * 0.05f, h * 0.25f)
+        ptTR.set(w * 0.95f, h * 0.25f)
+        ptBL.set(w * 0.05f, h * 0.75f)
+        ptBR.set(w * 0.95f, h * 0.75f)
         
-        createFloatingOverlayUI()
+        // 윈도우 이원화 생성 (터치 차단 원천 봉쇄)
+        createVisualOverlayWindow()
+        createFloatingControlWindow()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundServiceInternal()
-
         if (intent != null) {
             val resultCode = intent.getIntExtra("RESULT_CODE", Activity.RESULT_CANCELED)
             val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -114,86 +126,212 @@ class SolverService : Service() {
             }
 
             if (resultCode == Activity.RESULT_OK && resultData != null) {
-                backgroundHandler?.post {
-                    setupScreenCapturePipeline(resultCode, resultData)
-                }
-            } else {
-                showToastOnMainThread("❌ 유효하지 않은 미디어 프로젝션 데이터 수신")
+                backgroundHandler?.post { setupScreenCapturePipeline(resultCode, resultData) }
             }
         }
         return START_STICKY
     }
 
-    private fun createFloatingOverlayUI() {
+    /**
+     * 1️⃣ [요구사항 2, 5] 무조건 터치가 통과하는 전체화면 시각화 캔버스 윈도우 생성
+     */
+    private fun createVisualOverlayWindow() {
         mainHandler.post {
-            val context = applicationContext
-            overlayRootView = FrameLayout(context)
-
-            val controlPanel = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setBackgroundColor(Color.parseColor("#CC000000")) 
-                setPadding(30, 20, 30, 20)
-                gravity = Gravity.CENTER_VERTICAL
-            }
-
-            statusTextView = TextView(context).apply {
-                text = "엔진 대기 중..."
-                setTextColor(Color.WHITE)
-                textSize = 14f
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            }
-
-            val btnManualMatch = Button(context).apply {
-                text = "수동 격자 매칭"
-                setBackgroundColor(Color.parseColor("#FF6200EE")) 
-                setTextColor(Color.WHITE)
-                setPadding(20, 10, 20, 10)
-                setOnClickListener {
-                    isManualAnalysisRequested = true
-                    statusTextView?.text = "화면 스캔 및 분석 중..."
-                    showToastOnMainThread("🎯 현재 화면 매칭 스캔을 시작합니다.")
-                }
-            }
-
-            controlPanel.addView(statusTextView)
-            controlPanel.addView(btnManualMatch)
-
-            val controlParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.TOP
-                topMargin = 80 
-            }
-            overlayRootView?.addView(controlPanel, controlParams)
-
-            visualOverlayView = VisualOverlayView(context)
-            val overlayParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            overlayRootView?.addView(visualOverlayView, overlayParams)
-
-            val windowParams = WindowManager.LayoutParams(
+            visualOverlayView = VisualOverlayView(applicationContext)
+            
+            // 핵심: FLAG_NOT_TOUCHABLE을 기본 부여하여 게임 화면 터치를 0%도 방해하지 않음
+            val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
-                else 
-                    WindowManager.LayoutParams.TYPE_PHONE,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or 
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             )
+            windowManager.addView(visualOverlayView, params)
+        }
+    }
 
-            try {
-                windowManager.addView(overlayRootView, windowParams)
-                Log.d(TAG, "최상위 오버레이 윈도우 등록 성공")
-            } catch (e: Exception) {
-                Log.e(TAG, "오버레이 윈도우 생성 실패: ${e.message}")
+    /**
+     * 2️⃣ [요구사항 1, 5] 화면 어디든 움직이고 크기 조절이 가능한 플로팅 제어 패널 생성
+     */
+    private fun createFloatingControlWindow() {
+        mainHandler.post {
+            val context = applicationContext
+            floatingControlView = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#EE111111"))
+                setPadding(20, 15, 20, 15)
+            }
+
+            val floatParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 50
+                y = 150
+            }
+
+            // 플로팅 무빙 터치 리스너 장착 (드래그 이동)
+            floatingControlView?.setOnTouchListener(object : View.OnTouchListener {
+                private var initialX = 0
+                private var initialY = 0
+                private var initialTouchX = 0f
+                private var initialTouchY = 0f
+
+                override fun onTouch(v: View, event: MotionEvent): Boolean {
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            initialX = floatParams.x
+                            initialY = floatParams.y
+                            initialTouchX = event.rawX
+                            initialTouchY = event.rawY
+                            return true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            floatParams.x = initialX + (event.rawX - initialTouchX).toInt()
+                            floatParams.y = initialY + (event.rawY - initialTouchY).toInt()
+                            windowManager.updateViewLayout(floatingControlView, floatParams)
+                            return true
+                        }
+                    }
+                    return false
+                }
+            })
+
+            refreshFloatingPanelUI()
+            windowManager.addView(floatingControlView, floatParams)
+        }
+    }
+
+    /**
+     * 🔄 [요구사항 5] 대형 / 소형 모드 스위칭 갱신 렌더러
+     */
+    private fun refreshFloatingPanelUI() {
+        val view = floatingControlView ?: return
+        view.removeAllViews()
+        val context = applicationContext
+
+        // 모드 전환 통합 토글 버튼
+        val btnSizeToggle = Button(context).apply {
+            text = if (isLargeMode) "◀ 미니 모드" else "▶ 확장 패널"
+            textSize = 11f
+            setBackgroundColor(Color.parseColor("#333333"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                isLargeMode = !isLargeMode
+                refreshFloatingPanelUI()
             }
         }
+        view.addView(btnSizeToggle)
+
+        if (isLargeMode) {
+            // [대형 모드 인터페이스]
+            val tvStatus = TextView(context).apply {
+                text = "엔진: ${if(isLogicEnabled) "ON (대기)" else "OFF"}\n격자: ${rows}x${cols}"
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                setPadding(0, 10, 0, 10)
+            }
+            view.addView(tvStatus)
+
+            // 수동 스캔 버튼
+            val btnScan = Button(context).apply {
+                text = "🎯 수동 격자 매칭 스캔"
+                setBackgroundColor(Color.parseColor("#FF6200EE"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    if (!isLogicEnabled) {
+                        showToastOnMainThread("로직이 OFF 상태입니다. ON으로 변경하세요."); return@setOnClickListener
+                    }
+                    isManualAnalysisRequested = true
+                    showToastOnMainThread("화면 스캔 시작...")
+                }
+            }
+            view.addView(btnScan)
+
+            // 로직 온오프 스위치 버튼
+            val btnLogicToggle = Button(context).apply {
+                text = if (isLogicEnabled) "⚙️ 로직 ON 상태" else "❌ 로직 OFF 상태"
+                setBackgroundColor(if (isLogicEnabled) Color.parseColor("#007F0E") else Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    isLogicEnabled = !isLogicEnabled
+                    text = if (isLogicEnabled) "⚙️ 로직 ON 상태" else "❌ 로직 OFF 상태"
+                    setBackgroundColor(if (isLogicEnabled) Color.parseColor("#007F0E") else Color.DKGRAY)
+                    if(!isLogicEnabled) visualOverlayView?.updateMoves(emptyList())
+                }
+            }
+            view.addView(btnLogicToggle)
+
+            // 격자 수정 모드 토글 버튼
+            val btnCalibrate = Button(context).apply {
+                text = if (isCalibrationMode) "💾 격자 설정 완료" else "📐 격자 위치 조절"
+                setBackgroundColor(if (isCalibrationMode) Color.parseColor("#FF00DF") else Color.parseColor("#444444"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    toggleCalibrationMode()
+                }
+            }
+            view.addView(btnCalibrate)
+
+            // 행열 수치 미세조정 패널
+            val matrixBox = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            val btnAddRow = Button(context).apply { text = "행+"; setOnClickListener { rows++; refreshFloatingPanelUI(); visualOverlayView?.invalidate() } }
+            val btnSubRow = Button(context).apply { text = "행-"; setOnClickListener { if(rows>3) rows--; refreshFloatingPanelUI(); visualOverlayView?.invalidate() } }
+            val btnAddCol = Button(context).apply { text = "열+"; setOnClickListener { cols++; refreshFloatingPanelUI(); visualOverlayView?.invalidate() } }
+            val btnSubCol = Button(context).apply { text = "열-"; setOnClickListener { if(cols>3) cols--; refreshFloatingPanelUI(); visualOverlayView?.invalidate() } }
+            matrixBox.addView(btnSubRow); matrixBox.addView(btnAddRow); matrixBox.addView(btnSubCol); matrixBox.addView(btnAddCol)
+            view.addView(matrixBox)
+
+            // 킬 스위치 (서비스 완전 종료 버튼)
+            val btnKill = Button(context).apply {
+                text = "☠️ 헬퍼 프로그램 종료 (킬스위치)"
+                setBackgroundColor(Color.RED)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    stopSelf()
+                }
+            }
+            view.addView(btnKill)
+        } else {
+            // [소형 모드 인터페이스] -> 오직 화면을 가리지 않게 최소화된 알약 버튼 형태
+            val btnQuickScan = Button(context).apply {
+                text = "⚡ 스캔"
+                textSize = 12f
+                setBackgroundColor(Color.parseColor("#FF6200EE"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    if (isLogicEnabled) isManualAnalysisRequested = true
+                }
+            }
+            view.addView(btnQuickScan)
+        }
+    }
+
+    /**
+     * 📐 [요구사항 3] 격자 조정 모드 진입 시 전체화면 오버레이에 터치 권한 일시 부여 함수
+     */
+    private fun toggleCalibrationMode() {
+        isCalibrationMode = !isCalibrationMode
+        val overlay = visualOverlayView ?: return
+        val params = overlay.layoutParams as WindowManager.LayoutParams
+        
+        if (isCalibrationMode) {
+            // 터치를 가로채서 4개의 모서리를 드래그할 수 있도록 차단 해제
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            showToastOnMainThread("📐 모서리를 끌어 퍼즐 영역에 맞추세요. (자석 효과 작동)")
+        } else {
+            // 조절 완료 시 다시 완전 터치 통과 모드로 복구
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            showToastOnMainThread("💾 격자 좌표가 메모리에 고정되었습니다.")
+        }
+        windowManager.updateViewLayout(overlay, params)
+        refreshFloatingPanelUI()
+        overlay.invalidate()
     }
 
     private fun setupScreenCapturePipeline(resultCode: Int, resultData: Intent) {
@@ -202,29 +340,21 @@ class SolverService : Service() {
             stopCapturePipeline()
 
             mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
-            
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    super.onStop()
-                    stopCapturePipeline()
-                }
+                override fun onStop() { super.onStop(); stopCapturePipeline() }
             }, backgroundHandler)
 
             val metrics = resources.displayMetrics
-            imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-            
+            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
             virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "GridHelperCapture",
-                screenWidth, screenHeight, metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface, null, backgroundHandler
+                "GridHelperCapture", metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, backgroundHandler
             )
 
             isCapturing = true
-            mainHandler.post { statusTextView?.text = "분석기 정상 기동 (대기 중)" }
 
             imageReader?.setOnImageAvailableListener({ reader ->
-                if (!isCapturing) return@setOnImageAvailableListener
+                if (!isCapturing || !isLogicEnabled) return@setOnImageAvailableListener
                 val image = reader?.acquireLatestImage() ?: return@setOnImageAvailableListener
                 
                 try {
@@ -235,62 +365,34 @@ class SolverService : Service() {
                         val buffer = planes[0].buffer
                         val pixelStride = planes[0].pixelStride
                         val rowStride = planes[0].rowStride
-                        val rowPadding = rowStride - pixelStride * screenWidth
+                        val w = metrics.widthPixels
+                        val h = metrics.heightPixels
+                        val rowPadding = rowStride - pixelStride * w
 
-                        val bitmap = Bitmap.createBitmap(screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888)
+                        val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                         bitmap.copyPixelsFromBuffer(buffer)
                         
-                        val matchedMoves = analyzeAndSolve(bitmap, gridLeft, gridTop, gridWidth, gridHeight)
+                        // 사용자가 임의 지정한 4점 기하 구조 격자를 바탕으로 스캔 연산 가동
+                        val matchedMoves = analyzeAndSolvePerspective(bitmap)
                         
                         mainHandler.post {
-                            if (matchedMoves.isEmpty()) {
-                                statusTextView?.text = "분석 완료: 매칭 항목 없음"
-                            } else {
-                                val bestMove = matchedMoves.first()
-                                statusTextView?.text = "${bestMove.description}"
-                            }
                             visualOverlayView?.updateMoves(matchedMoves)
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "이미지 분석 파이프라인 연산 실패: ${e.message}")
+                    Log.e(TAG, "분석 실패: ${e.message}")
                 } finally {
                     image.close()
                 }
             }, backgroundHandler)
 
         } catch (e: Exception) {
-            Log.e(TAG, "캡처 파이프라인 구축 에러", e)
-            showToastOnMainThread("❌ 화면 초기화 실패: ${e.message}")
+            Log.e(TAG, "파이프라인 구축 에러", e)
         }
-    }
-
-    private fun startForegroundServiceInternal() {
-        val channelId = "solver_service_channel"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, "격자 헬퍼 분석 엔진", NotificationManager.IMPORTANCE_LOW)
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
-        }
-
-        val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("격자 헬퍼 오버레이 동작 중")
-            .setContentText("화면 위에 상태바 및 수동 매칭 패널이 표시됩니다.")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .build()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else {
-            startForeground(1, notification)
-        }
-    }
-
-    private fun showToastOnMainThread(message: String) {
-        mainHandler.post { Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show() }
     }
 
     /**
-     * 🎯 [핵심] 알고리즘 연산 구현부 및 OOXOO 절대 강자 탐지 로직
+     * 🎯 [요구사항 4] 하이엔드 OOXOO 전용 정밀 판별기 (일반 3,4매칭 원천 배제 및 색상 스캔 고도화)
      */
     private fun findBestMoves(board: Array<Array<BlockColor>>): List<MatchMove> {
         val moves = mutableListOf<MatchMove>()
@@ -308,103 +410,86 @@ class SolverService : Service() {
                     if (nr in 0 until rows && nc in 0 until cols) {
                         if (board[nr][nc] == BlockColor.UNKNOWN) continue
                         
-                        // 1. 가상 스왑 시뮬레이션 실행
+                        // 가상 스왑 시뮬레이션
                         val temp = board[r][c]
                         board[r][c] = board[nr][nc]
                         board[nr][nc] = temp
 
-                        // 2. 일반 매칭 길이 계산
-                        val m1 = checkMaxMatchLength(board, r, c)
-                        val m2 = checkMaxMatchLength(board, nr, nc)
-                        val maxLen = maxOf(m1, m2)
+                        // [요구사항 4 적용] OOO, OOOO 매칭은 무시하고, 오직 완벽한 샌드위치 브릿지인 OOXOO 패턴만 필터링 검출
+                        val hasOoxoo = isStrictOoxooPattern(board, r, c) || isStrictOoxooPattern(board, nr, nc)
 
-                        // 3. 🔥 [OOXOO 절대 강자 검출 로직]
-                        // 스왑의 결과물로 타깃 지점에 완벽한 샌드위치 브릿지 형태가 완성되었는지 검사
-                        val isOoxooTarget = isOoxooPattern(board, r, c) || isOoxooPattern(board, nr, nc)
-
-                        if (isOoxooTarget) {
-                            // OOXOO 구조가 완성되었다면 999점의 가중치를 부여해 무조건 정렬 1순위 상단 박제
-                            val colorName = getKoreanColorName(board[r][c])
-                            val desc = "⚡[$colorName OOXOO] 최강 디스코볼 완성! 💣"
-                            moves.add(MatchMove(r, c, nr, nc, 999, desc))
-                        } else if (maxLen >= 3) {
-                            val desc = if (maxLen >= 5) "디스코볼 생성 가능! 🎯" else "${maxLen}개 매칭"
-                            moves.add(MatchMove(r, c, nr, nc, maxLen, desc))
+                        if (hasOoxoo) {
+                            val targetColor = board[r][c]
+                            val korColor = getKoreanColorName(targetColor)
+                            val desc = "⚡[$korColor 절대강자 OOXOO] 디스코볼 확정 배치! 💣"
+                            moves.add(MatchMove(r, c, nr, nc, desc))
                         }
 
-                        // 4. 원래 상태로 복구
+                        // 복구
                         board[nr][nc] = board[r][c]
                         board[r][c] = temp
                     }
                 }
             }
         }
-        // 가중치(matchCount)가 높은 순서대로 정렬하므로 999점을 받은 OOXOO가 무조건 맨 위로 올라감
-        return moves.sortedByDescending { it.matchCount }
+        return moves
     }
 
-    /**
-     * 🎯 OOXOO 패턴 여부 정밀 판별기
-     * 특정 조각이 들어간 자리를 중심으로 좌우 2칸씩 혹은 상하 2칸씩 동일 색상인지 검증
-     */
-    private fun isOoxooPattern(board: Array<Array<BlockColor>>, r: Int, c: Int): Boolean {
+    private fun isStrictOoxooPattern(board: Array<Array<BlockColor>>, r: Int, c: Int): Boolean {
         val color = board[r][c]
         if (color == BlockColor.UNKNOWN) return false
 
-        // 1. 가로축 OOXOO 탐지 (내 위치 c를 기준으로 좌측 2개, 우측 2개가 내 색상과 일치하는지)
+        // 가로축 중심 OOXOO 검증 ([c-2]==C && [c-1]==C && [c]==중심 && [c+1]==C && [c+2]==C)
         if (c >= 2 && c < cols - 2) {
             if (board[r][c - 2] == color && board[r][c - 1] == color &&
-                board[r][c + 1] == color && board[r][c + 2] == color) {
-                return true
-            }
+                board[r][c + 1] == color && board[r][c + 2] == color) return true
         }
-
-        // 2. 세로축 OOXOO 탐지 (내 위치 r을 기준으로 상단 2개, 하단 2개가 내 색상과 일치하는지)
+        // 세로축 중심 OOXOO 검증
         if (r >= 2 && r < rows - 2) {
             if (board[r - 2][c] == color && board[r - 1][c] == color &&
-                board[r + 1][c] == color && board[r + 2][c] == color) {
-                return true
-            }
+                board[r + 1][c] == color && board[r + 2][c] == color) return true
         }
-
         return false
     }
 
-    private fun getKoreanColorName(color: BlockColor): String {
-        return when (color) {
-            BlockColor.RED -> "빨강"
-            BlockColor.BLUE -> "파랑"
-            BlockColor.YELLOW -> "노랑"
-            BlockColor.GREEN -> "초록"
-            BlockColor.PURPLE -> "보라"
-            else -> "미정"
-        }
-    }
-
-    fun analyzeAndSolve(bitmap: Bitmap, gridLeft: Float, gridTop: Float, gridWidth: Float, gridHeight: Float): List<MatchMove> {
-        val cellWidth = gridWidth / cols
-        val cellHeight = gridHeight / rows
+    /**
+     * 📐 [요구사항 3] 양방향 선형 보간(Bilinear Interpolation) 적용 세포점 추출기
+     * 유저가 네 모서리를 찌그러뜨리거나 경사지게 맞추어도, 수학적으로 완벽하게 각 블록의 중심을 추적해 냅니다.
+     */
+    private fun analyzeAndSolvePerspective(bitmap: Bitmap): List<MatchMove> {
         val width = bitmap.width
         val height = bitmap.height
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
         val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
+
         for (r in 0 until rows) {
             for (c in 0 until cols) {
-                val centerX = gridLeft + (c + 0.5f) * cellWidth
-                val centerY = gridTop + (r + 0.5f) * cellHeight
-                board[r][c] = detectCellColorROI(pixels, width, height, centerX, centerY)
+                // 비율 계산 (0.0 ~ 1.0)
+                val u = (c + 0.5f) / cols
+                val v = (r + 0.5f) / rows
+
+                // 4점 공간 상의 위치 보간 연산
+                val topX = (1 - u) * ptTL.x + u * ptTR.x
+                val topY = (1 - u) * ptTL.y + u * ptTR.y
+                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+
+                val targetX = (1 - v) * topX + v * bottomX
+                val targetY = (1 - v) * topY + v * bottomY
+
+                board[r][c] = detectCellColorROI(pixels, width, height, targetX, targetY)
             }
         }
         return findBestMoves(board)
     }
 
     private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
-        val radius = 12 
+        val radius = 10
         val cX = centerX.toInt()
         val cY = centerY.toInt()
-        var redCount = 0; var blueCount = 0; var yellowCount = 0; var greenCount = 0; var purpleCount = 0
+        var rCnt = 0; var bCnt = 0; var yCnt = 0; var gCnt = 0; var pCnt = 0
         val hsv = FloatArray(3)
 
         for (y in (cY - radius)..(cY + radius)) {
@@ -412,100 +497,150 @@ class SolverService : Service() {
                 if (x < 0 || x >= width || y < 0 || y >= height) continue
                 val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
-                if (hsv[1] < 0.15f || hsv[2] < 0.15f) continue
+                if (hsv[1] < 0.2f || hsv[2] < 0.2f) continue
                 when {
-                    (hsv[0] in 0f..20f) || (hsv[0] in 340f..360f) -> redCount++    
-                    hsv[0] in 21f..70f -> yellowCount++                         
-                    hsv[0] in 71f..165f -> greenCount++ 
-                    hsv[0] in 166f..255f -> blueCount++                         
-                    hsv[0] in 256f..339f -> purpleCount++                       
+                    (hsv[0] in 0f..22f) || (hsv[0] in 338f..360f) -> rCnt++
+                    hsv[0] in 23f..72f -> yCnt++
+                    hsv[0] in 73f..160f -> gCnt++
+                    hsv[0] in 161f..250f -> bCnt++
+                    hsv[0] in 251f..337f -> pCnt++
                 }
             }
         }
 
-        val totalSamples = ((radius * 2) + 1) * ((radius * 2) + 1)
-        val threshold = totalSamples * 0.12f 
-        val counts = mapOf(
-            BlockColor.RED to redCount, BlockColor.BLUE to blueCount,
-            BlockColor.YELLOW to yellowCount, BlockColor.GREEN to greenCount, BlockColor.PURPLE to purpleCount
-        )
-        val maxEntry = counts.maxByOrNull { it.value } ?: return BlockColor.UNKNOWN
-        return if (maxEntry.value > threshold) maxEntry.key else BlockColor.UNKNOWN
+        val threshold = 50
+        val maxMap = mapOf(BlockColor.RED to rCnt, BlockColor.BLUE to bCnt, BlockColor.YELLOW to yCnt, BlockColor.GREEN to gCnt, BlockColor.PURPLE to pCnt)
+        val best = maxMap.maxByOrNull { it.value } ?: return BlockColor.UNKNOWN
+        return if (best.value > threshold) best.key else BlockColor.UNKNOWN
     }
 
-    private fun checkMaxMatchLength(board: Array<Array<BlockColor>>, r: Int, c: Int): Int {
-        val color = board[r][c]
-        if (color == BlockColor.UNKNOWN) return 0
-        var hc = 1; var cc = c + 1
-        while (cc < cols && board[r][cc] == color) { hc++; cc++ }; cc = c - 1
-        while (cc >= 0 && board[r][cc] == color) { hc++; cc-- }
-        var vc = 1; var rr = r + 1
-        while (rr < rows && board[rr][c] == color) { vc++; rr++ }; rr = r - 1
-        while (rr >= 0 && board[rr][c] == color) { vc++; rr-- }
-        return maxOf(hc, vc)
+    private fun getKoreanColorName(color: BlockColor): String {
+        return when(color) {
+            BlockColor.RED -> "빨강"; BlockColor.BLUE -> "파랑"; BlockColor.YELLOW -> "노랑"
+            BlockColor.GREEN -> "초록"; BlockColor.PURPLE -> "보라"; else -> "미정"
+        }
     }
 
+    /**
+     * 🎨 격자 가이드 가시화 및 4방향 자석 제어점 캔버스 클래스
+     */
     inner class VisualOverlayView(context: Context) : View(context) {
-        private val gridPaint = Paint().apply {
-            color = Color.parseColor("#40FFFFFF") 
-            style = Paint.Style.STROKE
-            strokeWidth = 3f
-        }
-        
-        private val arrowPaint = Paint().apply {
-            color = Color.GREEN
-            style = Paint.Style.FILL_AND_STROKE
-            strokeWidth = 10f
-            textSize = 40f
-        }
+        private val linePaint = Paint().apply { color = Color.parseColor("#8000FF00"); style = Paint.Style.STROKE; strokeWidth = 3f }
+        private val textPaint = Paint().apply { color = Color.YELLOW; textSize = 42f; style = Paint.Style.FILL }
+        private val handlePaint = Paint().apply { color = Color.parseColor("#FF00DF"); style = Paint.Style.FILL }
+        private val arrowPaint = Paint().apply { color = Color.parseColor("#FF00DF"); strokeWidth = 15f; style = Paint.Style.FILL_AND_STROKE }
 
         private var currentMoves = listOf<MatchMove>()
+        private var selectedCorner: PointF? = null
+        private val touchRadius = 70f
+        private val magnetThreshold = 35f // [요구사항 3] 자석 효과 임계 수치 (35픽셀 이내 근접 시 정렬 결합)
 
         fun updateMoves(moves: List<MatchMove>) {
             this.currentMoves = moves
-            invalidate() 
+            invalidate()
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val cellWidth = gridWidth / cols
-            val cellHeight = gridHeight / rows
-            
+
+            // 1. 왜곡 대응형 사선 격자망 가이드라인 드로잉
             for (i in 0..cols) {
-                val x = gridLeft + i * cellWidth
-                canvas.drawLine(x, gridTop, x, gridTop + gridHeight, gridPaint)
+                val ratio = i.toFloat() / cols
+                val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
+                val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
+                val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
+                val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
+                canvas.drawLine(topX, topY, botX, botY, linePaint)
             }
             for (j in 0..rows) {
-                val y = gridTop + j * cellHeight
-                canvas.drawLine(gridLeft, y, gridLeft + gridWidth, y, gridPaint)
+                val ratio = j.toFloat() / rows
+                val leftX = (1 - ratio) * ptTL.x + ratio * ptBL.x
+                val leftY = (1 - ratio) * ptTL.y + ratio * ptBL.y
+                val rightX = (1 - ratio) * ptTR.x + ratio * ptBR.x
+                val rightY = (1 - ratio) * ptTR.y + ratio * ptBR.y
+                canvas.drawLine(leftX, leftY, rightX, rightY, linePaint)
             }
 
-            if (currentMoves.isNotEmpty()) {
-                val topMove = currentMoves.first()
+            // 2. 격자 세팅 모드일 때만 화면 4귀퉁이에 앵커 노브(원형) 렌더링
+            if (isCalibrationMode) {
+                canvas.drawCircle(ptTL.x, ptTL.y, 30f, handlePaint)
+                canvas.drawCircle(ptTR.x, ptTR.y, 30f, handlePaint)
+                canvas.drawCircle(ptBL.x, ptBL.y, 30f, handlePaint)
+                canvas.drawCircle(ptBR.x, ptBR.y, 30f, handlePaint)
+            }
+
+            // 3. [요구사항 5] 미니모드든 대형모드든 힌트 발견 시 화면 중앙 화살표 가이드는 상시 표출
+            if (isLogicEnabled && currentMoves.isNotEmpty()) {
+                val move = currentMoves.first()
                 
-                val startX = gridLeft + (topMove.fromCol + 0.5f) * cellWidth
-                val startY = gridTop + (topMove.fromRow + 0.5f) * cellHeight
-                val endX = gridLeft + (topMove.toCol + 0.5f) * cellWidth
-                val endY = gridTop + (topMove.toRow + 0.5f) * cellHeight
+                // 원본 좌표 복원을 위한 격자 셀 중심 역산 구동
+                val uFrom = (move.fromCol + 0.5f) / cols
+                val vFrom = (move.fromRow + 0.5f) / rows
+                val startX = (1-vFrom)*((1-uFrom)*ptTL.x + uFrom*ptTR.x) + vFrom*((1-uFrom)*ptBL.x + uFrom*ptBR.x)
+                val startY = (1-vFrom)*((1-uFrom)*ptTL.y + uFrom*ptTR.y) + vFrom*((1-uFrom)*ptBL.y + uFrom*ptBR.y)
 
-                // ⚡ OOXOO 최강 패턴일 시 눈에 확 띄도록 붉은 보라색 계열 화살표와 굵기로 강조 변환
-                if (topMove.matchCount == 999) {
-                    arrowPaint.color = Color.parseColor("#FF00DF")
-                    arrowPaint.strokeWidth = 15f
-                } else {
-                    arrowPaint.color = Color.GREEN
-                    arrowPaint.strokeWidth = 10f
-                }
+                val uTo = (move.toCol + 0.5f) / cols
+                val vTo = (move.toRow + 0.5f) / rows
+                val endX = (1-vTo)*((1-uTo)*ptTL.x + uTo*ptTR.x) + vTo*((1-uTo)*ptBL.x + uTo*ptBR.x)
+                val endY = (1-vTo)*((1-uTo)*ptTL.y + uTo*ptTR.y) + vTo*((1-uTo)*ptBR.y + uTo*ptBR.y)
 
+                // 최강 OOXOO 화살표 선명하게 렌더링
                 canvas.drawLine(startX, startY, endX, endY, arrowPaint)
-                canvas.drawCircle(startX, startY, 15f, arrowPaint.apply { color = Color.RED }) 
-                canvas.drawCircle(endX, endY, 15f, arrowPaint.apply { color = Color.GREEN }) 
-                
-                canvas.drawText(topMove.description, startX - 50f, startY - 30f, arrowPaint.apply { 
-                    color = Color.YELLOW
-                    style = Paint.Style.FILL
-                })
+                canvas.drawCircle(startX, startY, 20f, Paint().apply { color = Color.RED })
+                canvas.drawCircle(endX, endY, 20f, Paint().apply { color = Color.GREEN })
+                canvas.drawText(move.description, startX - 100f, startY - 40f, textPaint)
             }
+        }
+
+        /**
+         * 📐 [요구사항 3] 마그네틱(Magnetic Snap) 기능 탑재 모서리 드래그 이벤트 핸들러
+         */
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (!isCalibrationMode) return false
+
+            val x = event.x
+            val y = event.y
+
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    selectedCorner = when {
+                        abs(x - ptTL.x) < touchRadius && abs(y - ptTL.y) < touchRadius -> ptTL
+                        abs(x - ptTR.x) < touchRadius && abs(y - ptTR.y) < touchRadius -> ptTR
+                        abs(x - ptBL.x) < touchRadius && abs(y - ptBL.y) < touchRadius -> ptBL
+                        abs(x - ptBR.x) < touchRadius && abs(y - ptBR.y) < touchRadius -> ptBR
+                        else -> null
+                    }
+                    return selectedCorner != null
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val corner = selectedCorner ?: return false
+                    corner.set(x, y)
+
+                    // 🔥 [마그네틱 스냅 로직 구현] 근접한 수직/수평 좌표 축에 자석처럼 고정
+                    when (corner) {
+                        ptTL -> {
+                            if (abs(ptTL.x - ptBL.x) < magnetThreshold) ptTL.x = ptBL.x  // 좌측 수직 자석
+                            if (abs(ptTL.y - ptTR.y) < magnetThreshold) ptTL.y = ptTR.y  // 상단 수평 자석
+                        }
+                        ptTR -> {
+                            if (abs(ptTR.x - ptBR.x) < magnetThreshold) ptTR.x = ptBR.x  // 우측 수직 자석
+                            if (abs(ptTR.y - ptTL.y) < magnetThreshold) ptTR.y = ptTL.y  // 상단 수평 자석
+                        }
+                        ptBL -> {
+                            if (abs(ptBL.x - ptTL.x) < magnetThreshold) ptBL.x = ptTL.x  // 좌측 수직 자석
+                            if (abs(ptBL.y - ptBR.y) < magnetThreshold) ptBL.y = ptBR.y  // 하단 수평 자석
+                        }
+                        ptBR -> {
+                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptTR.x  // 우측 수직 자석
+                            if (abs(ptBR.y - ptBL.y) < magnetThreshold) ptBR.y = ptBL.y  // 하단 수평 자석
+                        }
+                    }
+                    invalidate()
+                    return true
+                }
+                MotionEvent.ACTION_UP -> { selectedCorner = null }
+            }
+            return false
         }
     }
 
@@ -518,9 +653,8 @@ class SolverService : Service() {
 
     override fun onDestroy() {
         stopCapturePipeline()
-        overlayRootView?.let { 
-            try { windowManager.removeView(it) } catch (e: Exception) {}
-        }
+        floatingControlView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
+        visualOverlayView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
         backgroundThread?.quitSafely()
         super.onDestroy()
     }
