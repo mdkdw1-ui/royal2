@@ -190,13 +190,12 @@ class SolverService : Service() {
                 y = 150
             }
 
-            // 💡 [개선] 버튼 터치를 방해하지 않으면서 드래그 이동이 가능하도록 터치 가로채기(Interception) 구현
             floatingControlView = object : LinearLayout(context) {
                 private var initialX = 0
                 private var initialY = 0
                 private var initialTouchX = 0f
                 private var initialTouchY = 0f
-                private val touchSlop = 15f // 드래그로 판정할 최소 픽셀 거리
+                private val touchSlop = 15f 
 
                 override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
                     when (ev.action) {
@@ -210,7 +209,6 @@ class SolverService : Service() {
                             val dx = abs(ev.rawX - initialTouchX)
                             val dy = abs(ev.rawY - initialTouchY)
                             if (dx > touchSlop || dy > touchSlop) {
-                                // 단순 클릭이 아닌 이동이 감지되면 터치 이벤트를 뺏어와 드래그 모드로 전환
                                 return true 
                             }
                         }
@@ -767,12 +765,13 @@ class SolverService : Service() {
             super.onDraw(canvas)
 
             if (isGridVisible || isCalibrationMode) {
+                // 💡 [수정됨] 세로 가이드선들이 사다리꼴 형태로 반듯하게 이어지도록 ptBR.x/ptBR.y로 정상 수정
                 for (i in 0..cols) {
                     val ratio = i.toFloat() / cols
                     val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
                     val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
-                    val botX = (1 - ratio) * ptBL.x + ratio * ptBL.x
-                    val botY = (1 - ratio) * ptBL.y + ratio * ptBL.y
+                    val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
+                    val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
                     canvas.drawLine(topX, topY, botX, botY, linePaint)
                 }
                 for (j in 0..rows) {
