@@ -74,7 +74,6 @@ class SolverService : Service() {
     private var isLogicEnabled = true
     private var isLargeMode = true
 
-    // 💡 격자 보임/숨김 전역 플래그 및 예외 구역(제외 칸 20x20 크기 대응) 관리
     private var isGridVisible = true
     private val disabledCells = Array(20) { BooleanArray(20) { false } }
 
@@ -89,7 +88,6 @@ class SolverService : Service() {
     private val ptBR = PointF()
     private var isCalibrationMode = false 
     
-    // 💡 미세조절용 활성화 모서리 타겟 변수 (기본값 좌상단)
     private var activeCorner: PointF = ptTL
 
     inner class SolverBinder : Binder() {
@@ -105,7 +103,6 @@ class SolverService : Service() {
         backgroundThread = HandlerThread("SolverBackgroundWorker").apply { start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
         
-        // 💾 저장된 설정 정보 로드
         loadPreferences()
         
         createVisualOverlayWindow()
@@ -172,7 +169,6 @@ class SolverService : Service() {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                // 기본적으로 캘리브레이션 꺼져 있을 때는 터치 무시(패스스루) 모드로 시작
                 flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             }
             windowManager.addView(visualOverlayView, params)
@@ -182,12 +178,6 @@ class SolverService : Service() {
     private fun createFloatingControlWindow() {
         mainHandler.post {
             val context = applicationContext
-            floatingControlView = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.parseColor("#EE111111"))
-                setPadding(20, 15, 20, 15)
-            }
-
             val floatParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -200,31 +190,50 @@ class SolverService : Service() {
                 y = 150
             }
 
-            floatingControlView?.setOnTouchListener(object : View.OnTouchListener {
+            // 💡 [개선] 버튼 터치를 방해하지 않으면서 드래그 이동이 가능하도록 터치 가로채기(Interception) 구현
+            floatingControlView = object : LinearLayout(context) {
                 private var initialX = 0
                 private var initialY = 0
                 private var initialTouchX = 0f
                 private var initialTouchY = 0f
+                private val touchSlop = 15f // 드래그로 판정할 최소 픽셀 거리
 
-                override fun onTouch(v: View, event: MotionEvent): Boolean {
-                    when (event.action) {
+                override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                    when (ev.action) {
                         MotionEvent.ACTION_DOWN -> {
                             initialX = floatParams.x
                             initialY = floatParams.y
-                            initialTouchX = event.rawX
-                            initialTouchY = event.rawY
-                            return true
+                            initialTouchX = ev.rawX
+                            initialTouchY = ev.rawY
                         }
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx = abs(ev.rawX - initialTouchX)
+                            val dy = abs(ev.rawY - initialTouchY)
+                            if (dx > touchSlop || dy > touchSlop) {
+                                // 단순 클릭이 아닌 이동이 감지되면 터치 이벤트를 뺏어와 드래그 모드로 전환
+                                return true 
+                            }
+                        }
+                    }
+                    return super.onInterceptTouchEvent(ev)
+                }
+
+                override fun onTouchEvent(event: MotionEvent): Boolean {
+                    when (event.action) {
                         MotionEvent.ACTION_MOVE -> {
                             floatParams.x = initialX + (event.rawX - initialTouchX).toInt()
                             floatParams.y = initialY + (event.rawY - initialTouchY).toInt()
-                            windowManager.updateViewLayout(floatingControlView, floatParams)
+                            windowManager.updateViewLayout(this, floatParams)
                             return true
                         }
                     }
-                    return false
+                    return super.onTouchEvent(event)
                 }
-            })
+            }.apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#EE111111"))
+                setPadding(20, 15, 20, 15)
+            }
 
             refreshFloatingPanelUI()
             windowManager.addView(floatingControlView, floatParams)
@@ -309,7 +318,6 @@ class SolverService : Service() {
             }
             view.addView(btnCalibrate)
 
-            // 💡 [수정] 조절 모드가 켜졌을 때만 나타나는 모서리 미세 조절 D-PAD 및 팁 가이드라인
             if (isCalibrationMode) {
                 val cornerName = when (activeCorner) {
                     ptTL -> "좌상"
@@ -382,7 +390,6 @@ class SolverService : Service() {
                 view.addView(tvTips)
             }
 
-            // 💡 [추가] 격자 보기 보임/숨김 토글 단추
             val btnGridToggle = Button(context).apply {
                 text = if (isGridVisible) "🌐 격자: 보임" else "🌐 격자: 숨김"
                 setBackgroundColor(if (isGridVisible) Color.parseColor("#007F0E") else Color.DKGRAY)
@@ -431,7 +438,6 @@ class SolverService : Service() {
         val overlay = visualOverlayView ?: return
         val params = overlay.layoutParams as WindowManager.LayoutParams
         if (isCalibrationMode) {
-            // 터치 이벤트를 낚아챌 수 있도록 플래그 조절 (제외 영역 지정 및 모서리 이동 지원용)
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             showToastOnMainThread("📐 격자점 조절 및 터치 스캔 해제(X) 기능 활성화")
         } else {
@@ -518,7 +524,6 @@ class SolverService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "자동 분석 루프 실패: ${e.message}")
                 } catch (e: java.lang.IllegalStateException) {
-                    // 비동기 이미지 취득 레이턴시 방어
                 } finally {
                     try {
                         image.close()
@@ -538,7 +543,6 @@ class SolverService : Service() {
 
         for (r in 0 until rows) {
             for (c in 0 until cols) {
-                // 💡 제외(X)로 표시된 구역은 소스 노드로 분석하지 않고 패스
                 if (board[r][c] == BlockColor.UNKNOWN) continue
 
                 for (i in 0 until 4) {
@@ -546,7 +550,6 @@ class SolverService : Service() {
                     val nc = c + dc[i]
 
                     if (nr in 0 until rows && nc in 0 until cols) {
-                        // 💡 타겟 노드 역시 제외(X) 칸인 경우 움직임 연산에서 스킵
                         if (board[nr][nc] == BlockColor.UNKNOWN) continue
                         
                         val temp = board[r][c]
@@ -596,7 +599,6 @@ class SolverService : Service() {
 
         for (r in 0 until rows) {
             for (c in 0 until cols) {
-                // 💡 사용자가 X 표시 해둔 예외 영역은 연산에서 배제시킴
                 if (disabledCells[r][c]) {
                     board[r][c] = BlockColor.UNKNOWN
                     continue
@@ -632,7 +634,6 @@ class SolverService : Service() {
                 val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
                 
-                // 💡 [수정] 오인식 방지를 위해 채도와 명도 임계값 검열 수준을 기존 0.2f -> 0.4f로 상향
                 if (hsv[1] < 0.4f || hsv[2] < 0.4f) continue
                 
                 when {
@@ -658,7 +659,6 @@ class SolverService : Service() {
         }
     }
 
-    // 💾 수동 설정 데이터 로컬 영구 저장 처리 로직
     private fun savePreferences() {
         val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
         prefs.edit().apply {
@@ -687,7 +687,6 @@ class SolverService : Service() {
         }
     }
 
-    // 💾 앱 실행 시 로컬에 기록된 좌표 및 제외구역 복원
     private fun loadPreferences() {
         val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
         val metrics = resources.displayMetrics
@@ -724,7 +723,7 @@ class SolverService : Service() {
                 }
             }
         }
-        activeCorner = ptTL // 초기 미세조절 대상을 좌상단으로 디폴트 매핑
+        activeCorner = ptTL
     }
 
     inner class VisualOverlayView(context: Context) : View(context) {
@@ -735,7 +734,6 @@ class SolverService : Service() {
         private val strokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 5f }
         private val arrowPaint = Paint().apply { color = Color.parseColor("#FF00DF"); strokeWidth = 15f; style = Paint.Style.FILL_AND_STROKE }
         
-        // 제외 구역 렌더링용 브러쉬들
         private val disabledOverlayPaint = Paint().apply { color = Color.parseColor("#80FF0000"); style = Paint.Style.FILL }
         private val disabledLinePaint = Paint().apply { color = Color.RED; strokeWidth = 5f; style = Paint.Style.STROKE }
 
@@ -749,7 +747,6 @@ class SolverService : Service() {
             invalidate()
         }
 
-        // 특정 행, 열 기준의 투영점 계산용 헬퍼 함수
         private fun getCellCornerX(r: Int, c: Int): Float {
             val u = c.toFloat() / cols
             val v = r.toFloat() / rows
@@ -769,14 +766,13 @@ class SolverService : Service() {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
 
-            // 🌐 [격자 보임 상태] 또는 [설정 모드]일 때 격자선 그리기
             if (isGridVisible || isCalibrationMode) {
                 for (i in 0..cols) {
                     val ratio = i.toFloat() / cols
                     val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
                     val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
-                    val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
-                    val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
+                    val botX = (1 - ratio) * ptBL.x + ratio * ptBL.x
+                    val botY = (1 - ratio) * ptBL.y + ratio * ptBL.y
                     canvas.drawLine(topX, topY, botX, botY, linePaint)
                 }
                 for (j in 0..rows) {
@@ -788,7 +784,6 @@ class SolverService : Service() {
                     canvas.drawLine(leftX, leftY, rightX, rightY, linePaint)
                 }
 
-                // 💡 [추가] 사용자가 비활성화(X) 처리해 둔 셀 그리기
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {
                         if (disabledCells[r][c]) {
@@ -801,11 +796,9 @@ class SolverService : Service() {
                             val xBR = getCellCornerX(r + 1, c + 1)
                             val yBR = getCellCornerY(r + 1, c + 1)
 
-                            // 붉은 X 라인 그리기
                             canvas.drawLine(xTL, yTL, xBR, yBR, disabledLinePaint)
                             canvas.drawLine(xTR, yTR, xBL, yBL, disabledLinePaint)
 
-                            // 중앙 붉은 투명원 그리기
                             val cX = (xTL + xBR) / 2
                             val cY = (yTL + yBR) / 2
                             canvas.drawCircle(cX, cY, 15f, disabledOverlayPaint)
@@ -814,7 +807,6 @@ class SolverService : Service() {
                 }
             }
 
-            // 💡 [설정 모드일 때만] 조절 포인트 그리기 (미세조정 선택점은 노란색으로 하이라이트)
             if (isCalibrationMode) {
                 fun drawHandle(corner: PointF, isActive: Boolean) {
                     canvas.drawCircle(corner.x, corner.y, 30f, if (isActive) activeHandlePaint else handlePaint)
@@ -826,7 +818,6 @@ class SolverService : Service() {
                 drawHandle(ptBR, activeCorner == ptBR)
             }
 
-            // 🎯 힌트 그리기 (격자 보임 여부와 별개로 상시 표출됨)
             if (isLogicEnabled && currentMoves.isNotEmpty()) {
                 val move = currentMoves.first()
                 
@@ -847,7 +838,6 @@ class SolverService : Service() {
             }
         }
 
-        // 터치 지점과 가장 가까운 세부 셀의 좌표(r, c)를 찾아내는 연산 메서드
         private fun findTappedCell(x: Float, y: Float): Pair<Int, Int>? {
             var minDistance = Float.MAX_VALUE
             var bestCell: Pair<Int, Int>? = null
@@ -895,7 +885,6 @@ class SolverService : Service() {
                         mainHandler.post { refreshFloatingPanelUI() }
                         invalidate()
                     } else {
-                        // 💡 [설정 중 셀 터치] 모서리가 아닌 바둑판 안의 빈 공간 터치 감지 시 해당 셀 비활성화(X)
                         val cell = findTappedCell(x, y)
                         if (cell != null) {
                             val (r, c) = cell
