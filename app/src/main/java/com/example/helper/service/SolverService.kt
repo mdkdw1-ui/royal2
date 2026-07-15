@@ -115,7 +115,6 @@ class SolverService : Service() {
         backgroundThread = HandlerThread("SolverBackgroundWorker").apply { start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
         
-        // 초기 구동 시 저장된 행/열을 먼저 불러온 뒤 좌표 매핑
         loadPreferences()
         
         createVisualOverlayWindow()
@@ -245,9 +244,6 @@ class SolverService : Service() {
         return (dp * resources.displayMetrics.density).toInt()
     }
 
-    /**
-     * 화살표 버턴을 누르고 있으면 연속으로 입력 연산(반복 이동)을 수행하는 커스텀 터치 리스너
-     */
     private fun setAutoRepeatListener(view: View, action: () -> Unit) {
         val handler = Handler(Looper.getMainLooper())
         var runnable: Runnable? = null
@@ -259,11 +255,11 @@ class SolverService : Service() {
                     runnable = object : Runnable {
                         override fun run() {
                             action()
-                            handler.postDelayed(this, 60) // 꾹 누르고 있을 때의 반복 주기 (60ms)
+                            handler.postDelayed(this, 60)
                         }
                     }
-                    action() // 터치 순간 1회 즉시 실행
-                    handler.postDelayed(runnable!!, 400) // 연속 입력 판정까지의 대기 시간 (400ms)
+                    action() 
+                    handler.postDelayed(runnable!!, 400) 
                     v.isPressed = true
                     true
                 }
@@ -278,15 +274,11 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 행/열 크기가 동적으로 변경될 때 현재 구성을 임시 세이브하고 새 규격을 로드하는 트랜지션 함수
-     */
     private fun changeGridSize(newRows: Int, newCols: Int) {
-        savePreferences() // 이전 규격 상태의 좌표와 맵을 강제 세이브
+        savePreferences() 
         rows = newRows
         cols = newCols
         
-        // 전역 행렬값 업데이트 반영
         val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
         prefs.edit().apply {
             putInt("rows", rows)
@@ -294,7 +286,7 @@ class SolverService : Service() {
             apply()
         }
         
-        loadPreferences() // 변경된 행렬 규격 전용 프로필 데이터를 새로 매핑
+        loadPreferences() 
         refreshFloatingPanelUI()
         visualOverlayView?.invalidate()
     }
@@ -585,7 +577,7 @@ class SolverService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "자동 분석 루프 실패: ${e.message}")
                 } catch (e: java.lang.IllegalStateException) {
-                } companion {
+                } finally {
                     try {
                         image.close()
                     } catch (e: Exception) {}
@@ -771,19 +763,15 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 🔥 [핵심 변경] 저장 시 현재 행x열 값을 프리픽스 키값으로 활용하여 맵 분리 저장
-     */
     private fun savePreferences() {
         val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
-        val prefix = "${rows}x${cols}_" // 예: "8x11_" 형의 고유 해시 헤더 생성
+        val prefix = "${rows}x${cols}_" 
         
         prefs.edit().apply {
             putInt("rows", rows)
             putInt("cols", cols)
             putBoolean("isGridVisible", isGridVisible)
             
-            // 좌표 저장 (현재 규격 전용으로 키값 매핑)
             putFloat("${prefix}ptTL_x", ptTL.x)
             putFloat("${prefix}ptTL_y", ptTL.y)
             putFloat("${prefix}ptTR_x", ptTR.x)
@@ -793,7 +781,6 @@ class SolverService : Service() {
             putFloat("${prefix}ptBR_x", ptBR.x)
             putFloat("${prefix}ptBR_y", ptBR.y)
             
-            // 스캔 제외 영역(X) 또한 현재 규격 전용으로 독립 세이브
             val sb = StringBuilder()
             for (r in 0 until 20) {
                 for (c in 0 until 20) {
@@ -807,29 +794,23 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 🔥 [핵심 변경] 로드 시 설정된 행x열 기준에 매핑된 좌표 및 데이터 탐색 조율
-     */
     private fun loadPreferences() {
         val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
         val metrics = resources.displayMetrics
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
 
-        // 1. 저장되어 있던 최종 행렬 구성을 먼저 취득
         rows = prefs.getInt("rows", 11)
         cols = prefs.getInt("cols", 9)
         isGridVisible = prefs.getBoolean("isGridVisible", true)
 
         val prefix = "${rows}x${cols}_"
 
-        // 2. 해당 규격 전용 좌표를 리드하되 데이터가 아예 없다면 스크린 비율 기본값 분할 할당
         ptTL.set(prefs.getFloat("${prefix}ptTL_x", w * 0.05f), prefs.getFloat("${prefix}ptTL_y", h * 0.25f))
         ptTR.set(prefs.getFloat("${prefix}ptTR_x", w * 0.95f), prefs.getFloat("${prefix}ptTR_y", h * 0.25f))
         ptBL.set(prefs.getFloat("${prefix}ptBL_x", w * 0.05f), prefs.getFloat("${prefix}ptBL_y", h * 0.75f))
         ptBR.set(prefs.getFloat("${prefix}ptBR_x", w * 0.95f), prefs.getFloat("${prefix}ptBR_y", h * 0.75f))
         
-        // 3. 비활성화 배열 초기화 후 규격 전용 데이터 결합
         for (r in 0 until 20) {
             for (c in 0 until 20) {
                 disabledCells[r][c] = false
