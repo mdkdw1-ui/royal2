@@ -47,15 +47,10 @@ data class MatchMove(
     val description: String
 )
 
-// 내부 분석용 특수 매치 타입 정의
 private enum class MatchType {
-    DISCO_BALL, // 5개 매치
-    TNT,        // T자/L자 교차 매치
-    ROCKET,     // 4개 매치
-    NORMAL_3    // 일반 3개 매치
+    DISCO_BALL, TNT, ROCKET, NORMAL_3
 }
 
-// 임시 매칭 계산을 위한 데이터 클래스
 private data class TempMove(
     val fromRow: Int, val fromCol: Int,
     val toRow: Int, val toCol: Int,
@@ -120,6 +115,7 @@ class SolverService : Service() {
         backgroundThread = HandlerThread("SolverBackgroundWorker").apply { start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
         
+        // 초기 구동 시 저장된 행/열을 먼저 불러온 뒤 좌표 매핑
         loadPreferences()
         
         createVisualOverlayWindow()
@@ -149,11 +145,7 @@ class SolverService : Service() {
         val channelName = "Grid Helper Service"
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val chan = NotificationChannel(
-                channelId, 
-                channelName, 
-                NotificationManager.IMPORTANCE_LOW
-            )
+            val chan = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(chan)
         }
@@ -166,11 +158,7 @@ class SolverService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                1001, 
-                notification, 
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
+            startForeground(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
             startForeground(1001, notification)
         }
@@ -225,9 +213,7 @@ class SolverService : Service() {
                         MotionEvent.ACTION_MOVE -> {
                             val dx = abs(ev.rawX - initialTouchX)
                             val dy = abs(ev.rawY - initialTouchY)
-                            if (dx > touchSlop || dy > touchSlop) {
-                                return true 
-                            }
+                            if (dx > touchSlop || dy > touchSlop) return true 
                         }
                     }
                     return super.onInterceptTouchEvent(ev)
@@ -257,6 +243,60 @@ class SolverService : Service() {
 
     private fun dpToPx(dp: Int): Int {
         return (dp * resources.displayMetrics.density).toInt()
+    }
+
+    /**
+     * 화살표 버턴을 누르고 있으면 연속으로 입력 연산(반복 이동)을 수행하는 커스텀 터치 리스너
+     */
+    private fun setAutoRepeatListener(view: View, action: () -> Unit) {
+        val handler = Handler(Looper.getMainLooper())
+        var runnable: Runnable? = null
+        
+        view.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    handler.removeCallbacksAndMessages(null)
+                    runnable = object : Runnable {
+                        override fun run() {
+                            action()
+                            handler.postDelayed(this, 60) // 꾹 누르고 있을 때의 반복 주기 (60ms)
+                        }
+                    }
+                    action() // 터치 순간 1회 즉시 실행
+                    handler.postDelayed(runnable!!, 400) // 연속 입력 판정까지의 대기 시간 (400ms)
+                    v.isPressed = true
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacksAndMessages(null)
+                    runnable = null
+                    v.isPressed = false
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    /**
+     * 행/열 크기가 동적으로 변경될 때 현재 구성을 임시 세이브하고 새 규격을 로드하는 트랜지션 함수
+     */
+    private fun changeGridSize(newRows: Int, newCols: Int) {
+        savePreferences() // 이전 규격 상태의 좌표와 맵을 강제 세이브
+        rows = newRows
+        cols = newCols
+        
+        // 전역 행렬값 업데이트 반영
+        val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            putInt("rows", rows)
+            putInt("cols", cols)
+            apply()
+        }
+        
+        loadPreferences() // 변경된 행렬 규격 전용 프로필 데이터를 새로 매핑
+        refreshFloatingPanelUI()
+        visualOverlayView?.invalidate()
     }
 
     private fun refreshFloatingPanelUI() {
@@ -343,7 +383,7 @@ class SolverService : Service() {
                 }
 
                 val tvDpadTitle = TextView(context).apply {
-                    text = "🎯 [${cornerName}] 미세조절 (2px)"
+                    text = "🎯 [${cornerName}] 미세조절 (꾹 누름 지원)"
                     setTextColor(Color.YELLOW)
                     textSize = 11f
                     gravity = Gravity.CENTER
@@ -361,7 +401,7 @@ class SolverService : Service() {
                     text = "▲"
                     textSize = 10f
                     layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(35))
-                    setOnClickListener { activeCorner.y -= 2f; visualOverlayView?.invalidate() }
+                    setAutoRepeatListener(this) { activeCorner.y -= 2f; visualOverlayView?.invalidate() }
                 }
                 rowUp.addView(btnUp)
                 dpadLayout.addView(rowUp)
@@ -371,14 +411,14 @@ class SolverService : Service() {
                     text = "◀"
                     textSize = 10f
                     layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(35))
-                    setOnClickListener { activeCorner.x -= 2f; visualOverlayView?.invalidate() }
+                    setAutoRepeatListener(this) { activeCorner.x -= 2f; visualOverlayView?.invalidate() }
                 }
                 val spacer = View(context).apply { layoutParams = LinearLayout.LayoutParams(dpToPx(15), dpToPx(35)) }
                 val btnRight = Button(context).apply {
                     text = "▶"
                     textSize = 10f
                     layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(35))
-                    setOnClickListener { activeCorner.x += 2f; visualOverlayView?.invalidate() }
+                    setAutoRepeatListener(this) { activeCorner.x += 2f; visualOverlayView?.invalidate() }
                 }
                 rowMid.addView(btnLeft)
                 rowMid.addView(spacer)
@@ -390,14 +430,14 @@ class SolverService : Service() {
                     text = "▼"
                     textSize = 10f
                     layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(35))
-                    setOnClickListener { activeCorner.y += 2f; visualOverlayView?.invalidate() }
+                    setAutoRepeatListener(this) { activeCorner.y += 2f; visualOverlayView?.invalidate() }
                 }
                 rowDown.addView(btnDown)
                 dpadLayout.addView(rowDown)
                 view.addView(dpadLayout)
 
                 val tvTips = TextView(context).apply {
-                    text = "💡 칸을 터치해 스캔 비활성화(X)\n💡 모서리를 터치한 뒤 D-pad로 세밀 조정"
+                    text = "💡 칸을 터치해 스캔 비활성화(X)\n💡 모서리를 터치한 뒤 화살표를 꾹 누르세요."
                     setTextColor(Color.parseColor("#FF9F9F"))
                     textSize = 9f
                     setPadding(0, 5, 0, 5)
@@ -420,10 +460,10 @@ class SolverService : Service() {
             view.addView(btnGridToggle)
 
             val matrixBox = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            val btnAddRow = Button(context).apply { text = "행+"; setOnClickListener { rows++; refreshFloatingPanelUI(); visualOverlayView?.invalidate(); savePreferences() } }
-            val btnSubRow = Button(context).apply { text = "행-"; setOnClickListener { if(rows>3) rows--; refreshFloatingPanelUI(); visualOverlayView?.invalidate(); savePreferences() } }
-            val btnAddCol = Button(context).apply { text = "열+"; setOnClickListener { cols++; refreshFloatingPanelUI(); visualOverlayView?.invalidate(); savePreferences() } }
-            val btnSubCol = Button(context).apply { text = "열-"; setOnClickListener { if(cols>3) cols--; refreshFloatingPanelUI(); visualOverlayView?.invalidate(); savePreferences() } }
+            val btnAddRow = Button(context).apply { text = "행+"; setOnClickListener { changeGridSize(rows + 1, cols) } }
+            val btnSubRow = Button(context).apply { text = "행-"; setOnClickListener { if(rows > 3) changeGridSize(rows - 1, cols) } }
+            val btnAddCol = Button(context).apply { text = "열+"; setOnClickListener { changeGridSize(rows, cols + 1) } }
+            val btnSubCol = Button(context).apply { text = "열-"; setOnClickListener { if(cols > 3) changeGridSize(rows, cols - 1) } }
             matrixBox.addView(btnSubRow); matrixBox.addView(btnAddRow); matrixBox.addView(btnSubCol); matrixBox.addView(btnAddCol)
             view.addView(matrixBox)
 
@@ -457,7 +497,7 @@ class SolverService : Service() {
             showToastOnMainThread("📐 격자점 조절 및 터치 스캔 해제(X) 기능 활성화")
         } else {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            showToastOnMainThread("💾 수동 격자 배치 및 제외 구역 자동 저장 완료!")
+            showToastOnMainThread("💾 [${rows}x${cols}] 전용 격자 배치 및 제외 구역 저장 완료!")
             savePreferences()
         }
         windowManager.updateViewLayout(overlay, params)
@@ -522,7 +562,6 @@ class SolverService : Service() {
                                 if (miniBtn != null) {
                                     if (matchedMoves.isNotEmpty()) {
                                         val bestMove = matchedMoves.first()
-                                        // 💡 미니 모드 알림 텍스트 정밀 축소 매핑
                                         val shortMsg = bestMove.description
                                             .replace("⚡[", "")
                                             .replace(" 절대강자 OOXOO] 디스코볼 확정 배치! 💣", " 디볼")
@@ -546,7 +585,7 @@ class SolverService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "자동 분석 루프 실패: ${e.message}")
                 } catch (e: java.lang.IllegalStateException) {
-                } finally {
+                } companion {
                     try {
                         image.close()
                     } catch (e: Exception) {}
@@ -558,13 +597,9 @@ class SolverService : Service() {
         }
     }
 
-    /**
-     * 🔥 [알고리즘 업그레이드]: 동적 격자 크기(rows, cols)에 완전 대응하며,
-     * 디스코볼(5매치), TNT(교차), 로켓(4매치), 3매치를 평가점수순으로 일괄 추출합니다.
-     */
     private fun findBestMoves(board: Array<Array<BlockColor>>): List<MatchMove> {
         val tempMoves = mutableListOf<TempMove>()
-        val dr = intArrayOf(0, 1) // 우측, 하단만 교환 검증하여 연산 중복 완벽 제거
+        val dr = intArrayOf(0, 1) 
         val dc = intArrayOf(1, 0)
 
         for (r in 0 until rows) {
@@ -580,11 +615,9 @@ class SolverService : Service() {
                         val color2 = board[nr][nc]
                         if (color2 == BlockColor.UNKNOWN || color1 == color2) continue
                         
-                        // 1. 가상 스왑 진행
                         board[r][c] = color2
                         board[nr][nc] = color1
 
-                        // 2. 스왑 위치 양측에서 어떤 고성능 조합이 발생하는지 각각 평가
                         val match1 = evaluateMatchAt(board, r, c, color2)
                         val match2 = evaluateMatchAt(board, nr, nc, color1)
 
@@ -595,7 +628,6 @@ class SolverService : Service() {
                             tempMoves.add(TempMove(nr, nc, r, c, color1, match2.first, match2.second))
                         }
 
-                        // 3. 원래대로 복구
                         board[r][c] = color1
                         board[nr][nc] = color2
                     }
@@ -603,7 +635,6 @@ class SolverService : Service() {
             }
         }
 
-        // 고득점 순으로 졍렬한 후, 동일 경로의 무의미한 중복 이동을 제거하고 최종 MatchMove로 변환
         return tempMoves
             .sortedByDescending { it.score }
             .distinctBy { "${it.fromRow},${it.fromCol}->${it.toRow},${it.toCol}" }
@@ -619,23 +650,13 @@ class SolverService : Service() {
             }
     }
 
-    /**
-     * 특정 타겟 지점에 특정 색상을 채웠을 때 발생할 수 있는 매치의 강도를 계산합니다.
-     */
-    private fun evaluateMatchAt(
-        board: Array<Array<BlockColor>>,
-        r: Int,
-        c: Int,
-        color: BlockColor
-    ): Pair<MatchType, Int>? {
-        // 가로 스캔
+    private fun evaluateMatchAt(board: Array<Array<BlockColor>>, r: Int, c: Int, color: BlockColor): Pair<MatchType, Int>? {
         var hLeft = 0
         while (c - hLeft - 1 >= 0 && board[r][c - hLeft - 1] == color) hLeft++
         var hRight = 0
         while (c + hRight + 1 < cols && board[r][c + hRight + 1] == color) hRight++
         val horizontalCount = hLeft + hRight + 1
 
-        // 세로 스캔
         var vUp = 0
         while (r - vUp - 1 >= 0 && board[r - vUp - 1][c] == color) vUp++
         var vDown = 0
@@ -687,16 +708,7 @@ class SolverService : Service() {
         return findBestMoves(board)
     }
 
-    /**
-     * 🔥 [알고리즘 전면 개편]: 극도로 좁은 스펙트럼 필터 + 노이즈 방어용 맞춤형 동적 임계치
-     */
-    private fun detectCellColorROI(
-        pixels: IntArray,
-        width: Int,
-        height: Int,
-        centerX: Float,
-        centerY: Float
-    ): BlockColor {
+    private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
         val radius = 8 
         val cX = centerX.toInt()
         val cY = centerY.toInt()
@@ -714,7 +726,6 @@ class SolverService : Service() {
                 val sat = hsv[1]
                 val valValue = hsv[2]
 
-                // 💡 파란색 독수리 무늬 및 은색 질감 처리를 위해 파란색 범위의 채도/명도 임계 완화
                 val isBlueHue = hue in 145f..250f
                 val minSat = if (isBlueHue) 0.15f else 0.4f
                 val minVal = if (isBlueHue) 0.25f else 0.4f
@@ -725,15 +736,14 @@ class SolverService : Service() {
                 
                 when {
                     (hue in 0f..20f) || (hue in 340f..360f) -> rCnt++
-                    hue in 42f..62f -> yCnt++   // 갈색 판자 오류 차단용 초정밀 노랑 스펙트럼
+                    hue in 42f..62f -> yCnt++   
                     hue in 63f..144f -> gCnt++
-                    hue in 145f..250f -> bCnt++ // 파란색 대역 완전 수용
+                    hue in 145f..250f -> bCnt++ 
                     hue in 251f..339f -> pCnt++
                 }
             }
         }
 
-        // 파란색은 독수리 실버 디테일 유실 보정을 위해 임계 조건값을 15%로 전격 완화
         val rThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
         val yThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
         val gThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
@@ -748,7 +758,6 @@ class SolverService : Service() {
             BlockColor.PURPLE to Pair(pCnt, pThreshold)
         )
 
-        // 설정된 각 색상 임계치를 초과한 후보군 중 가장 득표가 많은 색상 판단
         val validOptions = maxMap.filter { it.value.first > it.value.second }
         val best = validOptions.maxByOrNull { it.value.first }
 
@@ -762,21 +771,29 @@ class SolverService : Service() {
         }
     }
 
+    /**
+     * 🔥 [핵심 변경] 저장 시 현재 행x열 값을 프리픽스 키값으로 활용하여 맵 분리 저장
+     */
     private fun savePreferences() {
         val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
+        val prefix = "${rows}x${cols}_" // 예: "8x11_" 형의 고유 해시 헤더 생성
+        
         prefs.edit().apply {
-            putFloat("ptTL_x", ptTL.x)
-            putFloat("ptTL_y", ptTL.y)
-            putFloat("ptTR_x", ptTR.x)
-            putFloat("ptTR_y", ptTR.y)
-            putFloat("ptBL_x", ptBL.x)
-            putFloat("ptBL_y", ptBL.y)
-            putFloat("ptBR_x", ptBR.x)
-            putFloat("ptBR_y", ptBR.y)
             putInt("rows", rows)
             putInt("cols", cols)
             putBoolean("isGridVisible", isGridVisible)
             
+            // 좌표 저장 (현재 규격 전용으로 키값 매핑)
+            putFloat("${prefix}ptTL_x", ptTL.x)
+            putFloat("${prefix}ptTL_y", ptTL.y)
+            putFloat("${prefix}ptTR_x", ptTR.x)
+            putFloat("${prefix}ptTR_y", ptTR.y)
+            putFloat("${prefix}ptBL_x", ptBL.x)
+            putFloat("${prefix}ptBL_y", ptBL.y)
+            putFloat("${prefix}ptBR_x", ptBR.x)
+            putFloat("${prefix}ptBR_y", ptBR.y)
+            
+            // 스캔 제외 영역(X) 또한 현재 규격 전용으로 독립 세이브
             val sb = StringBuilder()
             for (r in 0 until 20) {
                 for (c in 0 until 20) {
@@ -785,32 +802,40 @@ class SolverService : Service() {
                     }
                 }
             }
-            putString("disabledCells", sb.toString())
+            putString("${prefix}disabledCells", sb.toString())
             apply()
         }
     }
 
+    /**
+     * 🔥 [핵심 변경] 로드 시 설정된 행x열 기준에 매핑된 좌표 및 데이터 탐색 조율
+     */
     private fun loadPreferences() {
         val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
         val metrics = resources.displayMetrics
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
 
-        ptTL.set(prefs.getFloat("ptTL_x", w * 0.05f), prefs.getFloat("ptTL_y", h * 0.25f))
-        ptTR.set(prefs.getFloat("ptTR_x", w * 0.95f), prefs.getFloat("ptTR_y", h * 0.25f))
-        ptBL.set(prefs.getFloat("ptBL_x", w * 0.05f), prefs.getFloat("ptBL_y", h * 0.75f))
-        ptBR.set(prefs.getFloat("ptBR_x", w * 0.95f), prefs.getFloat("ptBR_y", h * 0.75f))
-        
+        // 1. 저장되어 있던 최종 행렬 구성을 먼저 취득
         rows = prefs.getInt("rows", 11)
         cols = prefs.getInt("cols", 9)
         isGridVisible = prefs.getBoolean("isGridVisible", true)
 
+        val prefix = "${rows}x${cols}_"
+
+        // 2. 해당 규격 전용 좌표를 리드하되 데이터가 아예 없다면 스크린 비율 기본값 분할 할당
+        ptTL.set(prefs.getFloat("${prefix}ptTL_x", w * 0.05f), prefs.getFloat("${prefix}ptTL_y", h * 0.25f))
+        ptTR.set(prefs.getFloat("${prefix}ptTR_x", w * 0.95f), prefs.getFloat("${prefix}ptTR_y", h * 0.25f))
+        ptBL.set(prefs.getFloat("${prefix}ptBL_x", w * 0.05f), prefs.getFloat("${prefix}ptBL_y", h * 0.75f))
+        ptBR.set(prefs.getFloat("${prefix}ptBR_x", w * 0.95f), prefs.getFloat("${prefix}ptBR_y", h * 0.75f))
+        
+        // 3. 비활성화 배열 초기화 후 규격 전용 데이터 결합
         for (r in 0 until 20) {
             for (c in 0 until 20) {
                 disabledCells[r][c] = false
             }
         }
-        val disabledStr = prefs.getString("disabledCells", "") ?: ""
+        val disabledStr = prefs.getString("${prefix}disabledCells", "") ?: ""
         if (disabledStr.isNotEmpty()) {
             val tokens = disabledStr.split(";")
             for (token in tokens) {
