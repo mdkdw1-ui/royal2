@@ -47,6 +47,23 @@ data class MatchMove(
     val description: String
 )
 
+// 내부 분석용 특수 매치 타입 정의
+private enum class MatchType {
+    DISCO_BALL, // 5개 매치
+    TNT,        // T자/L자 교차 매치
+    ROCKET,     // 4개 매치
+    NORMAL_3    // 일반 3개 매치
+}
+
+// 임시 매칭 계산을 위한 데이터 클래스
+private data class TempMove(
+    val fromRow: Int, val fromCol: Int,
+    val toRow: Int, val toCol: Int,
+    val color: BlockColor,
+    val matchType: MatchType,
+    val score: Int
+)
+
 class SolverService : Service() {
 
     private val TAG = "GridHelper_Service"
@@ -505,9 +522,16 @@ class SolverService : Service() {
                                 if (miniBtn != null) {
                                     if (matchedMoves.isNotEmpty()) {
                                         val bestMove = matchedMoves.first()
+                                        // 💡 미니 모드 알림 텍스트 정밀 축소 매핑
                                         val shortMsg = bestMove.description
                                             .replace("⚡[", "")
-                                            .replace(" 절대강자 OOXOO] 디스코볼 확정 배치! 💣", "")
+                                            .replace(" 절대강자 OOXOO] 디스코볼 확정 배치! 💣", " 디볼")
+                                            .replace("💣 [", "")
+                                            .replace("] 강력한 폭탄 생성!", " TNT")
+                                            .replace("🚀 [", "")
+                                            .replace("] 라인 클리어!", " 로켓")
+                                            .replace("🧩 [", "")
+                                            .replace("] 일반 매칭", " 3매치")
                                         
                                         miniBtn.text = "⚡ $shortMsg!"
                                         miniBtn.setBackgroundColor(Color.parseColor("#FF00DF")) 
@@ -534,57 +558,101 @@ class SolverService : Service() {
         }
     }
 
+    /**
+     * 🔥 [알고리즘 업그레이드]: 동적 격자 크기(rows, cols)에 완전 대응하며,
+     * 디스코볼(5매치), TNT(교차), 로켓(4매치), 3매치를 평가점수순으로 일괄 추출합니다.
+     */
     private fun findBestMoves(board: Array<Array<BlockColor>>): List<MatchMove> {
-        val moves = mutableListOf<MatchMove>()
-        val dr = intArrayOf(-1, 1, 0, 0)
-        val dc = intArrayOf(0, 0, -1, 1)
+        val tempMoves = mutableListOf<TempMove>()
+        val dr = intArrayOf(0, 1) // 우측, 하단만 교환 검증하여 연산 중복 완벽 제거
+        val dc = intArrayOf(1, 0)
 
         for (r in 0 until rows) {
             for (c in 0 until cols) {
-                if (board[r][c] == BlockColor.UNKNOWN) continue
+                val color1 = board[r][c]
+                if (color1 == BlockColor.UNKNOWN) continue
 
-                for (i in 0 until 4) {
+                for (i in 0 until 2) {
                     val nr = r + dr[i]
                     val nc = c + dc[i]
 
                     if (nr in 0 until rows && nc in 0 until cols) {
-                        if (board[nr][nc] == BlockColor.UNKNOWN) continue
+                        val color2 = board[nr][nc]
+                        if (color2 == BlockColor.UNKNOWN || color1 == color2) continue
                         
-                        val temp = board[r][c]
-                        board[r][c] = board[nr][nc]
-                        board[nr][nc] = temp
+                        // 1. 가상 스왑 진행
+                        board[r][c] = color2
+                        board[nr][nc] = color1
 
-                        val hasOoxoo = isStrictOoxooPattern(board, r, c) || isStrictOoxooPattern(board, nr, nc)
+                        // 2. 스왑 위치 양측에서 어떤 고성능 조합이 발생하는지 각각 평가
+                        val match1 = evaluateMatchAt(board, r, c, color2)
+                        val match2 = evaluateMatchAt(board, nr, nc, color1)
 
-                        if (hasOoxoo) {
-                            val targetColor = board[r][c]
-                            val korColor = getKoreanColorName(targetColor)
-                            val desc = "⚡[$korColor 절대강자 OOXOO] 디스코볼 확정 배치! 💣"
-                            moves.add(MatchMove(r, c, nr, nc, desc))
+                        if (match1 != null) {
+                            tempMoves.add(TempMove(r, c, nr, nc, color2, match1.first, match1.second))
+                        }
+                        if (match2 != null) {
+                            tempMoves.add(TempMove(nr, nc, r, c, color1, match2.first, match2.second))
                         }
 
-                        board[nr][nc] = board[r][c]
-                        board[r][c] = temp
+                        // 3. 원래대로 복구
+                        board[r][c] = color1
+                        board[nr][nc] = color2
                     }
                 }
             }
         }
-        return moves.distinctBy { "${it.fromRow},${it.fromCol}->${it.toRow},${it.toCol}" }
+
+        // 고득점 순으로 졍렬한 후, 동일 경로의 무의미한 중복 이동을 제거하고 최종 MatchMove로 변환
+        return tempMoves
+            .sortedByDescending { it.score }
+            .distinctBy { "${it.fromRow},${it.fromCol}->${it.toRow},${it.toCol}" }
+            .map { temp ->
+                val korColor = getKoreanColorName(temp.color)
+                val desc = when (temp.matchType) {
+                    MatchType.DISCO_BALL -> "⚡[$korColor 절대강자 OOXOO] 디스코볼 확정 배치! 💣"
+                    MatchType.TNT -> "💣 [$korColor TNT] 강력한 폭탄 생성!"
+                    MatchType.ROCKET -> "🚀 [$korColor 로켓] 라인 클리어!"
+                    MatchType.NORMAL_3 -> "🧩 [$korColor 3매치] 일반 매칭"
+                }
+                MatchMove(temp.fromRow, temp.fromCol, temp.toRow, temp.toCol, desc)
+            }
     }
 
-    private fun isStrictOoxooPattern(board: Array<Array<BlockColor>>, r: Int, c: Int): Boolean {
-        val color = board[r][c]
-        if (color == BlockColor.UNKNOWN) return false
+    /**
+     * 특정 타겟 지점에 특정 색상을 채웠을 때 발생할 수 있는 매치의 강도를 계산합니다.
+     */
+    private fun evaluateMatchAt(
+        board: Array<Array<BlockColor>>,
+        r: Int,
+        c: Int,
+        color: BlockColor
+    ): Pair<MatchType, Int>? {
+        // 가로 스캔
+        var hLeft = 0
+        while (c - hLeft - 1 >= 0 && board[r][c - hLeft - 1] == color) hLeft++
+        var hRight = 0
+        while (c + hRight + 1 < cols && board[r][c + hRight + 1] == color) hRight++
+        val horizontalCount = hLeft + hRight + 1
 
-        if (c >= 2 && c < cols - 2) {
-            if (board[r][c - 2] == color && board[r][c - 1] == color &&
-                board[r][c + 1] == color && board[r][c + 2] == color) return true
+        // 세로 스캔
+        var vUp = 0
+        while (r - vUp - 1 >= 0 && board[r - vUp - 1][c] == color) vUp++
+        var vDown = 0
+        while (r + vDown + 1 < rows && board[r + vDown + 1][c] == color) vDown++
+        val verticalCount = vUp + vDown + 1
+
+        val hasHorizontalMatch = horizontalCount >= 3
+        val hasVerticalMatch = verticalCount >= 3
+
+        if (!hasHorizontalMatch && !hasVerticalMatch) return null
+
+        return when {
+            horizontalCount >= 5 || verticalCount >= 5 -> Pair(MatchType.DISCO_BALL, 1000)
+            hasHorizontalMatch && hasVerticalMatch -> Pair(MatchType.TNT, 500)
+            horizontalCount == 4 || verticalCount == 4 -> Pair(MatchType.ROCKET, 300)
+            else -> Pair(MatchType.NORMAL_3, 100)
         }
-        if (r >= 2 && r < rows - 2) {
-            if (board[r - 2][c] == color && board[r - 1][c] == color &&
-                board[r + 1][c] == color && board[r + 2][c] == color) return true
-        }
-        return false
     }
 
     private fun analyzeAndSolvePerspective(bitmap: Bitmap): List<MatchMove> {
@@ -619,8 +687,16 @@ class SolverService : Service() {
         return findBestMoves(board)
     }
 
-    // 🔥 [알고리즘 전면 수정] 좁은 색상 범위 + 낮은 임계값 조합으로 인식률 100% 확보
-    private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
+    /**
+     * 🔥 [알고리즘 전면 개편]: 극도로 좁은 스펙트럼 필터 + 노이즈 방어용 맞춤형 동적 임계치
+     */
+    private fun detectCellColorROI(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        centerX: Float,
+        centerY: Float
+    ): BlockColor {
         val radius = 8 
         val cX = centerX.toInt()
         val cY = centerY.toInt()
@@ -634,34 +710,49 @@ class SolverService : Service() {
                 val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
                 
-                // 💡 음영 구역도 포함될 수 있도록 명도/채도 필터를 약간 완화 (0.5 -> 0.4)
-                if (hsv[1] < 0.4f || hsv[2] < 0.4f) continue
+                val hue = hsv[0]
+                val sat = hsv[1]
+                val valValue = hsv[2]
+
+                // 💡 파란색 독수리 무늬 및 은색 질감 처리를 위해 파란색 범위의 채도/명도 임계 완화
+                val isBlueHue = hue in 145f..250f
+                val minSat = if (isBlueHue) 0.15f else 0.4f
+                val minVal = if (isBlueHue) 0.25f else 0.4f
+
+                if (sat < minSat || valValue < minVal) continue
                 
                 scannedPixels++
                 
                 when {
-                    (hsv[0] in 0f..20f) || (hsv[0] in 340f..360f) -> rCnt++
-                    hsv[0] in 42f..62f -> yCnt++   // 💡 나무판자 오인을 확실히 막는 초정밀 순수 노란색 스펙트럼
-                    hsv[0] in 63f..155f -> gCnt++
-                    hsv[0] in 156f..245f -> bCnt++
-                    hsv[0] in 246f..339f -> pCnt++
+                    (hue in 0f..20f) || (hue in 340f..360f) -> rCnt++
+                    hue in 42f..62f -> yCnt++   // 갈색 판자 오류 차단용 초정밀 노랑 스펙트럼
+                    hue in 63f..144f -> gCnt++
+                    hue in 145f..250f -> bCnt++ // 파란색 대역 완전 수용
+                    hue in 251f..339f -> pCnt++
                 }
             }
         }
 
+        // 파란색은 독수리 실버 디테일 유실 보정을 위해 임계 조건값을 15%로 전격 완화
+        val rThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
+        val yThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
+        val gThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
+        val bThreshold = (scannedPixels * 0.15f).toInt().coerceAtLeast(18)
+        val pThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
+
         val maxMap = mapOf(
-            BlockColor.RED to rCnt, 
-            BlockColor.BLUE to bCnt, 
-            BlockColor.YELLOW to yCnt, 
-            BlockColor.GREEN to gCnt, 
-            BlockColor.PURPLE to pCnt
+            BlockColor.RED to Pair(rCnt, rThreshold), 
+            BlockColor.BLUE to Pair(bCnt, bThreshold), 
+            BlockColor.YELLOW to Pair(yCnt, yThreshold), 
+            BlockColor.GREEN to Pair(gCnt, gThreshold), 
+            BlockColor.PURPLE to Pair(pCnt, pThreshold)
         )
-        val best = maxMap.maxByOrNull { it.value } ?: return BlockColor.UNKNOWN
-        
-        // 💡 [피드백 적용] 임계값을 대폭 낮춤 (22% 집중 또는 최소 25픽셀 이상)
-        // 큰 아이콘이나 하이라이트가 노란색 블록 중앙을 가려도 진짜 블록은 칼같이 잡아냅니다.
-        val adaptiveThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
-        return if (best.value > adaptiveThreshold) best.key else BlockColor.UNKNOWN
+
+        // 설정된 각 색상 임계치를 초과한 후보군 중 가장 득표가 많은 색상 판단
+        val validOptions = maxMap.filter { it.value.first > it.value.second }
+        val best = validOptions.maxByOrNull { it.value.first }
+
+        return best?.key ?: BlockColor.UNKNOWN
     }
 
     private fun getKoreanColorName(color: BlockColor): String {
