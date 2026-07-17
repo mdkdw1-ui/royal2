@@ -104,8 +104,8 @@ class SolverService : Service() {
     private val disabledCells = Array(20) { BooleanArray(20) { false } }
 
     private var isAutoScanEnabled = true
-    private var lastAnalysisTime = 0L
     private val AUTO_SCAN_INTERVAL_MS = 1000L 
+    private var lastAnalysisTime = 0L
     private var miniScanButton: Button? = null 
 
     private val ptTL = PointF()
@@ -418,6 +418,29 @@ class SolverService : Service() {
         val view = floatingControlView ?: return
         view.removeAllViews()
         val context = applicationContext
+
+        // ================= [🔥 그림 따기 전용 레이아웃 분기 추가] =================
+        if (isImageGrabberMode) {
+            val btnCancel = Button(context).apply {
+                text = "❌ 기믹 따기 취소"
+                textSize = 11f
+                setBackgroundColor(Color.parseColor("#FF0000"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    isImageGrabberMode = false
+                    val overlay = visualOverlayView ?: return@setOnClickListener
+                    val params = overlay.layoutParams as WindowManager.LayoutParams
+                    params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    windowManager.updateViewLayout(overlay, params)
+                    
+                    refreshFloatingPanelUI()
+                    overlay.invalidate()
+                }
+            }
+            view.addView(btnCancel)
+            return // 거대 메뉴 UI 생성을 원천 차단하여 터치 가능 영역 확보
+        }
+        // =================================================================
 
         val btnSizeToggle = Button(context).apply {
             text = if (isLargeMode) "◀ 미니 모드" else "▶ 확장 패널"
