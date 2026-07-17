@@ -44,7 +44,9 @@ enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 data class MatchMove(
     val fromRow: Int, val fromCol: Int,
     val toRow: Int, val toCol: Int,
-    val description: String
+    val description: String,
+    val isFiveMatch: Boolean = false,
+    val fiveMatchCells: List<Pair<Int, Int>> = emptyList()
 )
 
 private enum class MatchType {
@@ -56,7 +58,9 @@ private data class TempMove(
     val toRow: Int, val toCol: Int,
     val color: BlockColor,
     val matchType: MatchType,
-    val score: Int
+    val score: Int,
+    val isFiveMatch: Boolean = false,
+    val fiveMatchCells: List<Pair<Int, Int>> = emptyList()
 )
 
 class SolverService : Service() {
@@ -554,18 +558,23 @@ class SolverService : Service() {
                                 if (miniBtn != null) {
                                     if (matchedMoves.isNotEmpty()) {
                                         val bestMove = matchedMoves.first()
-                                        val shortMsg = bestMove.description
-                                            .replace("⚡[", "")
-                                            .replace(" 절대강자 OOXOO] 디스코볼 확정 배치! 💣", " 디볼")
-                                            .replace("💣 [", "")
-                                            .replace("] 강력한 폭탄 생성!", " TNT")
-                                            .replace("🚀 [", "")
-                                            .replace("] 라인 클리어!", " 로켓")
-                                            .replace("🧩 [", "")
-                                            .replace("] 일반 매칭", " 3매치")
-                                        
-                                        miniBtn.text = "⚡ $shortMsg!"
-                                        miniBtn.setBackgroundColor(Color.parseColor("#FF00DF")) 
+                                        if (bestMove.isFiveMatch) {
+                                            miniBtn.text = "⚡ 5개 매칭!"
+                                            miniBtn.setBackgroundColor(Color.parseColor("#FFFF00"))
+                                        } else {
+                                            val shortMsg = bestMove.description
+                                                .replace("⚡[", "")
+                                                .replace(" 절대강자 OOXOO] 디스코볼 확정 배치! 💣", " 디볼")
+                                                .replace("💣 [", "")
+                                                .replace("] 강력한 폭탄 생성!", " TNT")
+                                                .replace("🚀 [", "")
+                                                .replace("] 라인 클리어!", " 로켓")
+                                                .replace("🧩 [", "")
+                                                .replace("] 일반 매칭", " 3매치")
+                                            
+                                            miniBtn.text = "⚡ $shortMsg!"
+                                            miniBtn.setBackgroundColor(Color.parseColor("#FF00DF")) 
+                                        }
                                     } else {
                                         miniBtn.text = "🔍 자동 탐지 중"
                                         miniBtn.setBackgroundColor(Color.parseColor("#222222"))
@@ -614,10 +623,14 @@ class SolverService : Service() {
                         val match2 = evaluateMatchAt(board, nr, nc, color1)
 
                         if (match1 != null) {
-                            tempMoves.add(TempMove(r, c, nr, nc, color2, match1.first, match1.second))
+                            val isFive = match1.first == MatchType.DISCO_BALL
+                            val cells = if (isFive) getFiveMatchCells(board, r, c, color2) else emptyList()
+                            tempMoves.add(TempMove(r, c, nr, nc, color2, match1.first, match1.second, isFive, cells))
                         }
                         if (match2 != null) {
-                            tempMoves.add(TempMove(nr, nc, r, c, color1, match2.first, match2.second))
+                            val isFive = match2.first == MatchType.DISCO_BALL
+                            val cells = if (isFive) getFiveMatchCells(board, nr, nc, color1) else emptyList()
+                            tempMoves.add(TempMove(nr, nc, r, c, color1, match2.first, match2.second, isFive, cells))
                         }
 
                         board[r][c] = color1
@@ -638,7 +651,7 @@ class SolverService : Service() {
                     MatchType.ROCKET -> "🚀 [$korColor 로켓] 라인 클리어!"
                     MatchType.NORMAL_3 -> "🧩 [$korColor 3매치] 일반 매칭"
                 }
-                MatchMove(temp.fromRow, temp.fromCol, temp.toRow, temp.toCol, desc)
+                MatchMove(temp.fromRow, temp.fromCol, temp.toRow, temp.toCol, desc, temp.isFiveMatch, temp.fiveMatchCells)
             }
     }
 
@@ -666,6 +679,33 @@ class SolverService : Service() {
             horizontalCount == 4 || verticalCount == 4 -> Pair(MatchType.ROCKET, 300)
             else -> Pair(MatchType.NORMAL_3, 100)
         }
+    }
+
+    private fun getFiveMatchCells(board: Array<Array<BlockColor>>, r: Int, c: Int, color: BlockColor): List<Pair<Int, Int>> {
+        val cells = mutableListOf<Pair<Int, Int>>()
+        
+        var hLeft = 0
+        while (c - hLeft - 1 >= 0 && board[r][c - hLeft - 1] == color) hLeft++
+        var hRight = 0
+        while (c + hRight + 1 < cols && board[r][c + hRight + 1] == color) hRight++
+        val horizontalCount = hLeft + hRight + 1
+
+        var vUp = 0
+        while (r - vUp - 1 >= 0 && board[r - vUp - 1][c] == color) vUp++
+        var vDown = 0
+        while (r + vDown + 1 < rows && board[r + vDown + 1][c] == color) vDown++
+        val verticalCount = vUp + vDown + 1
+
+        if (horizontalCount >= 5) {
+            for (offset in -hLeft..hRight) {
+                cells.add(Pair(r, c + offset))
+            }
+        } else if (verticalCount >= 5) {
+            for (offset in -vUp..vDown) {
+                cells.add(Pair(r + offset, c))
+            }
+        }
+        return cells
     }
 
     private fun analyzeAndSolvePerspective(bitmap: Bitmap): List<MatchMove> {
@@ -843,6 +883,8 @@ class SolverService : Service() {
         private val strokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 5f }
         private val arrowPaint = Paint().apply { color = Color.parseColor("#FF00DF"); strokeWidth = 15f; style = Paint.Style.FILL_AND_STROKE }
         
+        private val highlightPaint = Paint().apply { color = Color.parseColor("#80FFFF00"); style = Paint.Style.FILL }
+        
         private val disabledOverlayPaint = Paint().apply { color = Color.parseColor("#80FF0000"); style = Paint.Style.FILL }
         private val disabledLinePaint = Paint().apply { color = Color.RED; strokeWidth = 5f; style = Paint.Style.STROKE }
 
@@ -930,20 +972,51 @@ class SolverService : Service() {
             if (isLogicEnabled && currentMoves.isNotEmpty()) {
                 val move = currentMoves.first()
                 
-                val uFrom = (move.fromCol + 0.5f) / cols
-                val vFrom = (move.fromRow + 0.5f) / rows
-                val startX = (1-vFrom)*((1-uFrom)*ptTL.x + uFrom*ptTR.x) + vFrom*((1-uFrom)*ptBL.x + uFrom*ptBR.x)
-                val startY = (1-vFrom)*((1-uFrom)*ptTL.y + uFrom*ptTR.y) + vFrom*((1-uFrom)*ptBL.y + uFrom*ptBR.y)
+                if (move.isFiveMatch && move.fiveMatchCells.isNotEmpty()) {
+                    for (cell in move.fiveMatchCells) {
+                        val r = cell.first
+                        val c = cell.second
+                        if (r in 0 until rows && c in 0 until cols) {
+                            val path = android.graphics.Path().apply {
+                                moveTo(getCellCornerX(r, c), getCellCornerY(r, c))
+                                lineTo(getCellCornerX(r, c + 1), getCellCornerY(r, c + 1))
+                                lineTo(getCellCornerX(r + 1, c + 1), getCellCornerY(r + 1, c + 1))
+                                lineTo(getCellCornerX(r + 1, c), getCellCornerY(r + 1, c))
+                                close()
+                            }
+                            canvas.drawPath(path, highlightPaint)
+                        }
+                    }
 
-                val uTo = (move.toCol + 0.5f) / cols
-                val vTo = (move.toRow + 0.5f) / rows
-                val endX = (1-vTo)*((1-uTo)*ptTL.x + uTo*ptTR.x) + vTo*((1-uTo)*ptBL.x + uTo*ptBR.x)
-                val endY = (1-vTo)*((1-uTo)*ptTL.y + uTo*ptTR.y) + vTo*((1-uTo)*ptBR.y + uTo*ptBR.y)
+                    val uFrom = (move.fromCol + 0.5f) / cols
+                    val vFrom = (move.fromRow + 0.5f) / rows
+                    val startX = (1-vFrom)*((1-uFrom)*ptTL.x + uFrom*ptTR.x) + vFrom*((1-uFrom)*ptBL.x + uFrom*ptBR.x)
+                    val startY = (1-vFrom)*((1-uFrom)*ptTL.y + uFrom*ptTR.y) + vFrom*((1-uFrom)*ptBL.y + uFrom*ptBR.y)
 
-                canvas.drawLine(startX, startY, endX, endY, arrowPaint)
-                canvas.drawCircle(startX, startY, 20f, Paint().apply { color = Color.RED })
-                canvas.drawCircle(endX, endY, 20f, Paint().apply { color = Color.GREEN })
-                canvas.drawText(move.description, startX - 100f, startY - 40f, textPaint)
+                    val uTo = (move.toCol + 0.5f) / cols
+                    val vTo = (move.toRow + 0.5f) / rows
+                    val endX = (1-vTo)*((1-uTo)*ptTL.x + uTo*ptTR.x) + vTo*((1-uTo)*ptBL.x + uTo*ptBR.x)
+                    val endY = (1-vTo)*((1-uTo)*ptTL.y + uTo*ptTR.y) + vTo*((1-uTo)*ptBR.y + uTo*ptBR.y)
+
+                    canvas.drawLine(startX, startY, endX, endY, arrowPaint)
+                    canvas.drawCircle(startX, startY, 20f, Paint().apply { color = Color.RED })
+                    canvas.drawCircle(endX, endY, 20f, Paint().apply { color = Color.GREEN })
+                } else {
+                    val uFrom = (move.fromCol + 0.5f) / cols
+                    val vFrom = (move.fromRow + 0.5f) / rows
+                    val startX = (1-vFrom)*((1-uFrom)*ptTL.x + uFrom*ptTR.x) + vFrom*((1-uFrom)*ptBL.x + uFrom*ptBR.x)
+                    val startY = (1-vFrom)*((1-uFrom)*ptTL.y + uFrom*ptTR.y) + vFrom*((1-uFrom)*ptBL.y + uFrom*ptBR.y)
+
+                    val uTo = (move.toCol + 0.5f) / cols
+                    val vTo = (move.toRow + 0.5f) / rows
+                    val endX = (1-vTo)*((1-uTo)*ptTL.x + uTo*ptTR.x) + vTo*((1-uTo)*ptBL.x + uTo*ptBR.x)
+                    val endY = (1-vTo)*((1-uTo)*ptTL.y + uTo*ptTR.y) + vTo*((1-uTo)*ptBR.y + uTo*ptBR.y)
+
+                    canvas.drawLine(startX, startY, endX, endY, arrowPaint)
+                    canvas.drawCircle(startX, startY, 20f, Paint().apply { color = Color.RED })
+                    canvas.drawCircle(endX, endY, 20f, Paint().apply { color = Color.GREEN })
+                    canvas.drawText(move.description, startX - 100f, startY - 40f, textPaint)
+                }
             }
         }
 
