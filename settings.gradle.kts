@@ -11,6 +11,9 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        
+        // ✨ OpenCV 라이브러리를 정상적으로 다운로드받기 위해 이 라인을 추가합니다.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 
