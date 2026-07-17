@@ -41,6 +41,15 @@ import kotlin.math.abs
 
 enum class BlockColor { RED, BLUE, YELLOW, GREEN, PURPLE, UNKNOWN }
 
+// 기믹 종류 정의
+enum class ObstacleType { NONE, BIRD_NEST, CLAM }
+
+// 기믹 특징점 매칭 매트릭스 데이터 구조
+data class ObstaclePattern(
+    val type: ObstacleType,
+    val samplePoints: List<Pair<PointF, BlockColor>> // 중심 대비 상대 좌표 (x, y) -> -0.5 ~ 0.5
+)
+
 data class MatchMove(
     val fromRow: Int, val fromCol: Int,
     val toRow: Int, val toCol: Int,
@@ -105,6 +114,27 @@ class SolverService : Service() {
     private var isCalibrationMode = false 
     
     private var activeCorner: PointF = ptTL
+
+    // 고유 시그니처 데이터베이스 (유사도 80% 매칭 필터용 데이터)
+    private val obstaclePatterns = listOf(
+        // 1. 조개 기믹 패턴 정의 (분홍색 껍질 구조와 중심부 파란 진주 조합)
+        ObstaclePattern(
+            ObstacleType.CLAM, listOf(
+                Pair(PointF(0f, 0f), BlockColor.BLUE),        // 정중앙 푸른 진주
+                Pair(PointF(-0.35f, 0f), BlockColor.PURPLE),  // 좌측 껍질 테두리 (핑크/보라)
+                Pair(PointF(0.35f, 0f), BlockColor.PURPLE),   // 우측 껍질 테두리 (핑크/보라)
+                Pair(PointF(0f, -0.35f), BlockColor.PURPLE)   // 상단 껍질 테두리
+            )
+        ),
+        // 2. 새둥지 기믹 패턴 정의 (지붕의 강렬한 빨간색과 하단 둥지의 갈색/황색 조합)
+        ObstaclePattern(
+            ObstacleType.BIRD_NEST, listOf(
+                Pair(PointF(0f, -0.35f), BlockColor.RED),     // 상단 붉은 지붕 영역
+                Pair(PointF(-0.25f, 0.25f), BlockColor.YELLOW), // 하단 지푸라기 둥지 좌측
+                Pair(PointF(0.25f, 0.25f), BlockColor.YELLOW)  // 하단 지푸라기 둥지 우측
+            )
+        )
+    )
 
     inner class SolverBinder : Binder() {
         fun getService(): SolverService = this@SolverService
@@ -716,6 +746,10 @@ class SolverService : Service() {
 
         val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
 
+        // 현재 분할 정렬 상태 기준 개별 셀의 대략적 픽셀 크기 연산 (시그니처 상대 매칭 좌표 계산용)
+        val approxCellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
+        val approxCellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
+
         for (r in 0 until rows) {
             for (c in 0 until cols) {
                 if (disabledCells[r][c]) {
@@ -734,20 +768,77 @@ class SolverService : Service() {
                 val targetX = (1 - v) * topX + v * bottomX
                 val targetY = (1 - v) * topY + v * bottomY
 
-                board[r][c] = detectCellColorROI(pixels, width, height, targetX, targetY)
+                // 통합 식별 파이프라인으로 처리
+                board[r][c] = identifyCellContent(pixels, width, height, targetX, targetY, approxCellW, approxCellH)
             }
         }
         return findBestMoves(board)
     }
 
-    private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
-        val radius = 6  // 감사 영역을 6으로 좁혀 정확도 보강
+    // [기믹 차단 핵심] 셀 내용물 통합 감지 라우터
+    private fun identifyCellContent(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float, cellW: Int, cellH: Int): BlockColor {
+        // Step 1: 80% 매칭 기준 기믹 패턴 데이터베이스 스캔 확인
+        val detectedObstacle = checkObstacleThreshold(pixels, width, height, centerX, centerY, cellW, cellH)
+        if (detectedObstacle != ObstacleType.NONE) {
+            // 기믹 발견 시 계산 연산 풀에서 강제 배제 처리
+            return BlockColor.UNKNOWN 
+        }
+
+        // Step 2: 기믹이 없으면 순수 일반 블록 색상 검사 수행
+        return detectNormalBlockColor(pixels, width, height, centerX, centerY)
+    }
+
+    // 시그니처 픽셀 일치율(80% 이상) 판독 알고리즘
+    private fun checkObstacleThreshold(pixels: IntArray, width: Int, height: Int, cX: Float, cY: Float, cellW: Int, cellH: Int): ObstacleType {
+        val hsv = FloatArray(3)
+
+        for (pattern in obstaclePatterns) {
+            var matchCount = 0
+            val totalPoints = pattern.samplePoints.size
+
+            for (point in pattern.samplePoints) {
+                // 중심점 기준 상대 간격 스케일링 보정 좌표 계산
+                val sampleX = (cX + point.first.x * cellW).toInt().coerceIn(0, width - 1)
+                val sampleY = (cY + point.first.y * cellH).toInt().coerceIn(0, height - 1)
+                
+                val pixel = pixels[sampleY * width + sampleX]
+                Color.colorToHSV(pixel, hsv)
+                
+                val sampledColor = convertHsvToBlockColor(hsv[0], hsv[1], hsv[2])
+                if (sampledColor == point.second) {
+                    matchCount++
+                }
+            }
+
+            // 정확도 80% 임계값 검증 필터
+            val similarity = matchCount.toFloat() / totalPoints
+            if (similarity >= 0.80f) {
+                return pattern.type
+            }
+        }
+        return ObstacleType.NONE
+    }
+
+    private fun convertHsvToBlockColor(hue: Float, sat: Float, valValue: Float): BlockColor {
+        if (sat < 0.15f || valValue < 0.15f) return BlockColor.UNKNOWN
+        return when {
+            (hue in 0f..20f) || (hue in 340f..360f) -> BlockColor.RED
+            hue in 42f..62f -> BlockColor.YELLOW   
+            hue in 63f..144f -> BlockColor.GREEN
+            hue in 145f..250f -> BlockColor.BLUE 
+            hue in 251f..339f -> BlockColor.PURPLE
+            else -> BlockColor.UNKNOWN
+        }
+    }
+
+    // 잔디 필터 및 반경 정밀화가 적용된 블록 색상 감지 함수
+    private fun detectNormalBlockColor(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
+        val radius = 6  // 정확도 보강을 위해 압축된 검사 반경
         val cX = centerX.toInt()
         val cY = centerY.toInt()
         var rCnt = 0; var bCnt = 0; var yCnt = 0; var gCnt = 0; var pCnt = 0
         var scannedPixels = 0
         val hsv = FloatArray(3)
-        var totalSat = 0f // 채도값 누적을 위한 변수 추가
 
         for (y in (cY - radius)..(cY + radius)) {
             for (x in (cX - radius)..(cX + radius)) {
@@ -755,18 +846,13 @@ class SolverService : Service() {
                 val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
                 
-                totalSat += hsv[1]
                 scannedPixels++
-                
                 val hue = hsv[0]
                 val sat = hsv[1]
                 val valValue = hsv[2]
 
-                val isBlueHue = hue in 145f..250f
-                val minSat = if (isBlueHue) 0.15f else 0.4f
-                val minVal = if (isBlueHue) 0.25f else 0.4f
-
-                if (sat < minSat || valValue < minVal) continue
+                // [잔디 배경 필터] 하단 녹색 잔디 배경의 간섭을 차단하기 위해 채도/명도 커트라인 강화
+                if (sat < 0.35f || valValue < 0.35f) continue
                 
                 when {
                     (hue in 0f..20f) || (hue in 340f..360f) -> rCnt++
@@ -780,29 +866,13 @@ class SolverService : Service() {
 
         if (scannedPixels == 0) return BlockColor.UNKNOWN
 
-        // [추가] 채도 분석을 통해 나무판/돌 등의 고정 기믹 영역 감지 시 자동 스캔 제외
-        val avgSat = totalSat / scannedPixels
-        if (avgSat < 0.15f) {
-            return BlockColor.UNKNOWN
-        }
-
-        val rThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
-        val yThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
-        val gThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
-        val bThreshold = (scannedPixels * 0.15f).toInt().coerceAtLeast(18)
-        val pThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
-
+        val threshold = (scannedPixels * 0.25f).toInt().coerceAtLeast(20)
         val maxMap = mapOf(
-            BlockColor.RED to Pair(rCnt, rThreshold), 
-            BlockColor.BLUE to Pair(bCnt, bThreshold), 
-            BlockColor.YELLOW to Pair(yCnt, yThreshold), 
-            BlockColor.GREEN to Pair(gCnt, gThreshold), 
-            BlockColor.PURPLE to Pair(pCnt, pThreshold)
+            BlockColor.RED to rCnt, BlockColor.BLUE to bCnt, 
+            BlockColor.YELLOW to yCnt, BlockColor.GREEN to gCnt, BlockColor.PURPLE to pCnt
         )
 
-        val validOptions = maxMap.filter { it.value.first > it.value.second }
-        val best = validOptions.maxByOrNull { it.value.first }
-
+        val best = maxMap.filter { it.value > threshold }.maxByOrNull { it.value }
         return best?.key ?: BlockColor.UNKNOWN
     }
 
@@ -891,7 +961,6 @@ class SolverService : Service() {
         private val activeHandlePaint = Paint().apply { color = Color.YELLOW; style = Paint.Style.FILL }
         private val strokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 5f }
         
-        // 5개 하이라이팅을 위한 형광색 Paint
         private val highlightPaint = Paint().apply { color = Color.parseColor("#80FFFF00"); style = Paint.Style.FILL }
         
         private val disabledOverlayPaint = Paint().apply { color = Color.parseColor("#80FF0000"); style = Paint.Style.FILL }
@@ -978,7 +1047,6 @@ class SolverService : Service() {
                 drawHandle(ptBR, activeCorner == ptBR)
             }
 
-            // [수정] 5개 매치일 때만 형광색 하이라이트 패스만 그리고, 일반 매치 화살표와 텍스트 설명은 그리지 않습니다.
             if (isLogicEnabled && currentMoves.isNotEmpty()) {
                 val move = currentMoves.first()
                 
