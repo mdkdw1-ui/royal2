@@ -40,8 +40,8 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // ✨ [변경] 인터넷(JitPack)에서 안 받고, 방금 libs 폴더에 넣은 aar 파일을 직접 읽도록 수정
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    // ✨ [변경] 터진 JitPack 대신, 인증이 필요 없는 Maven Central의 안정적인 OpenCV 라이브러리를 사용합니다.
+    implementation("com.quickbirdstudios:opencv:4.5.3.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
