@@ -741,18 +741,22 @@ class SolverService : Service() {
     }
 
     private fun detectCellColorROI(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
-        val radius = 8 
+        val radius = 6  // 감사 영역을 6으로 좁혀 정확도 보강
         val cX = centerX.toInt()
         val cY = centerY.toInt()
         var rCnt = 0; var bCnt = 0; var yCnt = 0; var gCnt = 0; var pCnt = 0
         var scannedPixels = 0
         val hsv = FloatArray(3)
+        var totalSat = 0f // 채도값 누적을 위한 변수 추가
 
         for (y in (cY - radius)..(cY + radius)) {
             for (x in (cX - radius)..(cX + radius)) {
                 if (x < 0 || x >= width || y < 0 || y >= height) continue
                 val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
+                
+                totalSat += hsv[1]
+                scannedPixels++
                 
                 val hue = hsv[0]
                 val sat = hsv[1]
@@ -764,8 +768,6 @@ class SolverService : Service() {
 
                 if (sat < minSat || valValue < minVal) continue
                 
-                scannedPixels++
-                
                 when {
                     (hue in 0f..20f) || (hue in 340f..360f) -> rCnt++
                     hue in 42f..62f -> yCnt++   
@@ -774,6 +776,14 @@ class SolverService : Service() {
                     hue in 251f..339f -> pCnt++
                 }
             }
+        }
+
+        if (scannedPixels == 0) return BlockColor.UNKNOWN
+
+        // [추가] 채도 분석을 통해 나무판/돌 등의 고정 기믹 영역 감지 시 자동 스캔 제외
+        val avgSat = totalSat / scannedPixels
+        if (avgSat < 0.15f) {
+            return BlockColor.UNKNOWN
         }
 
         val rThreshold = (scannedPixels * 0.22f).toInt().coerceAtLeast(25)
@@ -877,12 +887,11 @@ class SolverService : Service() {
 
     inner class VisualOverlayView(context: Context) : View(context) {
         private val linePaint = Paint().apply { color = Color.parseColor("#8000FF00"); style = Paint.Style.STROKE; strokeWidth = 3f }
-        private val textPaint = Paint().apply { color = Color.YELLOW; textSize = 42f; style = Paint.Style.FILL }
         private val handlePaint = Paint().apply { color = Color.parseColor("#FF00DF"); style = Paint.Style.FILL }
         private val activeHandlePaint = Paint().apply { color = Color.YELLOW; style = Paint.Style.FILL }
         private val strokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 5f }
-        private val arrowPaint = Paint().apply { color = Color.parseColor("#FF00DF"); strokeWidth = 15f; style = Paint.Style.FILL_AND_STROKE }
         
+        // 5개 하이라이팅을 위한 형광색 Paint
         private val highlightPaint = Paint().apply { color = Color.parseColor("#80FFFF00"); style = Paint.Style.FILL }
         
         private val disabledOverlayPaint = Paint().apply { color = Color.parseColor("#80FF0000"); style = Paint.Style.FILL }
@@ -969,6 +978,7 @@ class SolverService : Service() {
                 drawHandle(ptBR, activeCorner == ptBR)
             }
 
+            // [수정] 5개 매치일 때만 형광색 하이라이트 패스만 그리고, 일반 매치 화살표와 텍스트 설명은 그리지 않습니다.
             if (isLogicEnabled && currentMoves.isNotEmpty()) {
                 val move = currentMoves.first()
                 
@@ -987,35 +997,6 @@ class SolverService : Service() {
                             canvas.drawPath(path, highlightPaint)
                         }
                     }
-
-                    val uFrom = (move.fromCol + 0.5f) / cols
-                    val vFrom = (move.fromRow + 0.5f) / rows
-                    val startX = (1-vFrom)*((1-uFrom)*ptTL.x + uFrom*ptTR.x) + vFrom*((1-uFrom)*ptBL.x + uFrom*ptBR.x)
-                    val startY = (1-vFrom)*((1-uFrom)*ptTL.y + uFrom*ptTR.y) + vFrom*((1-uFrom)*ptBL.y + uFrom*ptBR.y)
-
-                    val uTo = (move.toCol + 0.5f) / cols
-                    val vTo = (move.toRow + 0.5f) / rows
-                    val endX = (1-vTo)*((1-uTo)*ptTL.x + uTo*ptTR.x) + vTo*((1-uTo)*ptBL.x + uTo*ptBR.x)
-                    val endY = (1-vTo)*((1-uTo)*ptTL.y + uTo*ptTR.y) + vTo*((1-uTo)*ptBR.y + uTo*ptBR.y)
-
-                    canvas.drawLine(startX, startY, endX, endY, arrowPaint)
-                    canvas.drawCircle(startX, startY, 20f, Paint().apply { color = Color.RED })
-                    canvas.drawCircle(endX, endY, 20f, Paint().apply { color = Color.GREEN })
-                } else {
-                    val uFrom = (move.fromCol + 0.5f) / cols
-                    val vFrom = (move.fromRow + 0.5f) / rows
-                    val startX = (1-vFrom)*((1-uFrom)*ptTL.x + uFrom*ptTR.x) + vFrom*((1-uFrom)*ptBL.x + uFrom*ptBR.x)
-                    val startY = (1-vFrom)*((1-uFrom)*ptTL.y + uFrom*ptTR.y) + vFrom*((1-uFrom)*ptBL.y + uFrom*ptBR.y)
-
-                    val uTo = (move.toCol + 0.5f) / cols
-                    val vTo = (move.toRow + 0.5f) / rows
-                    val endX = (1-vTo)*((1-uTo)*ptTL.x + uTo*ptTR.x) + vTo*((1-uTo)*ptBL.x + uTo*ptBR.x)
-                    val endY = (1-vTo)*((1-uTo)*ptTL.y + uTo*ptTR.y) + vTo*((1-uTo)*ptBR.y + uTo*ptBR.y)
-
-                    canvas.drawLine(startX, startY, endX, endY, arrowPaint)
-                    canvas.drawCircle(startX, startY, 20f, Paint().apply { color = Color.RED })
-                    canvas.drawCircle(endX, endY, 20f, Paint().apply { color = Color.GREEN })
-                    canvas.drawText(move.description, startX - 100f, startY - 40f, textPaint)
                 }
             }
         }
