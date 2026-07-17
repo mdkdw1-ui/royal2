@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="#E61A1A1A"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <LinearLayout
+        android:id="@+id/layoutHeader"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:background="#222222"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="6dp">
+
+        <TextView
+            android:id="@+id/tvHeaderTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="🎛️ 격자 헬퍼"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnGridVisibility"
+            android:layout_width="65dp"
+            android:layout_height="32dp"
+            android:backgroundTint="#2196F3"
+            android:text="👁️ 격자 보임"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:padding="0dp"
+            android:layout_marginEnd="4dp"/>
+
+        <Button
+            android:id="@+id/btnEditMode"
+            android:layout_width="65dp"
+            android:layout_height="32dp"
+            android:backgroundTint="#757575"
+            android:text="🛠️ 격자 고정"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:padding="0dp"
+            android:layout_marginEnd="4dp"/>
+
+        <Button
+            android:id="@+id/btnMinimize"
+            android:layout_width="45dp"
+            android:layout_height="32dp"
+            android:backgroundTint="#FF9800"
+            android:text="행렬 ▼"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:padding="0dp"
+            android:layout_marginEnd="4dp"/>
+
+        <Button
+            android:id="@+id/btnKillService"
+            android:layout_width="40dp"
+            android:layout_height="32dp"
+            android:backgroundTint="#F44336"
+            android:text="종료"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:padding="0dp"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/layoutExpandedBody"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:visibility="gone"
+        android:layout_marginTop="4dp"
+        android:padding="4dp">
+
+        <TextView
+            android:id="@+id/tvGridInfo"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="크기: 9x11"
+            android:textColor="#CCCCCC"
+            android:textSize="11sp" />
+
+        <Button android:id="@+id/btnRowMinus" android:layout_width="38dp" android:layout_height="35dp" android:text="행-" android:textSize="10sp" android:padding="0dp"/>
+        <Button android:id="@+id/btnRowPlus" android:layout_width="38dp" android:layout_height="35dp" android:text="행+" android:textSize="10sp" android:padding="0dp" android:layout_marginEnd="4dp"/>
+        <Button android:id="@+id/btnColMinus" android:layout_width="38dp" android:layout_height="35dp" android:text="열-" android:textSize="10sp" android:padding="0dp"/>
+        <Button android:id="@+id/btnColPlus" android:layout_width="38dp" android:layout_height="35dp" android:text="열+" android:textSize="10sp" android:padding="0dp"/>
+    </LinearLayout>
+</LinearLayout>
