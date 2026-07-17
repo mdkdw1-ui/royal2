@@ -90,6 +90,9 @@ class SolverService : Service() {
     private var floatingControlView: LinearLayout? = null 
     private var visualOverlayView: VisualOverlayView? = null 
 
+    // 🛠️ [버그 해결] 제어 패널 윈도우 크기를 유기적으로 수축/팽창 시키기 위해 전역 필드로 승격
+    private var floatParams: WindowManager.LayoutParams? = null
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -120,6 +123,9 @@ class SolverService : Service() {
     private var isImageGrabberMode = false 
     private var grabbedRow = -1
     private var grabbedCol = -1
+    
+    // 🛠️ [버그 해결] 버튼 클릭 리액션이 하단 격자로 유출되는 현상을 막기 위한 타이밍 가드 타임스탬프
+    private var lastGrabberActivationTime = 0L
     
     // 💾 OpenCV 동적 템플릿 이미지 보관 메모리 리스트
     private val dynamicTemplates = mutableListOf<Mat>()
@@ -305,7 +311,7 @@ class SolverService : Service() {
     private fun createFloatingControlWindow() {
         mainHandler.post {
             val context = applicationContext
-            val floatParams = WindowManager.LayoutParams(
+            floatParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
@@ -325,10 +331,11 @@ class SolverService : Service() {
                 private val touchSlop = 15f 
 
                 override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                    val params = floatParams ?: return super.onInterceptTouchEvent(ev)
                     when (ev.action) {
                         MotionEvent.ACTION_DOWN -> {
-                            initialX = floatParams.x
-                            initialY = floatParams.y
+                            initialX = params.x
+                            initialY = params.y
                             initialTouchX = ev.rawX
                             initialTouchY = ev.rawY
                         }
@@ -342,11 +349,12 @@ class SolverService : Service() {
                 }
 
                 override fun onTouchEvent(event: MotionEvent): Boolean {
+                    val params = floatParams ?: return super.onTouchEvent(event)
                     when (event.action) {
                         MotionEvent.ACTION_MOVE -> {
-                            floatParams.x = initialX + (event.rawX - initialTouchX).toInt()
-                            floatParams.y = initialY + (event.rawY - initialTouchY).toInt()
-                            windowManager.updateViewLayout(this, floatParams)
+                            params.x = initialX + (event.rawX - initialTouchX).toInt()
+                            params.y = initialY + (event.rawY - initialTouchY).toInt()
+                            windowManager.updateViewLayout(this, params)
                             return true
                         }
                     }
@@ -419,7 +427,7 @@ class SolverService : Service() {
         view.removeAllViews()
         val context = applicationContext
 
-        // ================= [🔥 그림 따기 전용 레이아웃 분기 추가] =================
+        // ================= [🔥 그림 따기 전용 레이아웃 분기 최적화 및 뷰 크기 강제 수축] =================
         if (isImageGrabberMode) {
             val btnCancel = Button(context).apply {
                 text = "❌ 기믹 따기 취소"
@@ -438,7 +446,12 @@ class SolverService : Service() {
                 }
             }
             view.addView(btnCancel)
-            return // 거대 메뉴 UI 생성을 원천 차단하여 터치 가능 영역 확보
+
+            // 🛠️ [버그 해결 핵심] 메뉴 창 크기를 컴팩트하게 강제 수축(정렬 갱신) 시켜 터치 차단 영역을 완전히 제거합니다.
+            floatParams?.let { params ->
+                try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {}
+            }
+            return 
         }
         // =================================================================
 
@@ -500,7 +513,8 @@ class SolverService : Service() {
                     val overlay = visualOverlayView ?: return@setOnClickListener
                     val params = overlay.layoutParams as WindowManager.LayoutParams
                     if (isImageGrabberMode) {
-                        isCalibrationMode = false // 보정 모드 중복 방지 거름 처리
+                        lastGrabberActivationTime = System.currentTimeMillis() // 🛠️ [버그 해결] 타이밍 락 가드 개시
+                        isCalibrationMode = false 
                         params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
                     } else {
                         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -655,6 +669,11 @@ class SolverService : Service() {
                 }
             }
             view.addView(miniScanButton)
+        }
+
+        // 🛠️ [버그 해결 핵심] 대형 메뉴 복귀 시 창 크기를 다시 최대로 확장 갱신 처리
+        floatParams?.let { params ->
+            try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {}
         }
     }
 
@@ -1278,6 +1297,11 @@ class SolverService : Service() {
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
             if (!isCalibrationMode && !isImageGrabberMode) return false
+
+            // 🛠️ [버그 해결 핵심] 따기 버튼을 터치한 직후(300ms 이내)에 하단 오버레이로 유출되는 Ghost Touch 이벤트를 무시합니다.
+            if (isImageGrabberMode && (System.currentTimeMillis() - lastGrabberActivationTime < 300)) {
+                return false
+            }
 
             val x = event.x
             val y = event.y
