@@ -40,6 +40,9 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
+    // ✨ OpenCV 안드로이드 초경량 라이브러리 추가
+    implementation("com.github.jeziellago:opencv-android:4.6.0")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:core-runtime:3.5.1")
