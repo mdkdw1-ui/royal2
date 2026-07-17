@@ -90,7 +90,6 @@ class SolverService : Service() {
     private var floatingControlView: LinearLayout? = null 
     private var visualOverlayView: VisualOverlayView? = null 
 
-    // 🛠️ [버그 해결] 제어 패널 윈도우 크기를 유기적으로 수축/팽창 시키기 위해 전역 필드로 승격
     private var floatParams: WindowManager.LayoutParams? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -124,10 +123,10 @@ class SolverService : Service() {
     private var grabbedRow = -1
     private var grabbedCol = -1
     
-    // 🛠️ [버그 해결] 버튼 클릭 리액션이 하단 격자로 유출되는 현상을 막기 위한 타이밍 가드 타임스탬프
+    // 🛠️ [타이밍 버그 해결] 기믹 따기 도중 자동 스캔 파이프라인의 간섭을 막기 위한 동기화 락 필드
+    private var isGrabberProcessing = false
     private var lastGrabberActivationTime = 0L
     
-    // 💾 OpenCV 동적 템플릿 이미지 보관 메모리 리스트
     private val dynamicTemplates = mutableListOf<Mat>()
     private var isOpenCVInitialized = false
 
@@ -144,7 +143,6 @@ class SolverService : Service() {
         backgroundThread = HandlerThread("SolverBackgroundWorker").apply { start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
         
-        // OpenCV 런타임 로드 및 디바이스 저장 기믹 연동
         if (OpenCVLoader.initDebug()) {
             Log.d(TAG, "OpenCV 엔진 빌드 로드 성공")
             isOpenCVInitialized = true
@@ -177,7 +175,6 @@ class SolverService : Service() {
         return START_STICKY
     }
 
-    // 폰 내장 폴더(Android/data/.../captures)에서 기존 등록 이미지를 전부 메모리로 로드
     private fun loadDynamicTemplatesFromStorage() {
         if (!isOpenCVInitialized) return
         
@@ -195,7 +192,7 @@ class SolverService : Service() {
                     if (bitmap != null) {
                         val mat = Mat()
                         Utils.bitmapToMat(bitmap, mat)
-                        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY) // 흑백 매칭 최적화
+                        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
                         
                         synchronized(dynamicTemplates) {
                             dynamicTemplates.add(mat)
@@ -211,48 +208,56 @@ class SolverService : Service() {
         }
     }
 
-    // 실시간으로 캡처한 이미지 조각을 저장하고 연산 풀에 즉시 동적 주입
     private fun saveBitmapToFile(bitmap: Bitmap, filename: String) {
-        backgroundHandler?.post {
-            try {
-                val dir = getExternalFilesDir("captures")
-                if (dir != null && !dir.exists()) dir.mkdirs()
-                
-                val file = File(dir, "${filename}_${System.currentTimeMillis()}.png")
-                val out = FileOutputStream(file)
-                
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                out.flush()
-                out.close()
-                
-                // 런타임 인스턴스 주입 연산 (컴파일 해방)
-                val newMat = Mat()
-                Utils.bitmapToMat(bitmap, newMat)
-                Imgproc.cvtColor(newMat, newMat, Imgproc.COLOR_RGBA2GRAY)
-                
-                synchronized(dynamicTemplates) {
-                    dynamicTemplates.add(newMat)
+        try {
+            val dir = getExternalFilesDir("captures")
+            if (dir != null && !dir.exists()) dir.mkdirs()
+            
+            val file = File(dir, "${filename}_${System.currentTimeMillis()}.png")
+            val out = FileOutputStream(file)
+            
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            out.flush()
+            out.close()
+            
+            val newMat = Mat()
+            Utils.bitmapToMat(bitmap, newMat)
+            Imgproc.cvtColor(newMat, newMat, Imgproc.COLOR_RGBA2GRAY)
+            
+            synchronized(dynamicTemplates) {
+                dynamicTemplates.add(newMat)
+            }
+            
+            showToastOnMainThread("📸 기믹 실시간 등록 완료!\n현재 총 기믹 수: ${dynamicTemplates.size}개")
+        } catch (e: Exception) {
+            Log.e(TAG, "이미지 저장 및 실시간 매핑 실패", e)
+            showToastOnMainThread("❌ 기믹 저장 실패!")
+        } finally {
+            // 연산 종료 후 모든 상태 락 해제 및 큰 메뉴 UI 원상복구
+            grabbedRow = -1
+            grabbedCol = -1
+            isImageGrabberMode = false
+            isGrabberProcessing = false
+            
+            mainHandler.post {
+                visualOverlayView?.let { overlay ->
+                    val params = overlay.layoutParams as WindowManager.LayoutParams
+                    params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    windowManager.updateViewLayout(overlay, params)
                 }
-                
-                showToastOnMainThread("📸 기믹 실시간 등록 완료!\n현재 총 기믹 수: ${dynamicTemplates.size}개")
-                mainHandler.post { refreshFloatingPanelUI() }
-            } catch (e: Exception) {
-                Log.e(TAG, "이미지 저장 및 실시간 매핑 실패", e)
+                refreshFloatingPanelUI()
             }
         }
     }
 
-    // 등록된 모든 기믹 데이터를 물리 파일 및 메모리에서 완전 삭제 처리
     private fun clearAllDynamicTemplates() {
         backgroundHandler?.post {
             try {
-                // 1. 메모리 자원 해제
                 synchronized(dynamicTemplates) {
                     dynamicTemplates.forEach { it.release() }
                     dynamicTemplates.clear()
                 }
                 
-                // 2. 물리 저장소 삭제
                 val dir = getExternalFilesDir("captures")
                 if (dir != null && dir.exists()) {
                     val files = dir.listFiles()
@@ -427,7 +432,6 @@ class SolverService : Service() {
         view.removeAllViews()
         val context = applicationContext
 
-        // ================= [🔥 그림 따기 전용 레이아웃 분기 최적화 및 뷰 크기 강제 수축] =================
         if (isImageGrabberMode) {
             val btnCancel = Button(context).apply {
                 text = "❌ 기믹 따기 취소"
@@ -436,6 +440,7 @@ class SolverService : Service() {
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     isImageGrabberMode = false
+                    isGrabberProcessing = false
                     val overlay = visualOverlayView ?: return@setOnClickListener
                     val params = overlay.layoutParams as WindowManager.LayoutParams
                     params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -447,13 +452,11 @@ class SolverService : Service() {
             }
             view.addView(btnCancel)
 
-            // 🛠️ [버그 해결 핵심] 메뉴 창 크기를 컴팩트하게 강제 수축(정렬 갱신) 시켜 터치 차단 영역을 완전히 제거합니다.
             floatParams?.let { params ->
                 try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {}
             }
             return 
         }
-        // =================================================================
 
         val btnSizeToggle = Button(context).apply {
             text = if (isLargeMode) "◀ 미니 모드" else "▶ 확장 패널"
@@ -503,29 +506,26 @@ class SolverService : Service() {
             }
             view.addView(btnScan)
 
-            // 📸 Klicker 스타일 기믹 따기 활성화 제어 버튼
             val btnGrabberToggle = Button(context).apply {
-                text = if (isImageGrabberMode) "📸 캡처 대기: 칸 터치!" else "📷 기믹 그림 따기"
-                setBackgroundColor(if (isImageGrabberMode) Color.parseColor("#FF00DF") else Color.parseColor("#5A0063"))
+                text = "📷 기믹 그림 따기"
+                setBackgroundColor(Color.parseColor("#5A0063"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
-                    isImageGrabberMode = !isImageGrabberMode
+                    isImageGrabberMode = true
+                    isGrabberProcessing = false
                     val overlay = visualOverlayView ?: return@setOnClickListener
                     val params = overlay.layoutParams as WindowManager.LayoutParams
-                    if (isImageGrabberMode) {
-                        lastGrabberActivationTime = System.currentTimeMillis() // 🛠️ [버그 해결] 타이밍 락 가드 개시
-                        isCalibrationMode = false 
-                        params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-                    } else {
-                        params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                    }
+                    
+                    lastGrabberActivationTime = System.currentTimeMillis()
+                    isCalibrationMode = false 
+                    params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                    
                     windowManager.updateViewLayout(overlay, params)
                     refreshFloatingPanelUI()
                 }
             }
             view.addView(btnGrabberToggle)
 
-            // 🧹 등록된 기믹 리스트 DB 완전 청소 버튼
             val btnClearTemplates = Button(context).apply {
                 text = "🧹 기믹 전체 초기화"
                 setBackgroundColor(Color.parseColor("#FF8C00"))
@@ -551,7 +551,7 @@ class SolverService : Service() {
 
             val btnCalibrate = Button(context).apply {
                 text = if (isCalibrationMode) "💾 설정 완료" else "📐 격자 맞춤 분할"
-                setBackgroundColor(if (isCalibrationMode) Color.parseColor("#FF00DF") else Color.parseColor("#444444"))
+                setBackgroundColor(if (isCalibrationMode) Color.parseColor("#FF00DF") else Color.444444)
                 setTextColor(Color.WHITE)
                 setOnClickListener { toggleCalibrationMode() }
             }
@@ -671,7 +671,6 @@ class SolverService : Service() {
             view.addView(miniScanButton)
         }
 
-        // 🛠️ [버그 해결 핵심] 대형 메뉴 복귀 시 창 크기를 다시 최대로 확장 갱신 처리
         floatParams?.let { params ->
             try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {}
         }
@@ -682,7 +681,7 @@ class SolverService : Service() {
         val overlay = visualOverlayView ?: return
         val params = overlay.layoutParams as WindowManager.LayoutParams
         if (isCalibrationMode) {
-            isImageGrabberMode = false // 그림 따기 충돌 상쇄 차단
+            isImageGrabberMode = false
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             showToastOnMainThread("📐 격자점 조절 및 터치 스캔 해제(X) 기능 활성화")
         } else {
@@ -723,6 +722,12 @@ class SolverService : Service() {
                 }
                 
                 try {
+                    // 🛠️ [버그 해결] 기믹 가로채기 연산이 시작되었다면 자동 분석 흐름을 잠시 멈춤
+                    if (isGrabberProcessing) {
+                        image.close()
+                        return@setOnImageAvailableListener
+                    }
+
                     val currentTime = System.currentTimeMillis()
                     val shouldAnalyze = isManualAnalysisRequested || 
                         (isAutoScanEnabled && (currentTime - lastAnalysisTime >= AUTO_SCAN_INTERVAL_MS))
@@ -742,49 +747,6 @@ class SolverService : Service() {
                         val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                         bitmap.copyPixelsFromBuffer(buffer)
                         
-                        // ✨ [동적 그림 따기 인터셉터 파이프라인]
-                        if (grabbedRow != -1 && grabbedCol != -1) {
-                            val r = grabbedRow
-                            val c = grabbedCol
-                            
-                            val u = (c + 0.5f) / cols
-                            val v = (r + 0.5f) / rows
-                            val topX = (1 - u) * ptTL.x + u * ptTR.x
-                            val topY = (1 - u) * ptTL.y + u * ptTR.y
-                            val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                            val bottomY = (1 - u) * ptBL.y + u * ptBR.y 
-                            val targetX = (1 - v) * topX + v * bottomX
-                            val targetY = (1 - v) * topY + v * bottomY
-
-                            val cellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
-                            val cellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
-                            
-                            val startX = (targetX - cellW / 2).toInt().coerceIn(0, bitmap.width - cellW)
-                            val startY = (targetY - cellH / 2).toInt().coerceIn(0, bitmap.height - cellH)
-
-                            try {
-                                val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, cellW, cellH)
-                                saveBitmapToFile(cellBitmap, "grabbed_obstacle")
-                                cellBitmap.recycle()
-                            } catch (e: Exception) {
-                                Log.e(TAG, "런타임 크롭 처리 중 실패", e)
-                            }
-
-                            // 신호 초기화 및 오버레이 터치 차단 원상복구
-                            grabbedRow = -1
-                            grabbedCol = -1
-                            isImageGrabberMode = false
-                            
-                            mainHandler.post {
-                                visualOverlayView?.let { overlay ->
-                                    val params = overlay.layoutParams as WindowManager.LayoutParams
-                                    params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                                    windowManager.updateViewLayout(overlay, params)
-                                }
-                                refreshFloatingPanelUI()
-                            }
-                        }
-
                         val matchedMoves = analyzeAndSolvePerspective(bitmap)
                         
                         mainHandler.post {
@@ -822,16 +784,72 @@ class SolverService : Service() {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "자동 분석 루프 실패: ${e.message}")
-                } catch (e: java.lang.IllegalStateException) {
                 } finally {
-                    try {
-                        image.close()
-                    } catch (e: Exception) {}
+                    try { image.close() } catch (e: Exception) {}
                 }
             }, backgroundHandler)
 
         } catch (e: Exception) {
             Log.e(TAG, "캡처 서비스 구축 에러", e)
+        }
+    }
+
+    // 🛠️ [핵심 버그 해결 장치] 유저가 격자를 탭한 순간 온전한 화면을 단발성으로 캡처해서 따오는 메서드
+    private fun processSingleGrabberCrop(r: Int, c: Int) {
+        val reader = imageReader ?: return
+        backgroundHandler?.post {
+            var image = reader.acquireLatestImage()
+            if (image == null) {
+                image = reader.acquireNextImage()
+            }
+            if (image == null) {
+                Log.e(TAG, "단발성 스크린샷 캡처 프레임 획득 실패")
+                isGrabberProcessing = false
+                return@post
+            }
+
+            try {
+                val metrics = resources.displayMetrics
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val w = metrics.widthPixels
+                val h = metrics.heightPixels
+                val rowPadding = rowStride - pixelStride * w
+
+                val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                fullBitmap.copyPixelsFromBuffer(buffer)
+
+                // 원근 변환 기반 타겟 셀 크롭 좌표 정밀 계산
+                val u = (c + 0.5f) / cols
+                val v = (r + 0.5f) / rows
+                val topX = (1 - u) * ptTL.x + u * ptTR.x
+                val topY = (1 - u) * ptTL.y + u * ptTR.y
+                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y 
+                val targetX = (1 - v) * topX + v * bottomX
+                val targetY = (1 - v) * topY + v * bottomY
+
+                val cellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
+                val cellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
+                
+                val startX = (targetX - cellW / 2).toInt().coerceIn(0, fullBitmap.width - cellW)
+                val startY = (targetY - cellH / 2).toInt().coerceIn(0, fullBitmap.height - cellH)
+
+                val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, cellW, cellH)
+                
+                // 크롭된 비트맵 파일 저장 및 OpenCV 리스트 동적 추가
+                saveBitmapToFile(cellBitmap, "grabbed_obstacle")
+                
+                cellBitmap.recycle()
+                fullBitmap.recycle()
+            } catch (e: Exception) {
+                Log.e(TAG, "기믹 크롭 연산 오류", e)
+                isGrabberProcessing = false
+            } finally {
+                image.close()
+            }
         }
     }
 
@@ -980,10 +998,7 @@ class SolverService : Service() {
         return findBestMoves(board)
     }
 
-    // OpenCV 검출과 일반 픽셀 컬러 연산의 유기적 결합
     private fun identifyCellContent(bitmap: Bitmap, pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float, cellW: Int, cellH: Int): BlockColor {
-        
-        // 1단계: OpenCV 동적 매칭 테이블 순회 검사
         val halfW = cellW / 2
         val halfH = cellH / 2
         val startX = (centerX - halfW).toInt().coerceIn(0, bitmap.width - cellW)
@@ -995,15 +1010,13 @@ class SolverService : Service() {
             cellBitmap.recycle()
             
             if (isObstacle != ObstacleType.NONE) {
-                return BlockColor.UNKNOWN // 장애물 기믹 구역 연산 제외 처리
+                return BlockColor.UNKNOWN
             }
         } catch (e: Exception) {}
 
-        // 2단계: 장애물이 없으면 잔디 레이어 제거용 고필터 연산 가동
         return detectNormalBlockColor(pixels, width, height, centerX, centerY)
     }
 
-    // 유저가 수집한 모든 Mat 패턴 매칭율 순회 판정 (임계치 80%)
     private fun checkObstacleWithOpenCV(cellBitmap: Bitmap): ObstacleType {
         if (!isOpenCVInitialized) return ObstacleType.NONE
         
@@ -1020,7 +1033,7 @@ class SolverService : Service() {
                     Imgproc.matchTemplate(cellMat, template, resultMat, Imgproc.TM_CCOEFF_NORMED)
                     val minMaxLocResult = Core.minMaxLoc(resultMat)
                     
-                    if (minMaxLocResult.maxVal >= 0.80) { // 80% 일치 한계점
+                    if (minMaxLocResult.maxVal >= 0.80) {
                         matched = true
                         break
                     }
@@ -1052,7 +1065,6 @@ class SolverService : Service() {
                 val sat = hsv[1]
                 val valValue = hsv[2]
 
-                // 잔디 배경 알파 필터 커트라인
                 if (sat < 0.35f || valValue < 0.35f) continue
                 
                 when {
@@ -1298,7 +1310,6 @@ class SolverService : Service() {
         override fun onTouchEvent(event: MotionEvent): Boolean {
             if (!isCalibrationMode && !isImageGrabberMode) return false
 
-            // 🛠️ [버그 해결 핵심] 따기 버튼을 터치한 직후(300ms 이내)에 하단 오버레이로 유출되는 Ghost Touch 이벤트를 무시합니다.
             if (isImageGrabberMode && (System.currentTimeMillis() - lastGrabberActivationTime < 300)) {
                 return false
             }
@@ -1326,10 +1337,14 @@ class SolverService : Service() {
                             val (r, c) = cell
                             if (r in 0 until rows && c in 0 until cols) {
                                 if (isImageGrabberMode) {
-                                    // 캡처 타겟 행렬 정보 전달 및 분석 트리거 신호 주입
-                                    grabbedRow = r
-                                    grabbedCol = c
-                                    isManualAnalysisRequested = true
+                                    // 🛠️ [버그 해결 장치 가동]
+                                    // 유저가 격자를 누른 순간 동기화 락을 걸고 단발성 전용 독립 크롭 연산을 호출합니다.
+                                    if (!isGrabberProcessing) {
+                                        isGrabberProcessing = true
+                                        grabbedRow = r
+                                        grabbedCol = c
+                                        processSingleGrabberCrop(r, c)
+                                    }
                                 } else {
                                     disabledCells[r][c] = !disabledCells[r][c]
                                     savePreferences()
