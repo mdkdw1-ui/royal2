@@ -123,7 +123,7 @@ class SolverService : Service() {
     private var grabbedRow = -1
     private var grabbedCol = -1
     
-    // 🛠️ [타이밍 버그 해결] 기믹 따기 도중 자동 스캔 파이프라인의 간섭을 막기 위한 동기화 락 필드
+    // 🛠️ 기믹 따기 도중 자동 스캔 파이프라인의 간섭을 막기 위한 동기화 락 필드
     private var isGrabberProcessing = false
     private var lastGrabberActivationTime = 0L
     
@@ -233,7 +233,6 @@ class SolverService : Service() {
             Log.e(TAG, "이미지 저장 및 실시간 매핑 실패", e)
             showToastOnMainThread("❌ 기믹 저장 실패!")
         } finally {
-            // 연산 종료 후 모든 상태 락 해제 및 큰 메뉴 UI 원상복구
             grabbedRow = -1
             grabbedCol = -1
             isImageGrabberMode = false
@@ -551,7 +550,8 @@ class SolverService : Service() {
 
             val btnCalibrate = Button(context).apply {
                 text = if (isCalibrationMode) "💾 설정 완료" else "📐 격자 맞춤 분할"
-                setBackgroundColor(if (isCalibrationMode) Color.parseColor("#FF00DF") else Color.444444)
+                // 🛠️ [문법 오류 수정] Color.444444에서 Color.parseColor("#444444")로 변경
+                setBackgroundColor(if (isCalibrationMode) Color.parseColor("#FF00DF") else Color.parseColor("#444444"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { toggleCalibrationMode() }
             }
@@ -722,7 +722,6 @@ class SolverService : Service() {
                 }
                 
                 try {
-                    // 🛠️ [버그 해결] 기믹 가로채기 연산이 시작되었다면 자동 분석 흐름을 잠시 멈춤
                     if (isGrabberProcessing) {
                         image.close()
                         return@setOnImageAvailableListener
@@ -794,7 +793,6 @@ class SolverService : Service() {
         }
     }
 
-    // 🛠️ [핵심 버그 해결 장치] 유저가 격자를 탭한 순간 온전한 화면을 단발성으로 캡처해서 따오는 메서드
     private fun processSingleGrabberCrop(r: Int, c: Int) {
         val reader = imageReader ?: return
         backgroundHandler?.post {
@@ -821,7 +819,6 @@ class SolverService : Service() {
                 val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 fullBitmap.copyPixelsFromBuffer(buffer)
 
-                // 원근 변환 기반 타겟 셀 크롭 좌표 정밀 계산
                 val u = (c + 0.5f) / cols
                 val v = (r + 0.5f) / rows
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
@@ -839,7 +836,6 @@ class SolverService : Service() {
 
                 val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, cellW, cellH)
                 
-                // 크롭된 비트맵 파일 저장 및 OpenCV 리스트 동적 추가
                 saveBitmapToFile(cellBitmap, "grabbed_obstacle")
                 
                 cellBitmap.recycle()
@@ -1337,8 +1333,6 @@ class SolverService : Service() {
                             val (r, c) = cell
                             if (r in 0 until rows && c in 0 until cols) {
                                 if (isImageGrabberMode) {
-                                    // 🛠️ [버그 해결 장치 가동]
-                                    // 유저가 격자를 누른 순간 동기화 락을 걸고 단발성 전용 독립 크롭 연산을 호출합니다.
                                     if (!isGrabberProcessing) {
                                         isGrabberProcessing = true
                                         grabbedRow = r
