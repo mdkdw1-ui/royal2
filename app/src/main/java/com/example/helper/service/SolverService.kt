@@ -33,7 +33,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -73,6 +75,12 @@ private data class TempMove(
     val fiveMatchCells: List<Pair<Int, Int>> = emptyList()
 )
 
+// 개별 기믹 관리를 위한 데이터 클래스
+private data class GimmickItem(
+    val file: File,
+    val index: Int
+)
+
 class SolverService : Service() {
 
     private val TAG = "GridHelper_Service"
@@ -89,6 +97,7 @@ class SolverService : Service() {
     
     private var floatingControlView: LinearLayout? = null 
     private var visualOverlayView: VisualOverlayView? = null 
+    private var gimmickManagerView: View? = null // 기믹 관리자 팝업 뷰
 
     private var floatParams: WindowManager.LayoutParams? = null
 
@@ -128,6 +137,7 @@ class SolverService : Service() {
     private var lastGrabberActivationTime = 0L
     
     private val dynamicTemplates = mutableListOf<Mat>()
+    private val dynamicTemplateFiles = mutableListOf<File>() // 파일 매핑용 리스트 추가
     private var isOpenCVInitialized = false
 
     inner class SolverBinder : Binder() {
@@ -181,13 +191,14 @@ class SolverService : Service() {
         synchronized(dynamicTemplates) {
             dynamicTemplates.forEach { it.release() }
             dynamicTemplates.clear()
+            dynamicTemplateFiles.clear()
         }
 
         try {
             val dir = getExternalFilesDir("captures")
             if (dir != null && dir.exists()) {
                 val files = dir.listFiles { _, name -> name.endsWith(".png") }
-                files?.forEach { file ->
+                files?.sortedBy { it.lastModified() }?.forEach { file ->
                     val bitmap = BitmapFactory.decodeFile(file.absolutePath)
                     if (bitmap != null) {
                         val mat = Mat()
@@ -196,6 +207,7 @@ class SolverService : Service() {
                         
                         synchronized(dynamicTemplates) {
                             dynamicTemplates.add(mat)
+                            dynamicTemplateFiles.add(file)
                         }
                         bitmap.recycle()
                         Log.d(TAG, "기믹 로드 완료: ${file.name}")
@@ -226,6 +238,7 @@ class SolverService : Service() {
             
             synchronized(dynamicTemplates) {
                 dynamicTemplates.add(newMat)
+                dynamicTemplateFiles.add(file)
             }
             
             showToastOnMainThread("📸 기믹 실시간 등록 완료!\n현재 총 기믹 수: ${dynamicTemplates.size}개")
@@ -249,12 +262,40 @@ class SolverService : Service() {
         }
     }
 
+    private fun deleteSingleTemplate(file: File) {
+        backgroundHandler?.post {
+            try {
+                synchronized(dynamicTemplates) {
+                    val idx = dynamicTemplateFiles.indexOf(file)
+                    if (idx != -1) {
+                        dynamicTemplates[idx].release()
+                        dynamicTemplates.removeAt(idx)
+                        dynamicTemplateFiles.removeAt(idx)
+                        if (file.exists()) file.delete()
+                        showToastOnMainThread("🗑️ 선택한 기믹이 삭제되었습니다.")
+                    }
+                }
+                mainHandler.post {
+                    refreshFloatingPanelUI()
+                    // 팝업이 열려있는 상태라면 갱신 처리를 위해 다이얼로그 재구축 유도 가능
+                    if (gimmickManagerView != null) {
+                        hideTemplateManagerDialog()
+                        showTemplateManagerDialog()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "개별 기믹 삭제 실패", e)
+            }
+        }
+    }
+
     private fun clearAllDynamicTemplates() {
         backgroundHandler?.post {
             try {
                 synchronized(dynamicTemplates) {
                     dynamicTemplates.forEach { it.release() }
                     dynamicTemplates.clear()
+                    dynamicTemplateFiles.clear()
                 }
                 
                 val dir = getExternalFilesDir("captures")
@@ -264,10 +305,138 @@ class SolverService : Service() {
                 }
                 
                 showToastOnMainThread("🧹 모든 기믹 데이터 초기화 완료!")
-                mainHandler.post { refreshFloatingPanelUI() }
+                mainHandler.post { 
+                    hideTemplateManagerDialog()
+                    refreshFloatingPanelUI() 
+                }
                 visualOverlayView?.invalidate()
             } catch (e: Exception) {
                 Log.e(TAG, "데이터 초기화 에러", e)
+            }
+        }
+    }
+
+    private fun showTemplateManagerDialog() {
+        mainHandler.post {
+            if (gimmickManagerView != null) return@post
+            val context = applicationContext
+
+            val mainLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#FA1E1E1E"))
+                setPadding(30, 30, 30, 30)
+            }
+
+            val tvTitle = TextView(context).apply {
+                text = "📋 등록된 기믹 리스트 (${dynamicTemplateFiles.size}개)"
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, 20)
+            }
+            mainLayout.addView(tvTitle)
+
+            val scrollView = ScrollView(context).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(280), dpToPx(300))
+            }
+
+            val listContainer = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+
+            // 스레드 안전하게 복사본 생성 후 UI 바인딩
+            val currentFiles = synchronized(dynamicTemplates) { ArrayList(dynamicTemplateFiles) }
+
+            if (currentFiles.isEmpty()) {
+                val tvEmpty = TextView(context).apply {
+                    text = "저장된 기믹이 없습니다.\n먼저 기믹 따기를 진행해 주세요."
+                    setTextColor(Color.LTGRAY)
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    setPadding(0, 50, 0, 50)
+                }
+                listContainer.addView(tvEmpty)
+            } else {
+                currentFiles.forEach { file ->
+                    val row = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, 10, 0, 10)
+                    }
+
+                    // 썸네일 이미지 뷰
+                    val ivThumb = ImageView(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(50))
+                        setBackgroundColor(Color.DKGRAY)
+                        setPadding(2, 2, 2, 2)
+                        try {
+                            val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+                            setImageBitmap(bitmap)
+                        } catch (e: Exception) {
+                            setImageResource(android.R.drawable.ic_menu_report_image)
+                        }
+                    }
+                    row.addView(ivThumb)
+
+                    // 파일명 정보 텍스트
+                    val tvInfo = TextView(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            setMargins(20, 0, 20, 0)
+                        }
+                        text = file.name.substringAfter("grabbed_obstacle_").substringBefore(".png")
+                        setTextColor(Color.WHITE)
+                        textSize = 11f
+                    }
+                    row.addView(tvInfo)
+
+                    // 삭제 버튼
+                    val btnDelete = Button(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(dpToPx(65), dpToPx(35))
+                        text = "삭제"
+                        textSize = 11f
+                        setBackgroundColor(Color.parseColor("#D32F2F"))
+                        setTextColor(Color.WHITE)
+                        setOnClickListener {
+                            deleteSingleTemplate(file)
+                        }
+                    }
+                    row.addView(btnDelete)
+
+                    listContainer.addView(row)
+                }
+            }
+
+            scrollView.addView(listContainer)
+            mainLayout.addView(scrollView)
+
+            val btnClose = Button(context).apply {
+                text = "닫기"
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { hideTemplateManagerDialog() }
+            }
+            mainLayout.addView(btnClose)
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.CENTER
+            }
+
+            gimmickManagerView = mainLayout
+            windowManager.addView(gimmickManagerView, params)
+        }
+    }
+
+    private fun hideTemplateManagerDialog() {
+        mainHandler.post {
+            gimmickManagerView?.let {
+                try { windowManager.removeView(it) } catch (e: Exception) {}
+                gimmickManagerView = null
             }
         }
     }
@@ -505,8 +674,14 @@ class SolverService : Service() {
             }
             view.addView(btnScan)
 
+            // 기믹 관리 기능을 효율적으로 구성하기 위해 가로 병렬 배치 전환
+            val grabberLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+
             val btnGrabberToggle = Button(context).apply {
-                text = "📷 기믹 그림 따기"
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                text = "📷 그림 따기"
                 setBackgroundColor(Color.parseColor("#5A0063"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
@@ -523,7 +698,22 @@ class SolverService : Service() {
                     refreshFloatingPanelUI()
                 }
             }
-            view.addView(btnGrabberToggle)
+            grabberLayout.addView(btnGrabberToggle)
+
+            // 🛠️ 방법 2: 목록 선택 관리자 팝업 실행 버튼 배치
+            val btnManageTemplates = Button(context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(10, 0, 0, 0)
+                }
+                text = "📋 목록 관리"
+                setBackgroundColor(Color.parseColor("#00574B"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    showTemplateManagerDialog()
+                }
+            }
+            grabberLayout.addView(btnManageTemplates)
+            view.addView(grabberLayout)
 
             val btnClearTemplates = Button(context).apply {
                 text = "🧹 기믹 전체 초기화"
@@ -1367,7 +1557,7 @@ class SolverService : Service() {
                             if (abs(ptBL.y - ptBR.y) < magnetThreshold) ptBL.y = ptBR.y
                         }
                         ptBR -> {
-                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptTR.x
+                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptBR.x
                             if (abs(ptBR.y - ptBL.y) < magnetThreshold) ptBR.y = ptBL.y
                         }
                     }
@@ -1393,9 +1583,11 @@ class SolverService : Service() {
 
     override fun onDestroy() {
         stopCapturePipeline()
+        hideTemplateManagerDialog()
         synchronized(dynamicTemplates) {
             dynamicTemplates.forEach { it.release() }
             dynamicTemplates.clear()
+            dynamicTemplateFiles.clear()
         }
         floatingControlView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
         visualOverlayView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
