@@ -715,7 +715,6 @@ class SolverService : Service() {
             imageReader?.setOnImageAvailableListener({ reader ->
                 val image = reader?.acquireLatestImage() ?: return@setOnImageAvailableListener
                 
-                // 🛠️ [해결책] 기믹 따기 모드일 때는 스트림을 소모하지 않고 즉시 닫아서 터치 이벤트 측에 권한을 양보함
                 if (!isCapturing || !isLogicEnabled || isImageGrabberMode) {
                     image.close()
                     return@setOnImageAvailableListener
@@ -796,10 +795,9 @@ class SolverService : Service() {
     private fun processSingleGrabberCrop(r: Int, c: Int) {
         val reader = imageReader ?: return
         backgroundHandler?.post {
-            // 🛠️ [해결책] 스트림 독점 상태이므로 넉넉하게 대기하면서 최신 프레임을 획득
             var image = reader.acquireLatestImage()
             if (image == null) {
-                Thread.sleep(50)
+                try { Thread.sleep(50) } catch (e: Exception) {}
                 image = reader.acquireNextImage()
             }
             if (image == null) {
@@ -818,86 +816,87 @@ class SolverService : Service() {
                 val h = metrics.heightPixels
                 val rowPadding = rowStride - pixelStride * w
 
-                val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888) FullBitmap.copyPixelsFromBuffer(buffer)
+                val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                fullBitmap.copyPixelsFromBuffer(buffer)
 
-                Val u = (c + 0.5f) / cols
-                Val v = (r + 0.5f) / rows
-                Val topX = (1 - u) * ptTL.x + u * ptTR.x
-                Val topY = (1 - u) * ptTL.y + u * ptTR.y
-                Val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                Val bottomY = (1 - u) * ptBL.y + u * ptBR.y 
-                Val targetX = (1 - v) * topX + v * bottomX
-                Val targetY = (1 - v) * topY + v * bottomY
+                val u = (c + 0.5f) / cols
+                val v = (r + 0.5f) / rows
+                val topX = (1 - u) * ptTL.x + u * ptTR.x
+                val topY = (1 - u) * ptTL.y + u * ptTR.y
+                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y 
+                val targetX = (1 - v) * topX + v * bottomX
+                val targetY = (1 - v) * topY + v * bottomY
 
-                Val cellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
-                Val cellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
+                val cellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
+                val cellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
                 
-                Val startX = (targetX - cellW / 2).toInt().coerceIn(0, fullBitmap.width - cellW)
-                Val startY = (targetY - cellH / 2).toInt().coerceIn(0, fullBitmap.height - cellH)
+                val startX = (targetX - cellW / 2).toInt().coerceIn(0, fullBitmap.width - cellW)
+                val startY = (targetY - cellH / 2).toInt().coerceIn(0, fullBitmap.height - cellH)
 
-                Val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, cellW, cellH)
+                val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, cellW, cellH)
                 
-                SaveBitmapToFile(cellBitmap, "grabbed_obstacle")
+                saveBitmapToFile(cellBitmap, "grabbed_obstacle")
                 
-                CellBitmap.recycle()
-                FullBitmap.recycle()
+                cellBitmap.recycle()
+                fullBitmap.recycle()
             } catch (e: Exception) {
                 Log.e(TAG, "기믹 크롭 연산 오류", e)
-                IsGrabberProcessing = false
+                isGrabberProcessing = false
             } finally {
-                Image.close()
+                image.close()
             }
         }
     }
 
-    Private fun findBestMoves(board: Array<Array<BlockColor>>): List<MatchMove> {
-        Val tempMoves = mutableListOf<TempMove>()
-        Val dr = intArrayOf(0, 1) 
-        Val dc = intArrayOf(1, 0)
+    private fun findBestMoves(board: Array<Array<BlockColor>>): List<MatchMove> {
+        val tempMoves = mutableListOf<TempMove>()
+        val dr = intArrayOf(0, 1) 
+        val dc = intArrayOf(1, 0)
 
-        For (r in 0 until rows) {
-            For (c in 0 until cols) {
-                Val color1 = board[r][c]
-                If (color1 == BlockColor.UNKNOWN) continue
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val color1 = board[r][c]
+                if (color1 == BlockColor.UNKNOWN) continue
 
-                For (i in 0 until 2) {
-                    Val nr = r + dr[i]
-                    Val nc = c + dc[i]
+                for (i in 0 until 2) {
+                    val nr = r + dr[i]
+                    val nc = c + dc[i]
 
-                    If (nr in 0 until rows && nc in 0 until cols) {
-                        Val color2 = board[nr][nc]
-                        If (color2 == BlockColor.UNKNOWN || color1 == color2) continue
+                    if (nr in 0 until rows && nc in 0 until cols) {
+                        val color2 = board[nr][nc]
+                        if (color2 == BlockColor.UNKNOWN || color1 == color2) continue
                         
-                        Board[r][c] = color2
-                        Board[nr][nc] = color1
+                        board[r][c] = color2
+                        board[nr][nc] = color1
 
-                        Val match1 = evaluateMatchAt(board, r, c, color2)
-                        Val match2 = evaluateMatchAt(board, nr, nc, color1)
+                        val match1 = evaluateMatchAt(board, r, c, color2)
+                        val match2 = evaluateMatchAt(board, nr, nc, color1)
 
-                        If (match1 != null) {
-                            Val isFive = match1.first == MatchType.DISCO_BALL
-                            Val cells = if (isFive) getFiveMatchCells(board, r, c, color2) else emptyList()
-                            TempMoves.add(TempMove(r, c, nr, nc, color2, match1.first, match1.second, isFive, cells))
+                        if (match1 != null) {
+                            val isFive = match1.first == MatchType.DISCO_BALL
+                            val cells = if (isFive) getFiveMatchCells(board, r, c, color2) else emptyList()
+                            tempMoves.add(TempMove(r, c, nr, nc, color2, match1.first, match1.second, isFive, cells))
                         }
-                        If (match2 != null) {
-                            Val isFive = match2.first == MatchType.DISCO_BALL
-                            Val cells = if (isFive) getFiveMatchCells(board, nr, nc, color1) else emptyList()
-                            TempMoves.add(TempMove(nr, nc, r, c, color1, match2.first, match2.second, isFive, cells))
+                        if (match2 != null) {
+                            val isFive = match2.first == MatchType.DISCO_BALL
+                            val cells = if (isFive) getFiveMatchCells(board, nr, nc, color1) else emptyList()
+                            tempMoves.add(TempMove(nr, nc, r, c, color1, match2.first, match2.second, isFive, cells))
                         }
 
-                        Board[r][c] = color1
-                        Board[nr][nc] = color2
+                        board[r][c] = color1
+                        board[nr][nc] = color2
                     }
                 }
             }
         }
 
-        Return tempMoves
+        return tempMoves
             .sortedByDescending { it.score }
             .distinctBy { "${it.fromRow},${it.fromCol}->${it.toRow},${it.toCol}" }
             .map { temp ->
-                Val korColor = getKoreanColorName(temp.color)
-                Val desc = when (temp.matchType) {
+                val korColor = getKoreanColorName(temp.color)
+                val desc = when (temp.matchType) {
                     MatchType.DISCO_BALL -> "⚡[$korColor 절대강자 OOXOO] 디스코볼 확정 배치! 💣"
                     MatchType.TNT -> "💣 [$korColor TNT] 강력한 폭탄 생성!"
                     MatchType.ROCKET -> "🚀 [$korColor 로켓] 라인 클리어!"
@@ -907,500 +906,500 @@ class SolverService : Service() {
             }
     }
 
-    Private fun evaluateMatchAt(board: Array<Array<BlockColor>>, r: Int, c: Int, color: BlockColor): Pair<MatchType, Int>? {
-        Var hLeft = 0
-        While (c - hLeft - 1 >= 0 && board[r][c - hLeft - 1] == color) hLeft++
-        Var hRight = 0
-        While (c + hRight + 1 < cols && board[r][c + hRight + 1] == color) hRight++
-        Val horizontalCount = hLeft + hRight + 1
+    private fun evaluateMatchAt(board: Array<Array<BlockColor>>, r: Int, c: Int, color: BlockColor): Pair<MatchType, Int>? {
+        var hLeft = 0
+        while (c - hLeft - 1 >= 0 && board[r][c - hLeft - 1] == color) hLeft++
+        var hRight = 0
+        while (c + hRight + 1 < cols && board[r][c + hRight + 1] == color) hRight++
+        val horizontalCount = hLeft + hRight + 1
 
-        Var vUp = 0
-        While (r - vUp - 1 >= 0 && board[r - vUp - 1][c] == color) vUp++
-        Var vDown = 0
-        While (r + vDown + 1 < rows && board[r + vDown + 1][c] == color) vDown++
-        Val verticalCount = vUp + vDown + 1
+        var vUp = 0
+        while (r - vUp - 1 >= 0 && board[r - vUp - 1][c] == color) vUp++
+        var vDown = 0
+        while (r + vDown + 1 < rows && board[r + vDown + 1][c] == color) vDown++
+        val verticalCount = vUp + vDown + 1
 
-        Val hasHorizontalMatch = horizontalCount >= 3
-        Val hasVerticalMatch = verticalCount >= 3
+        val hasHorizontalMatch = horizontalCount >= 3
+        val hasVerticalMatch = verticalCount >= 3
 
-        If (!hasHorizontalMatch && !hasVerticalMatch) return null
+        if (!hasHorizontalMatch && !hasVerticalMatch) return null
 
-        Return when {
-            HorizontalCount >= 5 || verticalCount >= 5 -> Pair(MatchType.DISCO_BALL, 1000)
-            HasHorizontalMatch && hasVerticalMatch -> Pair(MatchType.TNT, 500)
-            HorizontalCount == 4 || verticalCount == 4 -> Pair(MatchType.ROCKET, 300)
-            Else -> Pair(MatchType.NORMAL_3, 100)
+        return when {
+            horizontalCount >= 5 || verticalCount >= 5 -> Pair(MatchType.DISCO_BALL, 1000)
+            hasHorizontalMatch && hasVerticalMatch -> Pair(MatchType.TNT, 500)
+            horizontalCount == 4 || verticalCount == 4 -> Pair(MatchType.ROCKET, 300)
+            else -> Pair(MatchType.NORMAL_3, 100)
         }
     }
 
-    Private fun getFiveMatchCells(board: Array<Array<BlockColor>>, r: Int, c: Int, color: BlockColor): List<Pair<Int, Int>> {
-        Val cells = mutableListOf<Pair<Int, Int>>()
+    private fun getFiveMatchCells(board: Array<Array<BlockColor>>, r: Int, c: Int, color: BlockColor): List<Pair<Int, Int>> {
+        val cells = mutableListOf<Pair<Int, Int>>()
         
-        Var hLeft = 0
-        While (c - hLeft - 1 >= 0 && board[r][c - hLeft - 1] == color) hLeft++
-        Var hRight = 0
-        While (c + hRight + 1 < cols && board[r][c + hRight + 1] == color) hRight++
-        Val horizontalCount = hLeft + hRight + 1
+        var hLeft = 0
+        while (c - hLeft - 1 >= 0 && board[r][c - hLeft - 1] == color) hLeft++
+        var hRight = 0
+        while (c + hRight + 1 < cols && board[r][c + hRight + 1] == color) hRight++
+        val horizontalCount = hLeft + hRight + 1
 
-        Var vUp = 0
-        While (r - vUp - 1 >= 0 && board[r - vUp - 1][c] == color) vUp++
-        Var vDown = 0
-        While (r + vDown + 1 < rows && board[r + vDown + 1][c] == color) vDown++
-        Val verticalCount = vUp + vDown + 1
+        var vUp = 0
+        while (r - vUp - 1 >= 0 && board[r - vUp - 1][c] == color) vUp++
+        var vDown = 0
+        while (r + vDown + 1 < rows && board[r + vDown + 1][c] == color) vDown++
+        val verticalCount = vUp + vDown + 1
 
-        If (horizontalCount >= 5) {
-            For (offset in -hLeft..hRight) {
-                Cells.add(Pair(r, c + offset))
+        if (horizontalCount >= 5) {
+            for (offset in -hLeft..hRight) {
+                cells.add(Pair(r, c + offset))
             }
         } else if (verticalCount >= 5) {
-            For (offset in -vUp..vDown) {
-                Cells.add(Pair(r + offset, c))
+            for (offset in -vUp..vDown) {
+                cells.add(Pair(r + offset, c))
             }
         }
-        Return cells
+        return cells
     }
 
-    Private fun analyzeAndSolvePerspective(bitmap: Bitmap): List<MatchMove> {
-        Val width = bitmap.width
-        Val height = bitmap.height
-        Val pixels = IntArray(width * height)
-        Bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+    private fun analyzeAndSolvePerspective(bitmap: Bitmap): List<MatchMove> {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
-        Val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
+        val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
 
-        Val approxCellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
-        Val approxCellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
+        val approxCellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
+        val approxCellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
 
-        For (r in 0 until rows) {
-            For (c in 0 until cols) {
-                If (disabledCells[r][c]) {
-                    Board[r][c] = BlockColor.UNKNOWN
-                    Continue
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                if (disabledCells[r][c]) {
+                    board[r][c] = BlockColor.UNKNOWN
+                    continue
                 }
 
-                Val u = (c + 0.5f) / cols
-                Val v = (r + 0.5f) / rows
+                val u = (c + 0.5f) / cols
+                val v = (r + 0.5f) / rows
 
-                Val topX = (1 - u) * ptTL.x + u * ptTR.x
-                Val topY = (1 - u) * ptTL.y + u * ptTR.y
-                Val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                Val bottomY = (1 - u) * ptBL.y + u * ptBR.y 
+                val topX = (1 - u) * ptTL.x + u * ptTR.x
+                val topY = (1 - u) * ptTL.y + u * ptTR.y
+                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y 
 
-                Val targetX = (1 - v) * topX + v * bottomX
-                Val targetY = (1 - v) * topY + v * bottomY
+                val targetX = (1 - v) * topX + v * bottomX
+                val targetY = (1 - v) * topY + v * bottomY
 
-                Board[r][c] = identifyCellContent(bitmap, pixels, width, height, targetX, targetY, approxCellW, approxCellH)
+                board[r][c] = identifyCellContent(bitmap, pixels, width, height, targetX, targetY, approxCellW, approxCellH)
             }
         }
-        Return findBestMoves(board)
+        return findBestMoves(board)
     }
 
-    Private fun identifyCellContent(bitmap: Bitmap, pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float, cellW: Int, cellH: Int): BlockColor {
-        Val halfW = cellW / 2
-        Val halfH = cellH / 2
-        Val startX = (centerX - halfW).toInt().coerceIn(0, bitmap.width - cellW)
-        Val startY = (centerY - halfH).toInt().coerceIn(0, bitmap.height - cellH)
+    private fun identifyCellContent(bitmap: Bitmap, pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float, cellW: Int, cellH: Int): BlockColor {
+        val halfW = cellW / 2
+        val halfH = cellH / 2
+        val startX = (centerX - halfW).toInt().coerceIn(0, bitmap.width - cellW)
+        val startY = (centerY - halfH).toInt().coerceIn(0, bitmap.height - cellH)
         
-        Try {
-            Val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, cellW, cellH)
-            Val isObstacle = checkObstacleWithOpenCV(cellBitmap)
-            CellBitmap.recycle()
+        try {
+            val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, cellW, cellH)
+            val isObstacle = checkObstacleWithOpenCV(cellBitmap)
+            cellBitmap.recycle()
             
-            If (isObstacle != ObstacleType.NONE) {
-                Return BlockColor.UNKNOWN
+            if (isObstacle != ObstacleType.NONE) {
+                return BlockColor.UNKNOWN
             }
         } catch (e: Exception) {}
 
-        Return detectNormalBlockColor(pixels, width, height, centerX, centerY)
+        return detectNormalBlockColor(pixels, width, height, centerX, centerY)
     }
 
-    Private fun checkObstacleWithOpenCV(cellBitmap: Bitmap): ObstacleType {
-        If (!isOpenCVInitialized) return ObstacleType.NONE
+    private fun checkObstacleWithOpenCV(cellBitmap: Bitmap): ObstacleType {
+        if (!isOpenCVInitialized) return ObstacleType.NONE
         
-        Val cellMat = Mat()
+        val cellMat = Mat()
         Utils.bitmapToMat(cellBitmap, cellMat)
         Imgproc.cvtColor(cellMat, cellMat, Imgproc.COLOR_RGBA2GRAY)
 
-        Val resultMat = Mat()
-        Var matched = false
+        val resultMat = Mat()
+        var matched = false
 
-        Synchronized(dynamicTemplates) {
-            For (template in dynamicTemplates) {
-                If (cellMat.cols() >= template.cols() && cellMat.rows() >= template.rows()) {
+        synchronized(dynamicTemplates) {
+            for (template in dynamicTemplates) {
+                if (cellMat.cols() >= template.cols() && cellMat.rows() >= template.rows()) {
                     Imgproc.matchTemplate(cellMat, template, resultMat, Imgproc.TM_CCOEFF_NORMED)
-                    Val minMaxLocResult = Core.minMaxLoc(resultMat)
+                    val minMaxLocResult = Core.minMaxLoc(resultMat)
                     
-                    If (minMaxLocResult.maxVal >= 0.80) {
-                        Matched = true
-                        Break
+                    if (minMaxLocResult.maxVal >= 0.80) {
+                        matched = true
+                        break
                     }
                 }
             }
         }
 
-        CellMat.release()
-        ResultMat.release()
-        Return if (matched) ObstacleType.DETECTED_OBSTACLE else ObstacleType.NONE
+        cellMat.release()
+        resultMat.release()
+        return if (matched) ObstacleType.DETECTED_OBSTACLE else ObstacleType.NONE
     }
 
-    Private fun detectNormalBlockColor(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
-        Val radius = 6  
-        Val cX = centerX.toInt()
-        Val cY = centerY.toInt()
-        Var rCnt = 0; var bCnt = 0; var yCnt = 0; var gCnt = 0; var pCnt = 0
-        Var scannedPixels = 0
-        Val hsv = FloatArray(3)
+    private fun detectNormalBlockColor(pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float): BlockColor {
+        val radius = 6  
+        val cX = centerX.toInt()
+        val cY = centerY.toInt()
+        var rCnt = 0; var bCnt = 0; var yCnt = 0; var gCnt = 0; var pCnt = 0
+        var scannedPixels = 0
+        val hsv = FloatArray(3)
 
-        For (y in (cY - radius)..(cY + radius)) {
-            For (x in (cX - radius)..(cX + radius)) {
-                If (x < 0 || x >= width || y < 0 || y >= height) continue
-                Val pixel = pixels[y * width + x]
+        for (y in (cY - radius)..(cY + radius)) {
+            for (x in (cX - radius)..(cX + radius)) {
+                if (x < 0 || x >= width || y < 0 || y >= height) continue
+                val pixel = pixels[y * width + x]
                 Color.colorToHSV(pixel, hsv)
                 
-                ScannedPixels++
-                Val hue = hsv[0]
-                Val sat = hsv[1]
-                Val valValue = hsv[2]
+                scannedPixels++
+                val hue = hsv[0]
+                val sat = hsv[1]
+                val valValue = hsv[2]
 
-                If (sat < 0.35f || valValue < 0.35f) continue
+                if (sat < 0.35f || valValue < 0.35f) continue
                 
-                When {
+                when {
                     (hue in 0f..20f) || (hue in 340f..360f) -> rCnt++
-                    Hue in 42f..62f -> yCnt++   
-                    Hue in 63f..144f -> gCnt++
-                    Hue in 145f..250f -> bCnt++ 
-                    Hue in 251f..339f -> pCnt++
+                    hue in 42f..62f -> yCnt++   
+                    hue in 63f..144f -> gCnt++
+                    hue in 145f..250f -> bCnt++ 
+                    hue in 251f..339f -> pCnt++
                 }
             }
         }
 
-        If (scannedPixels == 0) return BlockColor.UNKNOWN
+        if (scannedPixels == 0) return BlockColor.UNKNOWN
 
-        Val threshold = (scannedPixels * 0.25f).toInt().coerceAtLeast(20)
-        Val maxMap = mapOf(
+        val threshold = (scannedPixels * 0.25f).toInt().coerceAtLeast(20)
+        val maxMap = mapOf(
             BlockColor.RED to rCnt, BlockColor.BLUE to bCnt, 
             BlockColor.YELLOW to yCnt, BlockColor.GREEN to gCnt, BlockColor.PURPLE to pCnt
         )
 
-        Val best = maxMap.filter { it.value > threshold }.maxByOrNull { it.value }
-        Return best?.key ?: BlockColor.UNKNOWN
+        val best = maxMap.filter { it.value > threshold }.maxByOrNull { it.value }
+        return best?.key ?: BlockColor.UNKNOWN
     }
 
-    Private fun getKoreanColorName(color: BlockColor): String {
-        Return when(color) {
+    private fun getKoreanColorName(color: BlockColor): String {
+        return when(color) {
             BlockColor.RED -> "빨강"; BlockColor.BLUE -> "파랑"; BlockColor.YELLOW -> "노랑"
             BlockColor.GREEN -> "초록"; BlockColor.PURPLE -> "보라"; else -> "미정"
         }
     }
 
-    Private fun savePreferences() {
-        Val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
-        Val prefix = "${rows}x${cols}_" 
+    private fun savePreferences() {
+        val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
+        val prefix = "${rows}x${cols}_" 
         
-        Prefs.edit().apply {
-            PutInt("rows", rows)
-            PutInt("cols", cols)
-            PutBoolean("isGridVisible", isGridVisible)
+        prefs.edit().apply {
+            putInt("rows", rows)
+            putInt("cols", cols)
+            putBoolean("isGridVisible", isGridVisible)
             
-            PutFloat("${prefix}ptTL_x", ptTL.x)
-            PutFloat("${prefix}ptTL_y", ptTL.y)
-            PutFloat("${prefix}ptTR_x", ptTR.x)
-            PutFloat("${prefix}ptTR_y", ptTR.y)
-            PutFloat("${prefix}ptBL_x", ptBL.x)
-            PutFloat("${prefix}ptBL_y", ptBL.y)
-            PutFloat("${prefix}ptBR_x", ptBR.x)
-            PutFloat("${prefix}ptBR_y", ptBR.y)
+            putFloat("${prefix}ptTL_x", ptTL.x)
+            putFloat("${prefix}ptTL_y", ptTL.y)
+            putFloat("${prefix}ptTR_x", ptTR.x)
+            putFloat("${prefix}ptTR_y", ptTR.y)
+            putFloat("${prefix}ptBL_x", ptBL.x)
+            putFloat("${prefix}ptBL_y", ptBL.y)
+            putFloat("${prefix}ptBR_x", ptBR.x)
+            putFloat("${prefix}ptBR_y", ptBR.y)
             
-            Val sb = StringBuilder()
-            For (r in 0 until 20) {
-                For (c in 0 until 20) {
-                    If (disabledCells[r][c]) {
-                        Sb.append("$r,$c;")
+            val sb = StringBuilder()
+            for (r in 0 until 20) {
+                for (c in 0 until 20) {
+                    if (disabledCells[r][c]) {
+                        sb.append("$r,$c;")
                     }
                 }
             }
-            PutString("${prefix}disabledCells", sb.toString())
-            Apply()
+            putString("${prefix}disabledCells", sb.toString())
+            apply()
         }
     }
 
-    Private fun loadPreferences() {
-        Val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
-        Val metrics = resources.displayMetrics
-        Val w = metrics.widthPixels.toFloat()
-        Val h = metrics.heightPixels.toFloat()
+    private fun loadPreferences() {
+        val prefs = getSharedPreferences("GridHelperPrefs", Context.MODE_PRIVATE)
+        val metrics = resources.displayMetrics
+        val w = metrics.widthPixels.toFloat()
+        val h = metrics.heightPixels.toFloat()
 
-        Rows = prefs.getInt("rows", 11)
-        Cols = prefs.getInt("cols", 9)
-        IsGridVisible = prefs.getBoolean("isGridVisible", true)
+        rows = prefs.getInt("rows", 11)
+        cols = prefs.getInt("cols", 9)
+        isGridVisible = prefs.getBoolean("isGridVisible", true)
 
-        Val prefix = "${rows}x${cols}_"
+        val prefix = "${rows}x${cols}_"
 
-        PtTL.set(prefs.getFloat("${prefix}ptTL_x", w * 0.05f), prefs.getFloat("${prefix}ptTL_y", h * 0.25f))
-        PtTR.set(prefs.getFloat("${prefix}ptTR_x", w * 0.95f), prefs.getFloat("${prefix}ptTR_y", h * 0.25f))
-        PtBL.set(prefs.getFloat("${prefix}ptBL_x", w * 0.05f), prefs.getFloat("${prefix}ptBL_y", h * 0.75f))
-        PtBR.set(prefs.getFloat("${prefix}ptBR_x", w * 0.95f), prefs.getFloat("${prefix}ptBR_y", h * 0.75f))
+        ptTL.set(prefs.getFloat("${prefix}ptTL_x", w * 0.05f), prefs.getFloat("${prefix}ptTL_y", h * 0.25f))
+        ptTR.set(prefs.getFloat("${prefix}ptTR_x", w * 0.95f), prefs.getFloat("${prefix}ptTR_y", h * 0.25f))
+        ptBL.set(prefs.getFloat("${prefix}ptBL_x", w * 0.05f), prefs.getFloat("${prefix}ptBL_y", h * 0.75f))
+        ptBR.set(prefs.getFloat("${prefix}ptBR_x", w * 0.95f), prefs.getFloat("${prefix}ptBR_y", h * 0.75f))
         
-        For (r in 0 until 20) {
-            For (c in 0 until 20) {
-                DisabledCells[r][c] = false
+        for (r in 0 until 20) {
+            for (c in 0 until 20) {
+                disabledCells[r][c] = false
             }
         }
-        Val disabledStr = prefs.getString("${prefix}disabledCells", "") ?: ""
-        If (disabledStr.isNotEmpty()) {
-            Val tokens = disabledStr.split(";")
-            For (token in tokens) {
-                If (token.isNotEmpty()) {
-                    Val parts = token.split(",")
-                    If (parts.size == 2) {
-                        Val r = parts[0].toIntOrNull()
-                        Val c = parts[1].toIntOrNull()
-                        If (r != null && c != null && r < 20 && c < 20) {
-                            DisabledCells[r][c] = true
+        val disabledStr = prefs.getString("${prefix}disabledCells", "") ?: ""
+        if (disabledStr.isNotEmpty()) {
+            val tokens = disabledStr.split(";")
+            for (token in tokens) {
+                if (token.isNotEmpty()) {
+                    val parts = token.split(",")
+                    if (parts.size == 2) {
+                        val r = parts[0].toIntOrNull()
+                        val c = parts[1].toIntOrNull()
+                        if (r != null && c != null && r < 20 && c < 20) {
+                            disabledCells[r][c] = true
                         }
                     }
                 }
             }
         }
-        ActiveCorner = ptTL
+        activeCorner = ptTL
     }
 
-    Inner class VisualOverlayView(context: Context) : View(context) {
-        Private val linePaint = Paint().apply { color = Color.parseColor("#8000FF00"); style = Paint.Style.STROKE; strokeWidth = 3f }
-        Private val handlePaint = Paint().apply { color = Color.parseColor("#FF00DF"); style = Paint.Style.FILL }
-        Private val activeHandlePaint = Paint().apply { color = Color.YELLOW; style = Paint.Style.FILL }
-        Private val strokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 5f }
+    inner class VisualOverlayView(context: Context) : View(context) {
+        private val linePaint = Paint().apply { color = Color.parseColor("#8000FF00"); style = Paint.Style.STROKE; strokeWidth = 3f }
+        private val handlePaint = Paint().apply { color = Color.parseColor("#FF00DF"); style = Paint.Style.FILL }
+        private val activeHandlePaint = Paint().apply { color = Color.YELLOW; style = Paint.Style.FILL }
+        private val strokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 5f }
         
-        Private val highlightPaint = Paint().apply { color = Color.parseColor("#80FFFF00"); style = Paint.Style.FILL }
+        private val highlightPaint = Paint().apply { color = Color.parseColor("#80FFFF00"); style = Paint.Style.FILL }
         
-        Private val disabledOverlayPaint = Paint().apply { color = Color.parseColor("#80FF0000"); style = Paint.Style.FILL }
-        Private val disabledLinePaint = Paint().apply { color = Color.RED; strokeWidth = 5f; style = Paint.Style.STROKE }
+        private val disabledOverlayPaint = Paint().apply { color = Color.parseColor("#80FF0000"); style = Paint.Style.FILL }
+        private val disabledLinePaint = Paint().apply { color = Color.RED; strokeWidth = 5f; style = Paint.Style.STROKE }
 
-        Private var currentMoves = listOf<MatchMove>()
-        Private var selectedCorner: PointF? = null
-        Private val touchRadius = 70f
-        Private val magnetThreshold = 12f 
+        private var currentMoves = listOf<MatchMove>()
+        private var selectedCorner: PointF? = null
+        private val touchRadius = 70f
+        private val magnetThreshold = 12f 
 
-        Fun updateMoves(moves: List<MatchMove>) {
-            This.currentMoves = moves
-            Invalidate()
+        fun updateMoves(moves: List<MatchMove>) {
+            this.currentMoves = moves
+            invalidate()
         }
 
-        Private fun getCellCornerX(r: Int, c: Int): Float {
-            Val u = c.toFloat() / cols
-            Val v = r.toFloat() / rows
-            Val topX = (1 - u) * ptTL.x + u * ptTR.x
-            Val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-            Return (1 - v) * topX + v * bottomX
+        private fun getCellCornerX(r: Int, c: Int): Float {
+            val u = c.toFloat() / cols
+            val v = r.toFloat() / rows
+            val topX = (1 - u) * ptTL.x + u * ptTR.x
+            val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+            return (1 - v) * topX + v * bottomX
         }
 
-        Private fun getCellCornerY(r: Int, c: Int): Float {
-            Val u = c.toFloat() / cols
-            Val v = r.toFloat() / rows
-            Val topY = (1 - u) * ptTL.y + u * ptTR.y
-            Val bottomY = (1 - u) * ptBL.y + u * ptBR.y
-            Return (1 - v) * topY + v * bottomY
+        private fun getCellCornerY(r: Int, c: Int): Float {
+            val u = c.toFloat() / cols
+            val v = r.toFloat() / rows
+            val topY = (1 - u) * ptTL.y + u * ptTR.y
+            val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+            return (1 - v) * topY + v * bottomY
         }
 
-        Override fun onDraw(canvas: Canvas) {
-            Super.onDraw(canvas)
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
 
-            If (isGridVisible || isCalibrationMode) {
-                For (i in 0..cols) {
-                    Val ratio = i.toFloat() / cols
-                    Val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
-                    Val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
-                    Val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
-                    Val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
-                    Canvas.drawLine(topX, topY, botX, botY, linePaint)
+            if (isGridVisible || isCalibrationMode) {
+                for (i in 0..cols) {
+                    val ratio = i.toFloat() / cols
+                    val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
+                    val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
+                    val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
+                    val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
+                    canvas.drawLine(topX, topY, botX, botY, linePaint)
                 }
-                For (j in 0..rows) {
-                    Val ratio = j.toFloat() / rows
-                    Val leftX = (1 - ratio) * ptTL.x + ratio * ptBL.x
-                    Val leftY = (1 - ratio) * ptTL.y + ratio * ptBL.y
-                    Val rightX = (1 - ratio) * ptTR.x + ratio * ptBR.x
-                    Val rightY = (1 - ratio) * ptTR.y + ratio * ptBR.y
-                    Canvas.drawLine(leftX, leftY, rightX, rightY, linePaint)
+                for (j in 0..rows) {
+                    val ratio = j.toFloat() / rows
+                    val leftX = (1 - ratio) * ptTL.x + ratio * ptBL.x
+                    val leftY = (1 - ratio) * ptTL.y + ratio * ptBL.y
+                    val rightX = (1 - ratio) * ptTR.x + ratio * ptBR.x
+                    val rightY = (1 - ratio) * ptTR.y + ratio * ptBR.y
+                    canvas.drawLine(leftX, leftY, rightX, rightY, linePaint)
                 }
 
-                For (r in 0 until rows) {
-                    For (c in 0 until cols) {
-                        If (disabledCells[r][c]) {
-                            Val xTL = getCellCornerX(r, c)
-                            Val yTL = getCellCornerY(r, c)
-                            Val xTR = getCellCornerX(r, c + 1)
-                            Val yTR = getCellCornerY(r, c + 1)
-                            Val xBL = getCellCornerX(r + 1, c)
-                            Val yBL = getCellCornerY(r + 1, c)
-                            Val xBR = getCellCornerX(r + 1, c + 1)
-                            Val yBR = getCellCornerY(r + 1, c + 1)
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        if (disabledCells[r][c]) {
+                            val xTL = getCellCornerX(r, c)
+                            val yTL = getCellCornerY(r, c)
+                            val xTR = getCellCornerX(r, c + 1)
+                            val yTR = getCellCornerY(r, c + 1)
+                            val xBL = getCellCornerX(r + 1, c)
+                            val yBL = getCellCornerY(r + 1, c)
+                            val xBR = getCellCornerX(r + 1, c + 1)
+                            val yBR = getCellCornerY(r + 1, c + 1)
 
-                            Canvas.drawLine(xTL, yTL, xBR, yBR, disabledLinePaint)
-                            Canvas.drawLine(xTR, yTR, xBL, yBL, disabledLinePaint)
+                            canvas.drawLine(xTL, yTL, xBR, yBR, disabledLinePaint)
+                            canvas.drawLine(xTR, yTR, xBL, yBL, disabledLinePaint)
 
-                            Val cX = (xTL + xBR) / 2
-                            Val cY = (yTL + yBR) / 2
-                            Canvas.drawCircle(cX, cY, 15f, disabledOverlayPaint)
+                            val cX = (xTL + xBR) / 2
+                            val cY = (yTL + yBR) / 2
+                            canvas.drawCircle(cX, cY, 15f, disabledOverlayPaint)
                         }
                     }
                 }
             }
 
-            If (isCalibrationMode) {
-                Fun drawHandle(corner: PointF, isActive: Boolean) {
-                    Canvas.drawCircle(corner.x, corner.y, 30f, if (isActive) activeHandlePaint else handlePaint)
-                    Canvas.drawCircle(corner.x, corner.y, 30f, strokePaint)
+            if (isCalibrationMode) {
+                fun drawHandle(corner: PointF, isActive: Boolean) {
+                    canvas.drawCircle(corner.x, corner.y, 30f, if (isActive) activeHandlePaint else handlePaint)
+                    canvas.drawCircle(corner.x, corner.y, 30f, strokePaint)
                 }
-                DrawHandle(ptTL, activeCorner == ptTL)
-                DrawHandle(ptTR, activeCorner == ptTR)
-                DrawHandle(ptBL, activeCorner == ptBL)
-                DrawHandle(ptBR, activeCorner == ptBR)
+                drawHandle(ptTL, activeCorner == ptTL)
+                drawHandle(ptTR, activeCorner == ptTR)
+                drawHandle(ptBL, activeCorner == ptBL)
+                drawHandle(ptBR, activeCorner == ptBR)
             }
 
-            If (isLogicEnabled && currentMoves.isNotEmpty()) {
-                Val move = currentMoves.first()
-                If (move.isFiveMatch && move.fiveMatchCells.isNotEmpty()) {
-                    For (cell in move.fiveMatchCells) {
-                        Val r = cell.first
-                        Val c = cell.second
-                        If (r in 0 until rows && c in 0 until cols) {
-                            Val path = android.graphics.Path().apply {
-                                MoveTo(getCellCornerX(r, c), getCellCornerY(r, c))
-                                LineTo(getCellCornerX(r, c + 1), getCellCornerY(r, c + 1))
-                                LineTo(getCellCornerX(r + 1, c + 1), getCellCornerY(r + 1, c + 1))
-                                LineTo(getCellCornerX(r + 1, c), getCellCornerY(r + 1, c))
-                                Close()
+            if (isLogicEnabled && currentMoves.isNotEmpty()) {
+                val move = currentMoves.first()
+                if (move.isFiveMatch && move.fiveMatchCells.isNotEmpty()) {
+                    for (cell in move.fiveMatchCells) {
+                        val r = cell.first
+                        val c = cell.second
+                        if (r in 0 until rows && c in 0 until cols) {
+                            val path = android.graphics.Path().apply {
+                                moveTo(getCellCornerX(r, c), getCellCornerY(r, c))
+                                lineTo(getCellCornerX(r, c + 1), getCellCornerY(r, c + 1))
+                                lineTo(getCellCornerX(r + 1, c + 1), getCellCornerY(r + 1, c + 1))
+                                lineTo(getCellCornerX(r + 1, c), getCellCornerY(r + 1, c))
+                                close()
                             }
-                            Canvas.drawPath(path, highlightPaint)
+                            canvas.drawPath(path, highlightPaint)
                         }
                     }
                 }
             }
         }
 
-        Private fun findTappedCell(x: Float, y: Float): Pair<Int, Int>? {
-            Var minDistance = Float.MAX_VALUE
-            Var bestCell: Pair<Int, Int>? = null
+        private fun findTappedCell(x: Float, y: Float): Pair<Int, Int>? {
+            var minDistance = Float.MAX_VALUE
+            var bestCell: Pair<Int, Int>? = null
             
-            For (r in 0 until rows) {
-                For (c in 0 until cols) {
-                    Val u = (c + 0.5f) / cols
-                    Val v = (r + 0.5f) / rows
-                    Val topX = (1 - u) * ptTL.x + u * ptTR.x
-                    Val topY = (1 - u) * ptTL.y + u * ptTR.y
-                    Val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                    Val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+            for (r in 0 until rows) {
+                for (c in 0 until cols) {
+                    val u = (c + 0.5f) / cols
+                    val v = (r + 0.5f) / rows
+                    val topX = (1 - u) * ptTL.x + u * ptTR.x
+                    val topY = (1 - u) * ptTL.y + u * ptTR.y
+                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
 
-                    Val targetX = (1 - v) * topX + v * bottomX
-                    Val targetY = (1 - v) * topY + v * bottomY
+                    val targetX = (1 - v) * topX + v * bottomX
+                    val targetY = (1 - v) * topY + v * bottomY
                     
-                    Val dist = Math.hypot((x - targetX).toDouble(), (y - targetY).toDouble()).toFloat()
-                    If (dist < minDistance) {
-                        MinDistance = dist
-                        BestCell = Pair(r, c)
+                    val dist = Math.hypot((x - targetX).toDouble(), (y - targetY).toDouble()).toFloat()
+                    if (dist < minDistance) {
+                        minDistance = dist
+                        bestCell = Pair(r, c)
                     }
                 }
             }
-            Return if (minDistance < 150f) bestCell else null
+            return if (minDistance < 150f) bestCell else null
         }
 
-        Override fun onTouchEvent(event: MotionEvent): Boolean {
-            If (!isCalibrationMode && !isImageGrabberMode) return false
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (!isCalibrationMode && !isImageGrabberMode) return false
 
-            If (isImageGrabberMode && (System.currentTimeMillis() - lastGrabberActivationTime < 300)) {
-                Return false
+            if (isImageGrabberMode && (System.currentTimeMillis() - lastGrabberActivationTime < 300)) {
+                return false
             }
 
-            Val x = event.x
-            Val y = event.y
+            val x = event.x
+            val y = event.y
 
-            When (event.action) {
+            when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    SelectedCorner = when {
-                        Abs(x - ptTL.x) < touchRadius && abs(y - ptTL.y) < touchRadius -> ptTL
-                        Abs(x - ptTR.x) < touchRadius && abs(y - ptTR.y) < touchRadius -> ptTR
-                        Abs(x - ptBL.x) < touchRadius && abs(y - ptBL.y) < touchRadius -> ptBL
-                        Abs(x - ptBR.x) < touchRadius && abs(y - ptBR.y) < touchRadius -> ptBR
-                        Else -> null
+                    selectedCorner = when {
+                        abs(x - ptTL.x) < touchRadius && abs(y - ptTL.y) < touchRadius -> ptTL
+                        abs(x - ptTR.x) < touchRadius && abs(y - ptTR.y) < touchRadius -> ptTR
+                        abs(x - ptBL.x) < touchRadius && abs(y - ptBL.y) < touchRadius -> ptBL
+                        abs(x - ptBR.x) < touchRadius && abs(y - ptBR.y) < touchRadius -> ptBR
+                        else -> null
                     }
                     
-                    If (selectedCorner != null) {
-                        ActiveCorner = selectedCorner!!
-                        MainHandler.post { refreshFloatingPanelUI() }
-                        Invalidate()
+                    if (selectedCorner != null) {
+                        activeCorner = selectedCorner!!
+                        mainHandler.post { refreshFloatingPanelUI() }
+                        invalidate()
                     } else {
-                        Val cell = findTappedCell(x, y)
-                        If (cell != null) {
-                            Val (r, c) = cell
-                            If (r in 0 until rows && c in 0 until cols) {
-                                If (isImageGrabberMode) {
-                                    If (!isGrabberProcessing) {
-                                        IsGrabberProcessing = true
-                                        GrabbedRow = r
-                                        GrabbedCol = c
-                                        ProcessSingleGrabberCrop(r, c)
+                        val cell = findTappedCell(x, y)
+                        if (cell != null) {
+                            val (r, c) = cell
+                            if (r in 0 until rows && c in 0 until cols) {
+                                if (isImageGrabberMode) {
+                                    if (!isGrabberProcessing) {
+                                        isGrabberProcessing = true
+                                        grabbedRow = r
+                                        grabbedCol = c
+                                        processSingleGrabberCrop(r, c)
                                     }
                                 } else {
-                                    DisabledCells[r][c] = !disabledCells[r][c]
-                                    SavePreferences()
+                                    disabledCells[r][c] = !disabledCells[r][c]
+                                    savePreferences()
                                 }
-                                Invalidate()
+                                invalidate()
                             }
                         }
                     }
-                    Return selectedCorner != null || findTappedCell(x, y) != null
+                    return selectedCorner != null || findTappedCell(x, y) != null
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    Val corner = selectedCorner ?: return false
-                    Corner.set(x, y)
+                    val corner = selectedCorner ?: return false
+                    corner.set(x, y)
 
-                    When (corner) {
-                        PtTL -> {
-                            If (abs(ptTL.x - ptBL.x) < magnetThreshold) ptTL.x = ptBL.x
-                            If (abs(ptTL.y - ptTR.y) < magnetThreshold) ptTL.y = ptTR.y
+                    when (corner) {
+                        ptTL -> {
+                            if (abs(ptTL.x - ptBL.x) < magnetThreshold) ptTL.x = ptBL.x
+                            if (abs(ptTL.y - ptTR.y) < magnetThreshold) ptTL.y = ptTR.y
                         }
-                        PtTR -> {
-                            If (abs(ptTR.x - ptBR.x) < magnetThreshold) ptTR.x = ptBR.x
-                            If (abs(ptTR.y - ptTL.y) < magnetThreshold) ptTR.y = ptTL.y
+                        ptTR -> {
+                            if (abs(ptTR.x - ptBR.x) < magnetThreshold) ptTR.x = ptBR.x
+                            if (abs(ptTR.y - ptTL.y) < magnetThreshold) ptTR.y = ptTL.y
                         }
-                        PtBL -> {
-                            If (abs(ptBL.x - ptTL.x) < magnetThreshold) ptBL.x = ptTL.x
-                            If (abs(ptBL.y - ptBR.y) < magnetThreshold) ptBL.y = ptBR.y
+                        ptBL -> {
+                            if (abs(ptBL.x - ptTL.x) < magnetThreshold) ptBL.x = ptTL.x
+                            if (abs(ptBL.y - ptBR.y) < magnetThreshold) ptBL.y = ptBR.y
                         }
-                        PtBR -> {
-                            If (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptTR.x
-                            If (abs(ptBR.y - ptBL.y) < magnetThreshold) ptBR.y = ptBL.y
+                        ptBR -> {
+                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptTR.x
+                            if (abs(ptBR.y - ptBL.y) < magnetThreshold) ptBR.y = ptBL.y
                         }
                     }
-                    Invalidate()
-                    Return true
+                    invalidate()
+                    return true
                 }
                 MotionEvent.ACTION_UP -> { selectedCorner = null }
             }
-            Return false
+            return false
         }
     }
 
-    Private fun showToastOnMainThread(message: String) {
-        MainHandler.post { Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show() }
+    private fun showToastOnMainThread(message: String) {
+        mainHandler.post { Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show() }
     }
 
-    Private fun stopCapturePipeline() {
-        IsCapturing = false
-        VirtualDisplay?.release(); virtualDisplay = null
-        ImageReader?.close(); imageReader = null
-        MediaProjection?.stop(); mediaProjection = null
+    private fun stopCapturePipeline() {
+        isCapturing = false
+        virtualDisplay?.release(); virtualDisplay = null
+        imageReader?.close(); imageReader = null
+        mediaProjection?.stop(); mediaProjection = null
     }
 
-    Override fun onDestroy() {
-        StopCapturePipeline()
-        Synchronized(dynamicTemplates) {
-            DynamicTemplates.forEach { it.release() }
-            DynamicTemplates.clear()
+    override fun onDestroy() {
+        stopCapturePipeline()
+        synchronized(dynamicTemplates) {
+            dynamicTemplates.forEach { it.release() }
+            dynamicTemplates.clear()
         }
-        FloatingControlView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
-        VisualOverlayView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
-        BackgroundThread?.quitSafely()
-        Super.onDestroy()
+        floatingControlView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
+        visualOverlayView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
+        backgroundThread?.quitSafely()
+        super.onDestroy()
     }
 }
