@@ -75,7 +75,6 @@ private data class TempMove(
     val fiveMatchCells: List<Pair<Int, Int>> = emptyList()
 )
 
-// 개별 기믹 관리를 위한 데이터 클래스
 private data class GimmickItem(
     val file: File,
     val index: Int
@@ -97,7 +96,7 @@ class SolverService : Service() {
     
     private var floatingControlView: LinearLayout? = null 
     private var visualOverlayView: VisualOverlayView? = null 
-    private var gimmickManagerView: View? = null // 기믹 관리자 팝업 뷰
+    private var gimmickManagerView: View? = null 
 
     private var floatParams: WindowManager.LayoutParams? = null
 
@@ -127,17 +126,15 @@ class SolverService : Service() {
     
     private var activeCorner: PointF = ptTL
 
-    // 📸 Klicker 스타일 실시간 런타임 이미지 캡처 제어 변수
     private var isImageGrabberMode = false 
     private var grabbedRow = -1
     private var grabbedCol = -1
     
-    // 🛠️ 기믹 따기 도중 자동 스캔 파이프라인의 간섭을 막기 위한 동기화 락 필드
     private var isGrabberProcessing = false
     private var lastGrabberActivationTime = 0L
     
     private val dynamicTemplates = mutableListOf<Mat>()
-    private val dynamicTemplateFiles = mutableListOf<File>() // 파일 매핑용 리스트 추가
+    private val dynamicTemplateFiles = mutableListOf<File>() 
     private var isOpenCVInitialized = false
 
     inner class SolverBinder : Binder() {
@@ -277,7 +274,6 @@ class SolverService : Service() {
                 }
                 mainHandler.post {
                     refreshFloatingPanelUI()
-                    // 팝업이 열려있는 상태라면 갱신 처리를 위해 다이얼로그 재구축 유도 가능
                     if (gimmickManagerView != null) {
                         hideTemplateManagerDialog()
                         showTemplateManagerDialog()
@@ -344,7 +340,6 @@ class SolverService : Service() {
                 orientation = LinearLayout.VERTICAL
             }
 
-            // 스레드 안전하게 복사본 생성 후 UI 바인딩
             val currentFiles = synchronized(dynamicTemplates) { ArrayList(dynamicTemplateFiles) }
 
             if (currentFiles.isEmpty()) {
@@ -364,7 +359,6 @@ class SolverService : Service() {
                         setPadding(0, 10, 0, 10)
                     }
 
-                    // 썸네일 이미지 뷰
                     val ivThumb = ImageView(context).apply {
                         layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(50))
                         setBackgroundColor(Color.DKGRAY)
@@ -378,7 +372,6 @@ class SolverService : Service() {
                     }
                     row.addView(ivThumb)
 
-                    // 파일명 정보 텍스트
                     val tvInfo = TextView(context).apply {
                         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                             setMargins(20, 0, 20, 0)
@@ -389,7 +382,6 @@ class SolverService : Service() {
                     }
                     row.addView(tvInfo)
 
-                    // 삭제 버튼
                     val btnDelete = Button(context).apply {
                         layoutParams = LinearLayout.LayoutParams(dpToPx(65), dpToPx(35))
                         text = "삭제"
@@ -674,7 +666,6 @@ class SolverService : Service() {
             }
             view.addView(btnScan)
 
-            // 기믹 관리 기능을 효율적으로 구성하기 위해 가로 병렬 배치 전환
             val grabberLayout = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
             }
@@ -700,7 +691,6 @@ class SolverService : Service() {
             }
             grabberLayout.addView(btnGrabberToggle)
 
-            // 🛠️ 방법 2: 목록 선택 관리자 팝업 실행 버튼 배치
             val btnManageTemplates = Button(context).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     setMargins(10, 0, 0, 0)
@@ -982,6 +972,7 @@ class SolverService : Service() {
         }
     }
 
+    // 🎯 [정밀 보정 완료] 기믹 따기 크롭 좌표 미세오차 및 바깥 테두리 유입 제어 로직 수정본
     private fun processSingleGrabberCrop(r: Int, c: Int) {
         val reader = imageReader ?: return
         backgroundHandler?.post {
@@ -1009,6 +1000,7 @@ class SolverService : Service() {
                 val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 fullBitmap.copyPixelsFromBuffer(buffer)
 
+                // 1. 칸의 중심 좌표를 더욱 정밀하게 보정 연산
                 val u = (c + 0.5f) / cols
                 val v = (r + 0.5f) / rows
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
@@ -1018,13 +1010,20 @@ class SolverService : Service() {
                 val targetX = (1 - v) * topX + v * bottomX
                 val targetY = (1 - v) * topY + v * bottomY
 
+                // 2. 전체 스크린 해상도 대비 현재 격자의 선형 크기 산출
                 val cellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
                 val cellH = ((ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
                 
-                val startX = (targetX - cellW / 2).toInt().coerceIn(0, fullBitmap.width - cellW)
-                val startY = (targetY - cellH / 2).toInt().coerceIn(0, fullBitmap.height - cellH)
+                // 3. 💡 [핵심 해결] 격자 테두리와 바깥 영역이 기믹에 유입되는 것을 방지하기 위해 
+                //    전체 셀 크기 대비 안전 구역 마진(85% 줌인 크롭)을 적용합니다.
+                val cropW = (cellW * 0.85f).toInt().coerceAtLeast(1)
+                val cropH = (cellH * 0.85f).toInt().coerceAtLeast(1)
 
-                val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, cellW, cellH)
+                // 4. 중심 좌표를 기준으로 안전 구역 바운딩 박스 생성
+                val startX = (targetX - cropW / 2).toInt().coerceIn(0, fullBitmap.width - cropW)
+                val startY = (targetY - cropH / 2).toInt().coerceIn(0, fullBitmap.height - cropH)
+
+                val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, cropW, cropH)
                 
                 saveBitmapToFile(cellBitmap, "grabbed_obstacle")
                 
@@ -1557,7 +1556,7 @@ class SolverService : Service() {
                             if (abs(ptBL.y - ptBR.y) < magnetThreshold) ptBL.y = ptBR.y
                         }
                         ptBR -> {
-                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptBR.x
+                            if (abs(ptBR.x - ptTR.x) < magnetThreshold) ptBR.x = ptTR.x
                             if (abs(ptBR.y - ptBL.y) < magnetThreshold) ptBR.y = ptBL.y
                         }
                     }
