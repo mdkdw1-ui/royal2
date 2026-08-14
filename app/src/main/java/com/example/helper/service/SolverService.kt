@@ -34,10 +34,19 @@ class SolverService : Service() {
     private val ptBL = PointF()
     private val ptBR = PointF()
 
+    // 🔥 자동 감지 ON/OFF 플래그 (기본: ON)
+    private var isAutoDetectEnabled = true
+
     private var isCompactMode = true
     private var isGridVisible = true
     private var isCalibrationMode = false
     private var selectedCorner = 0
+
+    // 🔥 드래그용 변수
+    private var dragStartX = 0f
+    private var dragStartY = 0f
+    private var isDragging = false
+    private var draggedCorner = -1
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -129,13 +138,13 @@ class SolverService : Service() {
         autoScanRunnable = null
     }
 
-    // --- 기믹 템플릿 관리 (생략 - 기존과 동일) ---
-    private fun loadTemplatesFromStorage() { /* ... */ }
-    private fun saveGimmickBitmap(bitmap: Bitmap) { /* ... */ }
-    private fun deleteGimmick(file: File) { /* ... */ }
-    private fun clearAllGimmicks() { /* ... */ }
-    private fun showGimmickManager() { /* ... */ }
-    private fun hideGimmickManager() { /* ... */ }
+    // --- 기믹 템플릿 관리 ---
+    private fun loadTemplatesFromStorage() { /* 기존과 동일 */ }
+    private fun saveGimmickBitmap(bitmap: Bitmap) { /* 기존과 동일 */ }
+    private fun deleteGimmick(file: File) { /* 기존과 동일 */ }
+    private fun clearAllGimmicks() { /* 기존과 동일 */ }
+    private fun showGimmickManager() { /* 기존과 동일 */ }
+    private fun hideGimmickManager() { /* 기존과 동일 */ }
 
     private fun startForegroundServiceInternal() {
         val channelId = "OOXOO_Channel"
@@ -156,7 +165,7 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 오버레이 뷰
+    // 🔥 오버레이 뷰 (드래그로 모서리 이동 지원)
     inner class OverlayView(context: Context) : View(context) {
         private var positions = listOf<Pair<Int, Int>>()
         private val circlePaint = Paint().apply { color = Color.RED; style = Paint.Style.FILL; alpha = 180 }
@@ -166,6 +175,7 @@ class SolverService : Service() {
         private val cornerPaint = Paint().apply { color = Color.YELLOW; style = Paint.Style.FILL }
         private val cornerStrokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 4f }
         private val activeCornerPaint = Paint().apply { color = Color.parseColor("#FF00FF"); style = Paint.Style.FILL }
+        private val cornerNamePaint = Paint().apply { color = Color.WHITE; textSize = 18f; textAlign = Paint.Align.CENTER }
 
         fun updatePositions(newPositions: List<Pair<Int, Int>>) {
             this.positions = newPositions
@@ -197,13 +207,12 @@ class SolverService : Service() {
 
             if (isCalibrationMode) {
                 val corners = listOf(ptTL, ptTR, ptBL, ptBR)
+                val names = listOf("좌상", "우상", "좌하", "우하")
                 corners.forEachIndexed { index, corner ->
                     val paint = if (index == selectedCorner) activeCornerPaint else cornerPaint
                     canvas.drawCircle(corner.x, corner.y, 35f, paint)
                     canvas.drawCircle(corner.x, corner.y, 35f, cornerStrokePaint)
-                    val name = when(index) { 0 -> "좌상"; 1 -> "우상"; 2 -> "좌하"; 3 -> "우하"; else -> "" }
-                    val textP = Paint().apply { color = Color.WHITE; textSize = 20f; textAlign = Paint.Align.CENTER }
-                    canvas.drawText(name, corner.x, corner.y - 45f, textP)
+                    canvas.drawText(names[index], corner.x, corner.y - 45f, cornerNamePaint)
                 }
             }
 
@@ -222,21 +231,74 @@ class SolverService : Service() {
             }
         }
 
+        // 🔥 보정 모드 터치: 코너 선택 + 드래그
         override fun onTouchEvent(event: MotionEvent): Boolean {
             if (!isCalibrationMode && !isImageGrabberMode) return false
 
-            if (isCalibrationMode && event.action == MotionEvent.ACTION_DOWN) {
+            if (isCalibrationMode) {
                 val x = event.x; val y = event.y
                 val corners = listOf(ptTL, ptTR, ptBL, ptBR)
-                var minDist = Float.MAX_VALUE; var bestIdx = -1
-                corners.forEachIndexed { idx, corner ->
-                    val dist = Math.hypot((x - corner.x).toDouble(), (y - corner.y).toDouble()).toFloat()
-                    if (dist < minDist && dist < 100f) { minDist = dist; bestIdx = idx }
+
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        // 가장 가까운 코너 찾기
+                        var minDist = Float.MAX_VALUE
+                        var bestIdx = -1
+                        corners.forEachIndexed { idx, corner ->
+                            val dist = Math.hypot((x - corner.x).toDouble(), (y - corner.y).toDouble()).toFloat()
+                            if (dist < minDist && dist < 120f) {
+                                minDist = dist
+                                bestIdx = idx
+                            }
+                        }
+                        if (bestIdx != -1) {
+                            selectedCorner = bestIdx
+                            draggedCorner = bestIdx
+                            isDragging = true
+                            dragStartX = x
+                            dragStartY = y
+                            refreshControlUI()
+                            invalidate()
+                            return true
+                        }
+                        return false
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        if (isDragging && draggedCorner != -1) {
+                            val corner = corners[draggedCorner]
+                            // 드래그 델타만큼 이동
+                            val dx = x - dragStartX
+                            val dy = y - dragStartY
+                            corner.x += dx
+                            corner.y += dy
+
+                            val metrics = resources.displayMetrics
+                            corner.x = corner.x.coerceIn(0f, metrics.widthPixels.toFloat())
+                            corner.y = corner.y.coerceIn(0f, metrics.heightPixels.toFloat())
+
+                            dragStartX = x
+                            dragStartY = y
+                            invalidate()
+                            return true
+                        }
+                        return false
+                    }
+
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (isDragging) {
+                            isDragging = false
+                            draggedCorner = -1
+                            // 드래그 종료 후 자동 저장은 하지 않음 (사용자가 완료 버튼 누를 때 저장)
+                            return true
+                        }
+                        return false
+                    }
                 }
-                if (bestIdx != -1) { selectedCorner = bestIdx; refreshControlUI(); invalidate(); return true }
                 return false
             }
 
+            // 기믹 따기 모드
             if (isImageGrabberMode && !isGrabberProcessing && event.action == MotionEvent.ACTION_DOWN) {
                 val x = event.x; val y = event.y
                 var minDist = Float.MAX_VALUE; var targetRow = -1; var targetCol = -1
@@ -272,7 +334,38 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 컨트롤 패널 (드래그 가능)
+    // 🔥 꾹 누르면 연속 동작하는 리스너
+    private fun setAutoRepeatListener(view: View, action: () -> Unit) {
+        val handler = Handler(Looper.getMainLooper())
+        var runnable: Runnable? = null
+
+        view.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    handler.removeCallbacksAndMessages(null)
+                    runnable = object : Runnable {
+                        override fun run() {
+                            action()
+                            handler.postDelayed(this, 80) // 80ms 간격으로 연속 실행
+                        }
+                    }
+                    action() // 첫 실행
+                    handler.postDelayed(runnable!!, 200) // 200ms 후부터 연속
+                    v.isPressed = true
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacksAndMessages(null)
+                    runnable = null
+                    v.isPressed = false
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    // 🔥 컨트롤 패널
     private fun createControlWindow() {
         mainHandler.post {
             val context = applicationContext
@@ -329,17 +422,26 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 UI 새로고침 (보정 모드일 때는 초미니 패널)
+    // 🔥 UI 새로고침
     private fun refreshControlUI() {
         val view = controlView ?: return
         view.removeAllViews()
         val context = applicationContext
 
         // =========================================================
-        // 🔥🔥🔥 보정 모드 전용 초미니 패널
+        // 보정 모드 전용 초미니 패널
         // =========================================================
         if (isCalibrationMode) {
-            // 코너 선택 라디오 (가로로 배치)
+            // 안내 텍스트
+            TextView(context).apply {
+                text = "📐 코너 드래그 또는 방향키"
+                setTextColor(Color.YELLOW)
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setPadding(0, 2, 0, 2)
+            }.also { view.addView(it) }
+
+            // 코너 선택
             val cornerLayout = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -367,7 +469,7 @@ class SolverService : Service() {
             cornerLayout.addView(radioGroup)
             view.addView(cornerLayout)
 
-            // 방향키 (D-Pad) - 작게
+            // 방향키 (꾹 누르면 연속 이동)
             val dpadLayout = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
@@ -378,7 +480,7 @@ class SolverService : Service() {
                 text = "▲"; textSize = 12f
                 layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(32))
                 setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE)
-                setOnClickListener { moveCorner(0f, -5f) }
+                setAutoRepeatListener(this) { moveCorner(0f, -5f) }
             }.also { rowUp.addView(it) }
             dpadLayout.addView(rowUp)
 
@@ -387,14 +489,14 @@ class SolverService : Service() {
                 text = "◀"; textSize = 12f
                 layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(32))
                 setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE)
-                setOnClickListener { moveCorner(-5f, 0f) }
+                setAutoRepeatListener(this) { moveCorner(-5f, 0f) }
             }.also { rowMid.addView(it) }
             View(context).apply { layoutParams = LinearLayout.LayoutParams(dpToPx(20), dpToPx(32)) }.also { rowMid.addView(it) }
             Button(context).apply {
                 text = "▶"; textSize = 12f
                 layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(32))
                 setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE)
-                setOnClickListener { moveCorner(5f, 0f) }
+                setAutoRepeatListener(this) { moveCorner(5f, 0f) }
             }.also { rowMid.addView(it) }
             dpadLayout.addView(rowMid)
 
@@ -403,12 +505,12 @@ class SolverService : Service() {
                 text = "▼"; textSize = 12f
                 layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(32))
                 setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE)
-                setOnClickListener { moveCorner(0f, 5f) }
+                setAutoRepeatListener(this) { moveCorner(0f, 5f) }
             }.also { rowDown.addView(it) }
             dpadLayout.addView(rowDown)
             view.addView(dpadLayout)
 
-            // 하단 버튼들 (완료/자동감지/초기화) - 가로로 작게
+            // 하단 버튼들
             val btnRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -453,21 +555,11 @@ class SolverService : Service() {
                 layoutParams = LinearLayout.LayoutParams(0, dpToPx(32), 1f).apply { setMargins(2, 0, 2, 0) }
                 setBackgroundColor(Color.parseColor("#FF8C00"))
                 setTextColor(Color.WHITE)
-                setOnClickListener {
-                    val metrics = resources.displayMetrics
-                    val w = metrics.widthPixels.toFloat(); val h = metrics.heightPixels.toFloat()
-                    ptTL.set(w * 0.15f, h * 0.20f)
-                    ptTR.set(w * 0.85f, h * 0.20f)
-                    ptBL.set(w * 0.15f, h * 0.80f)
-                    ptBR.set(w * 0.85f, h * 0.80f)
-                    overlayView?.invalidate()
-                    Toast.makeText(context, "초기화 완료", Toast.LENGTH_SHORT).show()
-                }
+                setOnClickListener { resetCorners() }
             }.also { btnRow.addView(it) }
 
             view.addView(btnRow)
 
-            // 취소 버튼 (보정 모드 나가기)
             Button(context).apply {
                 text = "❌ 취소"
                 textSize = 10f
@@ -480,7 +572,7 @@ class SolverService : Service() {
                         p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                         windowManager.updateViewLayout(it, p)
                     }
-                    loadPreferences() // 저장된 값으로 복원
+                    loadPreferences()
                     refreshControlUI()
                     overlayView?.invalidate()
                     Toast.makeText(context, "보정 취소됨", Toast.LENGTH_SHORT).show()
@@ -494,7 +586,7 @@ class SolverService : Service() {
         }
 
         // =========================================================
-        // 일반 모드 (간이 / 확장)
+        // 일반 모드
         // =========================================================
         val topRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -522,9 +614,9 @@ class SolverService : Service() {
 
         val statusText = if (isAutoScanEnabled) "🔄 자동 ON (1초)" else "⏸️ OFF"
         TextView(context).apply {
-            text = "$statusText | 발견: ${foundPositions.size}개"
+            text = "$statusText | 발견: ${foundPositions.size}개 | 자동격자: ${if (isAutoDetectEnabled) "ON" else "OFF"}"
             setTextColor(if (isAutoScanEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
-            textSize = 12f
+            textSize = 11f
             setPadding(0, 5, 0, 5)
         }.also { view.addView(it) }
 
@@ -540,6 +632,7 @@ class SolverService : Service() {
         }
 
         // --- 확장 모드 ---
+        // 크기 조정
         val sizeRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -566,6 +659,7 @@ class SolverService : Service() {
         }
         view.addView(sizeRow)
 
+        // 자동 스캔 토글
         Button(context).apply {
             text = if (isAutoScanEnabled) "⏸️ 자동 중지" else "▶️ 자동 시작"
             setBackgroundColor(if (isAutoScanEnabled) Color.parseColor("#D32F2F") else Color.parseColor("#4CAF50"))
@@ -578,6 +672,19 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 🔥 자동 격자 감지 토글 (새로 추가)
+        Button(context).apply {
+            text = if (isAutoDetectEnabled) "📐 자동격자: ON" else "📐 자동격자: OFF"
+            setBackgroundColor(if (isAutoDetectEnabled) Color.parseColor("#007F0E") else Color.parseColor("#444444"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                isAutoDetectEnabled = !isAutoDetectEnabled
+                Toast.makeText(context, if (isAutoDetectEnabled) "자동 격자 감지 ON" else "자동 격자 감지 OFF (수동 유지)", Toast.LENGTH_SHORT).show()
+                refreshControlUI()
+            }
+        }.also { view.addView(it) }
+
+        // 격자 보기 토글
         Button(context).apply {
             text = if (isGridVisible) "🌐 격자: 보임" else "🌐 격자: 숨김"
             setBackgroundColor(if (isGridVisible) Color.parseColor("#007F0E") else Color.parseColor("#444444"))
@@ -589,7 +696,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
-        // 보정 모드 진입 버튼
+        // 보정 모드 진입
         Button(context).apply {
             text = "📐 격자 보정"
             setBackgroundColor(Color.parseColor("#444444"))
@@ -602,12 +709,13 @@ class SolverService : Service() {
                     windowManager.updateViewLayout(it, p)
                 }
                 if (isImageGrabberMode) { isImageGrabberMode = false; isGrabberProcessing = false }
-                Toast.makeText(context, "📐 보정 모드 (미니 패널)", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "📐 보정 모드 (코너 드래그 가능)", Toast.LENGTH_LONG).show()
                 refreshControlUI()
                 overlayView?.invalidate()
             }
         }.also { view.addView(it) }
 
+        // 기믹 따기
         Button(context).apply {
             text = if (isImageGrabberMode) "❌ 기믹 취소" else "📷 기믹 따기"
             setBackgroundColor(if (isImageGrabberMode) Color.parseColor("#D32F2F") else Color.parseColor("#5A0063"))
@@ -634,6 +742,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 기믹 목록
         Button(context).apply {
             text = "📋 기믹 목록 (${dynamicTemplateFiles.size})"
             setBackgroundColor(Color.parseColor("#00574B"))
@@ -641,6 +750,7 @@ class SolverService : Service() {
             setOnClickListener { showGimmickManager() }
         }.also { view.addView(it) }
 
+        // 종료
         Button(context).apply {
             text = "❌ 종료"
             setBackgroundColor(Color.RED)
@@ -653,6 +763,7 @@ class SolverService : Service() {
         }
     }
 
+    // 🔥 코너 이동 (방향키)
     private fun moveCorner(dx: Float, dy: Float) {
         val corner = when (selectedCorner) {
             0 -> ptTL; 1 -> ptTR; 2 -> ptBL; 3 -> ptBR
@@ -663,6 +774,18 @@ class SolverService : Service() {
         corner.x = corner.x.coerceIn(0f, metrics.widthPixels.toFloat())
         corner.y = corner.y.coerceIn(0f, metrics.heightPixels.toFloat())
         overlayView?.invalidate()
+    }
+
+    // 🔥 코너 초기화
+    private fun resetCorners() {
+        val metrics = resources.displayMetrics
+        val w = metrics.widthPixels.toFloat(); val h = metrics.heightPixels.toFloat()
+        ptTL.set(w * 0.15f, h * 0.18f)
+        ptTR.set(w * 0.85f, h * 0.18f)
+        ptBL.set(w * 0.15f, h * 0.82f)
+        ptBR.set(w * 0.85f, h * 0.82f)
+        overlayView?.invalidate()
+        Toast.makeText(applicationContext, "초기화 완료", Toast.LENGTH_SHORT).show()
     }
 
     private fun performAutoDetectOnly() {
@@ -825,7 +948,11 @@ class SolverService : Service() {
                 val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 bitmap.copyPixelsFromBuffer(buffer)
 
-                autoDetectBoard(bitmap)
+                // 🔥 자동 격자 감지가 켜져 있을 때만 실행
+                if (isAutoDetectEnabled) {
+                    autoDetectBoard(bitmap)
+                }
+
                 val positions = findOOXOO(bitmap)
 
                 mainHandler.post {
@@ -840,7 +967,7 @@ class SolverService : Service() {
         }
     }
 
-    // --- OOXOO 탐색 (기존과 동일) ---
+    // --- OOXOO 탐색 ---
     private fun findOOXOO(bitmap: Bitmap): List<Pair<Int, Int>> {
         val width = bitmap.width; val height = bitmap.height
         val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
@@ -1001,6 +1128,7 @@ class SolverService : Service() {
             putFloat("ptTR_x", ptTR.x); putFloat("ptTR_y", ptTR.y)
             putFloat("ptBL_x", ptBL.x); putFloat("ptBL_y", ptBL.y)
             putFloat("ptBR_x", ptBR.x); putFloat("ptBR_y", ptBR.y)
+            putBoolean("autoDetect", isAutoDetectEnabled)
             apply()
         }
     }
@@ -1009,11 +1137,15 @@ class SolverService : Service() {
         val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
         val metrics = resources.displayMetrics
         val w = metrics.widthPixels.toFloat(); val h = metrics.heightPixels.toFloat()
-        rows = prefs.getInt("rows", 11); cols = prefs.getInt("cols", 9)
-        ptTL.set(prefs.getFloat("ptTL_x", w * 0.15f), prefs.getFloat("ptTL_y", h * 0.20f))
-        ptTR.set(prefs.getFloat("ptTR_x", w * 0.85f), prefs.getFloat("ptTR_y", h * 0.20f))
-        ptBL.set(prefs.getFloat("ptBL_x", w * 0.15f), prefs.getFloat("ptBL_y", h * 0.80f))
-        ptBR.set(prefs.getFloat("ptBR_x", w * 0.85f), prefs.getFloat("ptBR_y", h * 0.80f))
+
+        rows = prefs.getInt("rows", 11)
+        cols = prefs.getInt("cols", 9)
+        isAutoDetectEnabled = prefs.getBoolean("autoDetect", true)
+
+        ptTL.set(prefs.getFloat("ptTL_x", w * 0.15f), prefs.getFloat("ptTL_y", h * 0.18f))
+        ptTR.set(prefs.getFloat("ptTR_x", w * 0.85f), prefs.getFloat("ptTR_y", h * 0.18f))
+        ptBL.set(prefs.getFloat("ptBL_x", w * 0.15f), prefs.getFloat("ptBL_y", h * 0.82f))
+        ptBR.set(prefs.getFloat("ptBR_x", w * 0.85f), prefs.getFloat("ptBR_y", h * 0.82f))
     }
 
     override fun onDestroy() {
