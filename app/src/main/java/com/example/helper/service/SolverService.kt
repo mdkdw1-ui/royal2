@@ -1154,6 +1154,15 @@ class SolverService : Service() {
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
+
+val detectedSize = detectBoardSize(bitmap, pixels, width, height)
+
+if (detectedSize != null) {
+    rows = detectedSize.first
+    cols = detectedSize.second
+}
+
+
         val board = Array(rows) { Array(cols) { BlockColor.UNKNOWN } }
 
         val approxCellW = ((ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
@@ -1182,6 +1191,191 @@ class SolverService : Service() {
         }
         return findBestMoves(board)
     }
+
+
+private fun detectBoardSize(
+    bitmap: Bitmap,
+    pixels: IntArray,
+    width: Int,
+    height: Int
+): Pair<Int, Int>? {
+
+    /*
+     * Royal Match의 일반적인 판 크기를 후보로 검사한다.
+     *
+     * rows = 세로 칸 수
+     * cols = 가로 칸 수
+     *
+     * 현재 수동 기본값인 11 x 9를 포함하고,
+     * 9 x 10, 10 x 11 등 다른 크기도 자동 검사한다.
+     */
+
+    val candidates = listOf(
+        8 to 8,
+        8 to 9,
+        8 to 10,
+        9 to 8,
+        9 to 9,
+        9 to 10,
+        9 to 11,
+        10 to 8,
+        10 to 9,
+        10 to 10,
+        10 to 11,
+        11 to 8,
+        11 to 9,
+        11 to 10,
+        11 to 11,
+        12 to 8,
+        12 to 9,
+        12 to 10,
+        12 to 11
+    )
+
+    var bestRows = rows
+    var bestCols = cols
+    var bestScore = Double.NEGATIVE_INFINITY
+
+    /*
+     * 현재 수동으로 잡아놓은 네 모서리 영역을 기준으로
+     * 후보 격자의 각 셀 중심을 계산한다.
+     */
+    for ((candidateRows, candidateCols) in candidates) {
+
+        val cellW =
+            ((ptTR.x - ptTL.x) / candidateCols)
+                .toInt()
+                .coerceAtLeast(1)
+
+        val cellH =
+            ((ptBL.y - ptTL.y) / candidateRows)
+                .toInt()
+                .coerceAtLeast(1)
+
+        var knownCount = 0
+        var unknownCount = 0
+        var saturatedCount = 0
+
+        for (r in 0 until candidateRows) {
+            for (c in 0 until candidateCols) {
+
+                val u = (c + 0.5f) / candidateCols
+                val v = (r + 0.5f) / candidateRows
+
+                val topX =
+                    (1 - u) * ptTL.x + u * ptTR.x
+
+                val topY =
+                    (1 - u) * ptTL.y + u * ptTR.y
+
+                val bottomX =
+                    (1 - u) * ptBL.x + u * ptBR.x
+
+                val bottomY =
+                    (1 - u) * ptBL.y + u * ptBR.y
+
+                val centerX =
+                    (1 - v) * topX + v * bottomX
+
+                val centerY =
+                    (1 - v) * topY + v * bottomY
+
+                /*
+                 * 기존 색상 판정기를 그대로 사용한다.
+                 * 기믹이 있는 셀은 UNKNOWN이 되어
+                 * 후보 점수에서 자연스럽게 제외된다.
+                 */
+                val color = detectNormalBlockColor(
+                    pixels,
+                    width,
+                    height,
+                    centerX,
+                    centerY
+                )
+
+                if (color == BlockColor.UNKNOWN) {
+                    unknownCount++
+                } else {
+                    knownCount++
+                }
+
+                /*
+                 * 실제 타일 중심에 가까울수록
+                 * 일반적으로 채도(Saturation)가 높다.
+                 *
+                 * 너무 작은 셀이나 잘못된 격자의 경우
+                 * 빈 공간을 많이 찍게 되므로 보조 점수로 사용한다.
+                 */
+                val cx = centerX.toInt()
+                val cy = centerY.toInt()
+
+                if (
+                    cx >= 0 &&
+                    cx < width &&
+                    cy >= 0 &&
+                    cy < height
+                ) {
+                    val pixel = pixels[cy * width + cx]
+                    val hsv = FloatArray(3)
+                    Color.colorToHSV(pixel, hsv)
+
+                    if (hsv[1] >= 0.35f) {
+                        saturatedCount++
+                    }
+                }
+            }
+        }
+
+        val total = candidateRows * candidateCols
+
+        if (total <= 0) continue
+
+        val knownRatio =
+            knownCount.toDouble() / total.toDouble()
+
+        val saturationRatio =
+            saturatedCount.toDouble() / total.toDouble()
+
+        /*
+         * UNKNOWN은 강하게 감점하고,
+         * 실제 색상이 잡히는 셀을 높게 평가한다.
+         *
+         * 기믹 때문에 일부 UNKNOWN이 생기는 것은 허용한다.
+         */
+        val score =
+            knownRatio * 100.0 +
+            saturationRatio * 20.0 -
+            unknownCount * 0.5
+
+        /*
+         * 지나치게 작은/큰 격자가 우연히 높은 점수를
+         * 얻는 것을 방지하기 위해 현재 크기와
+         * 너무 동떨어진 후보에는 약한 패널티를 준다.
+         */
+        val rowDifference = abs(candidateRows - rows)
+        val colDifference = abs(candidateCols - cols)
+
+        val adjustedScore =
+            score - (rowDifference + colDifference) * 0.15
+
+        if (adjustedScore > bestScore) {
+            bestScore = adjustedScore
+            bestRows = candidateRows
+            bestCols = candidateCols
+        }
+    }
+
+    /*
+     * 판 크기를 신뢰할 수 없는 경우 기존 설정을 유지한다.
+     */
+    if (bestScore == Double.NEGATIVE_INFINITY) {
+        return null
+    }
+
+    return Pair(bestRows, bestCols)
+}
+
+
 
     private fun identifyCellContent(bitmap: Bitmap, pixels: IntArray, width: Int, height: Int, centerX: Float, centerY: Float, cellW: Int, cellH: Int): BlockColor {
         val halfW = cellW / 2
