@@ -42,6 +42,9 @@ class SolverService : Service() {
     // 🔥 간이 모드 여부
     private var isCompactMode = true  // 기본값: 간이 모드
 
+    // 🔥 격자선 표시 여부 (기본: 보임)
+    private var isGridVisible = true
+
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -137,7 +140,7 @@ class SolverService : Service() {
         autoScanRunnable = null
     }
 
-    // 🔥 기믹 템플릿 로드
+    // 🔥 저장된 템플릿 로드 (기믹)
     private fun loadTemplatesFromStorage() {
         if (!isOpenCVInitialized) return
         synchronized(dynamicTemplates) {
@@ -386,28 +389,30 @@ class SolverService : Service() {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
 
-            // 🔥 모서리가 유효한지 확인하고 그리기
+            // 🔥 모서리가 유효한지 확인
             if (ptTL.x < 0 || ptTR.x < 0 || ptBL.x < 0 || ptBR.x < 0) return
 
-            // 격자선
-            for (i in 0..cols) {
-                val ratio = i.toFloat() / cols
-                val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
-                val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
-                val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
-                val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
-                canvas.drawLine(topX, topY, botX, botY, gridPaint)
-            }
-            for (j in 0..rows) {
-                val ratio = j.toFloat() / rows
-                val leftX = (1 - ratio) * ptTL.x + ratio * ptBL.x
-                val leftY = (1 - ratio) * ptTL.y + ratio * ptBL.y
-                val rightX = (1 - ratio) * ptTR.x + ratio * ptBR.x
-                val rightY = (1 - ratio) * ptTR.y + ratio * ptBR.y
-                canvas.drawLine(leftX, leftY, rightX, rightY, gridPaint)
+            // 🔥 격자선은 isGridVisible == true 일 때만 그림
+            if (isGridVisible) {
+                for (i in 0..cols) {
+                    val ratio = i.toFloat() / cols
+                    val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
+                    val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
+                    val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
+                    val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
+                    canvas.drawLine(topX, topY, botX, botY, gridPaint)
+                }
+                for (j in 0..rows) {
+                    val ratio = j.toFloat() / rows
+                    val leftX = (1 - ratio) * ptTL.x + ratio * ptBL.x
+                    val leftY = (1 - ratio) * ptTL.y + ratio * ptBL.y
+                    val rightX = (1 - ratio) * ptTR.x + ratio * ptBR.x
+                    val rightY = (1 - ratio) * ptTR.y + ratio * ptBR.y
+                    canvas.drawLine(leftX, leftY, rightX, rightY, gridPaint)
+                }
             }
 
-            // OOXOO 위치
+            // OOXOO 위치는 항상 표시
             for ((row, col) in positions) {
                 val u = (col + 0.5f) / cols
                 val v = (row + 0.5f) / rows
@@ -529,14 +534,13 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 UI 새로고침 (간이/확장 모드 전환 포함)
+    // 🔥 UI 새로고침 (간이/확장 모드 전환 + 격자 토글 포함)
     private fun refreshControlUI() {
         val view = controlView ?: return
         view.removeAllViews()
         val context = applicationContext
 
         // --- 항상 표시되는 상단 영역 ---
-        // 제목 + 간이 모드 토글 버튼
         val topRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -574,7 +578,6 @@ class SolverService : Service() {
 
         // --- 간이 모드일 때는 여기까지 ---
         if (isCompactMode) {
-            // 종료 버튼만 추가
             Button(context).apply {
                 text = "❌ 종료"
                 setBackgroundColor(Color.RED)
@@ -604,7 +607,6 @@ class SolverService : Service() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }.also { sizeRow.addView(it) }
 
-        // 행 조절
         Button(context).apply {
             text = "행-"
             textSize = 11f
@@ -624,7 +626,6 @@ class SolverService : Service() {
             }
         }.also { sizeRow.addView(it) }
 
-        // 열 조절
         Button(context).apply {
             text = "열-"
             textSize = 11f
@@ -655,6 +656,18 @@ class SolverService : Service() {
                 isAutoScanEnabled = !isAutoScanEnabled
                 if (isAutoScanEnabled) { startAutoScan(); Toast.makeText(context, "🔄 재개", Toast.LENGTH_SHORT).show() }
                 else { stopAutoScan(); Toast.makeText(context, "⏸️ 중지", Toast.LENGTH_SHORT).show() }
+                refreshControlUI()
+            }
+        }.also { view.addView(it) }
+
+        // 🔥 격자 보기 토글 (추가)
+        Button(context).apply {
+            text = if (isGridVisible) "🌐 격자: 보임" else "🌐 격자: 숨김"
+            setBackgroundColor(if (isGridVisible) Color.parseColor("#007F0E") else Color.parseColor("#444444"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                isGridVisible = !isGridVisible
+                overlayView?.invalidate()
                 refreshControlUI()
             }
         }.also { view.addView(it) }
@@ -709,12 +722,15 @@ class SolverService : Service() {
 
     private fun dpToPx(dp: Int) = (dp * resources.displayMetrics.density).toInt()
 
-    // 🔥🔥🔥 자동 보드 검출 (개선판)
+    // 🔥🔥🔥 자동 보드 검출 (개선판: 중앙 컨투어 우선, 신뢰도 20%까지 허용)
     private fun autoDetectBoard(bitmap: Bitmap): Boolean {
         if (!isOpenCVInitialized) return false
 
         val width = bitmap.width
         val height = bitmap.height
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val searchRadius = minOf(width, height) * 0.45f
 
         // 1. 그레이스케일 + 블러
         val src = Mat()
@@ -733,12 +749,19 @@ class SolverService : Service() {
         val hierarchy = Mat()
         Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
-        // 4. 가장 큰 사각형 찾기 (면적 기준)
+        // 4. 가장 큰 사각형 찾기 (면적 기준 + 중앙 필터)
         var bestContour: MatOfPoint? = null
         var bestArea = 0.0
         for (contour in contours) {
+            val moments = Imgproc.moments(contour)
+            if (moments.m00 == 0.0) continue
+            val cx = (moments.m10 / moments.m00).toFloat()
+            val cy = (moments.m01 / moments.m00).toFloat()
+            val dist = Math.hypot((cx - centerX).toDouble(), (cy - centerY).toDouble())
+            if (dist > searchRadius) continue  // 중앙에서 너무 멀면 무시
+
             val area = Imgproc.contourArea(contour)
-            if (area > bestArea && area > 30000) { // 최소 면적 조건 낮춤
+            if (area > bestArea && area > 30000) {
                 val peri = Imgproc.arcLength(MatOfPoint2f(*contour.toArray()), true)
                 val approx = MatOfPoint2f()
                 Imgproc.approxPolyDP(MatOfPoint2f(*contour.toArray()), approx, peri * 0.02, true)
@@ -810,8 +833,8 @@ class SolverService : Service() {
             }
         }
 
-        // 🔥 신뢰도가 25% 이상이면 적용 (이전 30%에서 낮춤)
-        if (bestScore > 0.25) {
+        // 🔥 신뢰도가 20% 이상이면 적용 (이전 25%에서 낮춤)
+        if (bestScore > 0.2) {
             rows = bestRows
             cols = bestCols
             savePreferences()
@@ -865,7 +888,20 @@ class SolverService : Service() {
                 bitmap.copyPixelsFromBuffer(buffer)
 
                 // 🔥 자동 보드 인식 (매 스캔마다 시도)
-                autoDetectBoard(bitmap)
+                val detected = autoDetectBoard(bitmap)
+
+                // 디버그: 인식 실패 시 이미지 저장
+                if (!detected) {
+                    try {
+                        val debugDir = getExternalFilesDir("debug")
+                        if (debugDir != null && !debugDir.exists()) debugDir.mkdirs()
+                        val file = File(debugDir, "failed_${System.currentTimeMillis()}.png")
+                        FileOutputStream(file).use { out ->
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        }
+                        Log.d(TAG, "디버그 이미지 저장: ${file.absolutePath}")
+                    } catch (e: Exception) { /* 무시 */ }
+                }
 
                 // OOXOO 패턴 탐색
                 val positions = findOOXOO(bitmap)
@@ -911,7 +947,7 @@ class SolverService : Service() {
                 val iy = cy.toInt().coerceIn(0, height - 1)
                 val pixel = pixels[iy * width + ix]
 
-                // 기믹 체크
+                // 기믹 체크 (임계값 0.65로 낮춤)
                 if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
                     val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
                     val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
@@ -985,6 +1021,7 @@ class SolverService : Service() {
         return result.distinct()
     }
 
+    // 🔥 기믹 인식 (임계값 0.65)
     private fun isGimmick(cellBitmap: Bitmap): Boolean {
         if (!isOpenCVInitialized || dynamicTemplates.isEmpty()) return false
         val cellMat = Mat()
@@ -996,7 +1033,7 @@ class SolverService : Service() {
             for (template in dynamicTemplates) {
                 if (cellMat.cols() >= template.cols() && cellMat.rows() >= template.rows()) {
                     Imgproc.matchTemplate(cellMat, template, resultMat, Imgproc.TM_CCOEFF_NORMED)
-                    if (Core.minMaxLoc(resultMat).maxVal >= 0.75) { matched = true; break }
+                    if (Core.minMaxLoc(resultMat).maxVal >= 0.65) { matched = true; break }
                 }
             }
         }
@@ -1004,7 +1041,7 @@ class SolverService : Service() {
         return matched
     }
 
-    // 🔥 기믹 캡처 개선 (크롭 영역 더 정확하게)
+    // 🔥 기믹 캡처 개선 (크롭 영역 90%로 확대)
     private fun captureCellForGimmick(row: Int, col: Int) {
         val reader = imageReader ?: return
         backgroundHandler?.post {
@@ -1046,8 +1083,8 @@ class SolverService : Service() {
                 val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(20)
                 val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(20)
 
-                // 크롭 영역 (셀의 80% 크기로 중앙 정렬)
-                val cropSize = minOf(cellW, cellH) * 0.8f
+                // 🔥 크롭 영역 (셀의 90% 크기로 중앙 정렬, 이전 80%에서 확대)
+                val cropSize = minOf(cellW, cellH) * 0.9f
                 val half = (cropSize / 2).toInt()
                 val startX = (cx - half).toInt().coerceIn(0, fullBitmap.width - 1)
                 val startY = (cy - half).toInt().coerceIn(0, fullBitmap.height - 1)
