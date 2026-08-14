@@ -12,11 +12,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.Log
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.ViewGroup
-import android.view.WindowManager
+import android.view.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
 import org.opencv.android.OpenCVLoader
@@ -39,11 +35,11 @@ class SolverService : Service() {
     private val ptBL = PointF()
     private val ptBR = PointF()
 
-    // 🔥 간이 모드 여부
-    private var isCompactMode = true  // 기본값: 간이 모드
-
-    // 🔥 격자선 표시 여부 (기본: 보임)
+    // 🔥 모드 플래그
+    private var isCompactMode = true
     private var isGridVisible = true
+    private var isCalibrationMode = false  // 🔥 보정 모드 추가
+    private var selectedCorner = 0  // 0:TL, 1:TR, 2:BL, 3:BR
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -97,14 +93,12 @@ class SolverService : Service() {
         }
 
         loadPreferences()
-
         createOverlayWindow()
         createControlWindow()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundServiceInternal()
-
         if (intent != null) {
             val resultCode = intent.getIntExtra("RESULT_CODE", Activity.RESULT_CANCELED)
             val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -113,7 +107,6 @@ class SolverService : Service() {
                 @Suppress("DEPRECATION")
                 intent.getParcelableExtra("RESULT_DATA")
             }
-
             if (resultCode == Activity.RESULT_OK && resultData != null) {
                 backgroundHandler?.post { setupScreenCapture(resultCode, resultData) }
             }
@@ -121,9 +114,9 @@ class SolverService : Service() {
         return START_STICKY
     }
 
+    // --- 자동 스캔 ---
     private fun startAutoScan() {
         if (!isAutoScanEnabled || isScanning) return
-
         autoScanRunnable = object : Runnable {
             override fun run() {
                 if (!isAutoScanEnabled || !isCapturing) return
@@ -140,7 +133,7 @@ class SolverService : Service() {
         autoScanRunnable = null
     }
 
-    // 🔥 저장된 템플릿 로드 (기믹)
+    // --- 기믹 템플릿 관리 ---
     private fun loadTemplatesFromStorage() {
         if (!isOpenCVInitialized) return
         synchronized(dynamicTemplates) {
@@ -373,13 +366,17 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 오버레이 뷰 (터치로 기믹 따기 지원)
+    // 🔥 오버레이 뷰 (보정 모드에서는 선택된 코너에 노란색 동그라미 표시)
     inner class OverlayView(context: Context) : View(context) {
         private var positions = listOf<Pair<Int, Int>>()
         private val circlePaint = Paint().apply { color = Color.RED; style = Paint.Style.FILL; alpha = 180 }
         private val borderPaint = Paint().apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f }
         private val textPaint = Paint().apply { color = Color.WHITE; textSize = 30f; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
         private val gridPaint = Paint().apply { color = Color.parseColor("#80FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 2f }
+        // 🔥 보정 모드용 페인트
+        private val cornerPaint = Paint().apply { color = Color.YELLOW; style = Paint.Style.FILL }
+        private val cornerStrokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 4f }
+        private val activeCornerPaint = Paint().apply { color = Color.parseColor("#FF00FF"); style = Paint.Style.FILL } // 핫핑크
 
         fun updatePositions(newPositions: List<Pair<Int, Int>>) {
             this.positions = newPositions
@@ -388,11 +385,9 @@ class SolverService : Service() {
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-
-            // 🔥 모서리가 유효한지 확인
             if (ptTL.x < 0 || ptTR.x < 0 || ptBL.x < 0 || ptBR.x < 0) return
 
-            // 🔥 격자선은 isGridVisible == true 일 때만 그림
+            // 1. 격자선
             if (isGridVisible) {
                 for (i in 0..cols) {
                     val ratio = i.toFloat() / cols
@@ -412,7 +407,27 @@ class SolverService : Service() {
                 }
             }
 
-            // OOXOO 위치는 항상 표시
+            // 2. 🔥 보정 모드에서 4개 모서리 표시 (선택된 코너는 특별 색상)
+            if (isCalibrationMode) {
+                val corners = listOf(ptTL, ptTR, ptBL, ptBR)
+                corners.forEachIndexed { index, corner ->
+                    val paint = if (index == selectedCorner) activeCornerPaint else cornerPaint
+                    canvas.drawCircle(corner.x, corner.y, 35f, paint)
+                    canvas.drawCircle(corner.x, corner.y, 35f, cornerStrokePaint)
+                    // 코너 이름 표시
+                    val name = when(index) {
+                        0 -> "좌상"
+                        1 -> "우상"
+                        2 -> "좌하"
+                        3 -> "우하"
+                        else -> ""
+                    }
+                    val textP = Paint().apply { color = Color.WHITE; textSize = 20f; textAlign = Paint.Align.CENTER }
+                    canvas.drawText(name, corner.x, corner.y - 45f, textP)
+                }
+            }
+
+            // 3. OOXOO 위치
             for ((row, col) in positions) {
                 val u = (col + 0.5f) / cols
                 val v = (row + 0.5f) / rows
@@ -428,31 +443,58 @@ class SolverService : Service() {
             }
         }
 
+        // 🔥 보정 모드에서 터치로 코너 선택 가능 (옵션)
         override fun onTouchEvent(event: MotionEvent): Boolean {
-            if (!isImageGrabberMode || isGrabberProcessing) return false
-            if (event.action != MotionEvent.ACTION_DOWN) return false
+            if (!isCalibrationMode && !isImageGrabberMode) return false
 
-            val x = event.x; val y = event.y
-            var minDist = Float.MAX_VALUE
-            var targetRow = -1; var targetCol = -1
-            for (r in 0 until rows) {
-                for (c in 0 until cols) {
-                    val u = (c + 0.5f) / cols
-                    val v = (r + 0.5f) / rows
-                    val topX = (1 - u) * ptTL.x + u * ptTR.x
-                    val topY = (1 - u) * ptTL.y + u * ptTR.y
-                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
-                    val cx = (1 - v) * topX + v * bottomX
-                    val cy = (1 - v) * topY + v * bottomY
-                    val dist = Math.hypot((x - cx).toDouble(), (y - cy).toDouble()).toFloat()
-                    if (dist < minDist) { minDist = dist; targetRow = r; targetCol = c }
+            // 보정 모드에서는 코너 선택
+            if (isCalibrationMode && event.action == MotionEvent.ACTION_DOWN) {
+                val x = event.x; val y = event.y
+                val corners = listOf(ptTL, ptTR, ptBL, ptBR)
+                var minDist = Float.MAX_VALUE
+                var bestIdx = -1
+                corners.forEachIndexed { idx, corner ->
+                    val dist = Math.hypot((x - corner.x).toDouble(), (y - corner.y).toDouble()).toFloat()
+                    if (dist < minDist && dist < 100f) {
+                        minDist = dist
+                        bestIdx = idx
+                    }
+                }
+                if (bestIdx != -1) {
+                    selectedCorner = bestIdx
+                    refreshControlUI()
+                    invalidate()
+                    return true
+                }
+                return false
+            }
+
+            // 기믹 따기 모드
+            if (isImageGrabberMode && !isGrabberProcessing && event.action == MotionEvent.ACTION_DOWN) {
+                val x = event.x; val y = event.y
+                var minDist = Float.MAX_VALUE
+                var targetRow = -1; var targetCol = -1
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        val u = (c + 0.5f) / cols
+                        val v = (r + 0.5f) / rows
+                        val topX = (1 - u) * ptTL.x + u * ptTR.x
+                        val topY = (1 - u) * ptTL.y + u * ptTR.y
+                        val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                        val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                        val cx = (1 - v) * topX + v * bottomX
+                        val cy = (1 - v) * topY + v * bottomY
+                        val dist = Math.hypot((x - cx).toDouble(), (y - cy).toDouble()).toFloat()
+                        if (dist < minDist) { minDist = dist; targetRow = r; targetCol = c }
+                    }
+                }
+                if (minDist < 150f) {
+                    isGrabberProcessing = true
+                    captureCellForGimmick(targetRow, targetCol)
+                    return true
                 }
             }
-            if (minDist > 150f) return false
-            isGrabberProcessing = true
-            captureCellForGimmick(targetRow, targetCol)
-            return true
+            return false
         }
     }
 
@@ -471,7 +513,7 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥🔥🔥 드래그 가능 + 간이 모드 지원 컨트롤 패널
+    // 🔥 컨트롤 패널 (드래그 가능)
     private fun createControlWindow() {
         mainHandler.post {
             val context = applicationContext
@@ -534,21 +576,20 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 UI 새로고침 (간이/확장 모드 전환 + 격자 토글 포함)
+    // 🔥 UI 새로고침 (보정 모드 UI 포함)
     private fun refreshControlUI() {
         val view = controlView ?: return
         view.removeAllViews()
         val context = applicationContext
 
-        // --- 항상 표시되는 상단 영역 ---
+        // --- 상단 (제목 + 접기) ---
         val topRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-
         TextView(context).apply {
-            text = if (isCompactMode) "🔍 OOXOO" else "🎯 OOXOO 자동 감지기"
-            setTextColor(Color.WHITE)
+            text = if (isCompactMode) "🔍 OOXOO" else if (isCalibrationMode) "📐 보정 중" else "🎯 OOXOO 자동 감지기"
+            setTextColor(if (isCalibrationMode) Color.YELLOW else Color.WHITE)
             textSize = if (isCompactMode) 13f else 14f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -561,13 +602,13 @@ class SolverService : Service() {
             setTextColor(Color.WHITE)
             setOnClickListener {
                 isCompactMode = !isCompactMode
+                if (isCompactMode) isCalibrationMode = false // 접을 때 보정 모드 해제
                 refreshControlUI()
             }
         }.also { topRow.addView(it) }
-
         view.addView(topRow)
 
-        // --- 상태 표시 (항상) ---
+        // --- 상태 ---
         val statusText = if (isAutoScanEnabled) "🔄 자동 ON (1초)" else "⏸️ OFF"
         TextView(context).apply {
             text = "$statusText | 발견: ${foundPositions.size}개"
@@ -576,7 +617,7 @@ class SolverService : Service() {
             setPadding(0, 5, 0, 5)
         }.also { view.addView(it) }
 
-        // --- 간이 모드일 때는 여기까지 ---
+        // --- 간이 모드 ---
         if (isCompactMode) {
             Button(context).apply {
                 text = "❌ 종료"
@@ -584,70 +625,40 @@ class SolverService : Service() {
                 setTextColor(Color.WHITE)
                 setOnClickListener { stopSelf() }
             }.also { view.addView(it) }
-
-            floatParams?.let { params ->
-                try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {}
-            }
+            floatParams?.let { params -> try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {} }
             return
         }
 
-        // --- 확장 모드: 모든 기능 표시 ---
+        // --- 확장 모드 ---
 
-        // 판 크기 표시 및 조정
+        // 1. 크기 조정
         val sizeRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 5, 0, 5)
         }
-
         TextView(context).apply {
             text = "${rows}x${cols}"
             setTextColor(Color.YELLOW)
             textSize = 13f
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }.also { sizeRow.addView(it) }
-
-        Button(context).apply {
-            text = "행-"
-            textSize = 11f
-            setBackgroundColor(Color.DKGRAY)
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (rows > 5) { rows--; savePreferences(); refreshControlUI() }
-            }
-        }.also { sizeRow.addView(it) }
-        Button(context).apply {
-            text = "행+"
-            textSize = 11f
-            setBackgroundColor(Color.DKGRAY)
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (rows < 15) { rows++; savePreferences(); refreshControlUI() }
-            }
-        }.also { sizeRow.addView(it) }
-
-        Button(context).apply {
-            text = "열-"
-            textSize = 11f
-            setBackgroundColor(Color.DKGRAY)
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (cols > 5) { cols--; savePreferences(); refreshControlUI() }
-            }
-        }.also { sizeRow.addView(it) }
-        Button(context).apply {
-            text = "열+"
-            textSize = 11f
-            setBackgroundColor(Color.DKGRAY)
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (cols < 15) { cols++; savePreferences(); refreshControlUI() }
-            }
-        }.also { sizeRow.addView(it) }
-
+        listOf("행-" to { if (rows > 5) rows-- },
+            "행+" to { if (rows < 15) rows++ },
+            "열-" to { if (cols > 5) cols-- },
+            "열+" to { if (cols < 15) cols++ }
+        ).forEach { (text, action) ->
+            Button(context).apply {
+                this.text = text
+                textSize = 11f
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { action(); savePreferences(); refreshControlUI() }
+            }.also { sizeRow.addView(it) }
+        }
         view.addView(sizeRow)
 
-        // 자동 스캔 토글
+        // 2. 자동 스캔 토글
         Button(context).apply {
             text = if (isAutoScanEnabled) "⏸️ 자동 중지" else "▶️ 자동 시작"
             setBackgroundColor(if (isAutoScanEnabled) Color.parseColor("#D32F2F") else Color.parseColor("#4CAF50"))
@@ -660,7 +671,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
-        // 🔥 격자 보기 토글 (추가)
+        // 3. 격자 보기 토글
         Button(context).apply {
             text = if (isGridVisible) "🌐 격자: 보임" else "🌐 격자: 숨김"
             setBackgroundColor(if (isGridVisible) Color.parseColor("#007F0E") else Color.parseColor("#444444"))
@@ -672,12 +683,159 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
-        // 기믹 따기
+        // 4. 🔥 보정 모드 토글
+        Button(context).apply {
+            text = if (isCalibrationMode) "✅ 보정 완료 (저장)" else "📐 격자 보정"
+            setBackgroundColor(if (isCalibrationMode) Color.parseColor("#FF00DF") else Color.parseColor("#444444"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                isCalibrationMode = !isCalibrationMode
+                if (isCalibrationMode) {
+                    // 보정 모드 켜기: 오버레이 터치 가능하게
+                    overlayView?.let {
+                        val p = it.layoutParams as WindowManager.LayoutParams
+                        p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                        windowManager.updateViewLayout(it, p)
+                    }
+                    // 기믹 따기 모드 강제 종료
+                    if (isImageGrabberMode) {
+                        isImageGrabberMode = false
+                        isGrabberProcessing = false
+                    }
+                    Toast.makeText(context, "📐 모서리를 터치하거나 화살표로 조정하세요", Toast.LENGTH_LONG).show()
+                } else {
+                    // 보정 모드 끄기: 오버레이 터치 불가
+                    overlayView?.let {
+                        val p = it.layoutParams as WindowManager.LayoutParams
+                        p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        windowManager.updateViewLayout(it, p)
+                    }
+                    savePreferences()
+                    Toast.makeText(context, "💾 격자 위치 저장 완료!", Toast.LENGTH_SHORT).show()
+                }
+                refreshControlUI()
+                overlayView?.invalidate()
+            }
+        }.also { view.addView(it) }
+
+        // 5. 🔥 보정 모드가 켜져 있으면 방향키와 코너 선택 표시
+        if (isCalibrationMode) {
+            // 코너 선택 라디오 버튼
+            val cornerLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, 5, 0, 5)
+            }
+            val cornerNames = listOf("좌상", "우상", "좌하", "우하")
+            val radioGroup = RadioGroup(context).apply {
+                orientation = RadioGroup.HORIZONTAL
+                cornerNames.forEachIndexed { idx, name ->
+                    val rb = RadioButton(context).apply {
+                        text = name
+                        setTextColor(Color.WHITE)
+                        textSize = 11f
+                        id = idx
+                        isChecked = (idx == selectedCorner)
+                        setOnClickListener {
+                            selectedCorner = idx
+                            overlayView?.invalidate()
+                            refreshControlUI()
+                        }
+                    }
+                    addView(rb)
+                }
+            }
+            cornerLayout.addView(radioGroup)
+            view.addView(cornerLayout)
+
+            // 방향키 (D-Pad)
+            val dpadLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(0, 5, 0, 5)
+            }
+
+            // 상
+            val rowUp = LinearLayout(context).apply { gravity = Gravity.CENTER }
+            Button(context).apply {
+                text = "▲"
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(40))
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { moveCorner(0f, -5f) }
+            }.also { rowUp.addView(it) }
+            dpadLayout.addView(rowUp)
+
+            // 중간 (좌, 우)
+            val rowMid = LinearLayout(context).apply { gravity = Gravity.CENTER }
+            Button(context).apply {
+                text = "◀"
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(40))
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { moveCorner(-5f, 0f) }
+            }.also { rowMid.addView(it) }
+            // 여백
+            View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(40))
+            }.also { rowMid.addView(it) }
+            Button(context).apply {
+                text = "▶"
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(40))
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { moveCorner(5f, 0f) }
+            }.also { rowMid.addView(it) }
+            dpadLayout.addView(rowMid)
+
+            // 하
+            val rowDown = LinearLayout(context).apply { gravity = Gravity.CENTER }
+            Button(context).apply {
+                text = "▼"
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(40))
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { moveCorner(0f, 5f) }
+            }.also { rowDown.addView(it) }
+            dpadLayout.addView(rowDown)
+
+            view.addView(dpadLayout)
+
+            // 초기화 버튼
+            Button(context).apply {
+                text = "🔄 모서리 초기화"
+                textSize = 11f
+                setBackgroundColor(Color.parseColor("#FF8C00"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    val metrics = resources.displayMetrics
+                    val w = metrics.widthPixels.toFloat()
+                    val h = metrics.heightPixels.toFloat()
+                    ptTL.set(w * 0.10f, h * 0.25f)
+                    ptTR.set(w * 0.90f, h * 0.25f)
+                    ptBL.set(w * 0.10f, h * 0.75f)
+                    ptBR.set(w * 0.90f, h * 0.75f)
+                    overlayView?.invalidate()
+                    Toast.makeText(context, "초기화 완료", Toast.LENGTH_SHORT).show()
+                }
+            }.also { view.addView(it) }
+        }
+
+        // 6. 기믹 따기 (보정 모드와 동시 비활성화)
         Button(context).apply {
             text = if (isImageGrabberMode) "❌ 기믹 취소" else "📷 기믹 따기"
             setBackgroundColor(if (isImageGrabberMode) Color.parseColor("#D32F2F") else Color.parseColor("#5A0063"))
             setTextColor(Color.WHITE)
+            isEnabled = !isCalibrationMode // 보정 모드에서는 비활성화
             setOnClickListener {
+                if (isCalibrationMode) {
+                    Toast.makeText(context, "보정 모드를 먼저 종료하세요", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
                 if (isImageGrabberMode) {
                     isImageGrabberMode = false
                     overlayView?.let {
@@ -699,7 +857,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
-        // 기믹 목록
+        // 7. 기믹 목록
         Button(context).apply {
             text = "📋 기믹 목록 (${dynamicTemplateFiles.size})"
             setBackgroundColor(Color.parseColor("#00574B"))
@@ -707,7 +865,7 @@ class SolverService : Service() {
             setOnClickListener { showGimmickManager() }
         }.also { view.addView(it) }
 
-        // 종료
+        // 8. 종료
         Button(context).apply {
             text = "❌ 종료"
             setBackgroundColor(Color.RED)
@@ -720,36 +878,45 @@ class SolverService : Service() {
         }
     }
 
+    // 🔥 코너 이동 함수
+    private fun moveCorner(dx: Float, dy: Float) {
+        val corner = when (selectedCorner) {
+            0 -> ptTL
+            1 -> ptTR
+            2 -> ptBL
+            3 -> ptBR
+            else -> return
+        }
+        corner.x += dx
+        corner.y += dy
+
+        // 화면 경계를 벗어나지 않도록 클램프
+        val metrics = resources.displayMetrics
+        corner.x = corner.x.coerceIn(0f, metrics.widthPixels.toFloat())
+        corner.y = corner.y.coerceIn(0f, metrics.heightPixels.toFloat())
+
+        overlayView?.invalidate()
+        // 실시간 저장 (보정 모드에서는 자동 저장 안 함, 완료 버튼 누를 때 저장)
+    }
+
     private fun dpToPx(dp: Int) = (dp * resources.displayMetrics.density).toInt()
 
-    // 🔥🔥🔥 자동 보드 검출 (개선판: 중앙 컨투어 우선, 신뢰도 20%까지 허용)
+    // --- 자동 보드 인식 ---
     private fun autoDetectBoard(bitmap: Bitmap): Boolean {
         if (!isOpenCVInitialized) return false
-
-        val width = bitmap.width
-        val height = bitmap.height
-        val centerX = width / 2f
-        val centerY = height / 2f
+        val width = bitmap.width; val height = bitmap.height
+        val centerX = width / 2f; val centerY = height / 2f
         val searchRadius = minOf(width, height) * 0.45f
 
-        // 1. 그레이스케일 + 블러
-        val src = Mat()
-        Utils.bitmapToMat(bitmap, src)
-        val gray = Mat()
-        Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
-        val blurred = Mat()
-        Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
+        val src = Mat(); Utils.bitmapToMat(bitmap, src)
+        val gray = Mat(); Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+        val blurred = Mat(); Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
+        val edges = Mat(); Imgproc.Canny(blurred, edges, 30.0, 100.0)
 
-        // 2. 에지 검출 (임계값 조정)
-        val edges = Mat()
-        Imgproc.Canny(blurred, edges, 30.0, 100.0)
-
-        // 3. 컨투어 찾기
         val contours = ArrayList<MatOfPoint>()
         val hierarchy = Mat()
         Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
-        // 4. 가장 큰 사각형 찾기 (면적 기준 + 중앙 필터)
         var bestContour: MatOfPoint? = null
         var bestArea = 0.0
         for (contour in contours) {
@@ -758,16 +925,14 @@ class SolverService : Service() {
             val cx = (moments.m10 / moments.m00).toFloat()
             val cy = (moments.m01 / moments.m00).toFloat()
             val dist = Math.hypot((cx - centerX).toDouble(), (cy - centerY).toDouble())
-            if (dist > searchRadius) continue  // 중앙에서 너무 멀면 무시
-
+            if (dist > searchRadius) continue
             val area = Imgproc.contourArea(contour)
             if (area > bestArea && area > 30000) {
                 val peri = Imgproc.arcLength(MatOfPoint2f(*contour.toArray()), true)
                 val approx = MatOfPoint2f()
                 Imgproc.approxPolyDP(MatOfPoint2f(*contour.toArray()), approx, peri * 0.02, true)
                 if (approx.toArray().size == 4) {
-                    bestContour = contour
-                    bestArea = area
+                    bestContour = contour; bestArea = area
                 }
             }
         }
@@ -777,17 +942,14 @@ class SolverService : Service() {
             return false
         }
 
-        // 5. 컨투어 점 정렬
         val points = bestContour.toArray()
         val sortedPoints = sortCorners(points)
-
-        // 6. 모서리 설정
         ptTL.set(sortedPoints[0].x.toFloat(), sortedPoints[0].y.toFloat())
         ptTR.set(sortedPoints[1].x.toFloat(), sortedPoints[1].y.toFloat())
         ptBL.set(sortedPoints[2].x.toFloat(), sortedPoints[2].y.toFloat())
         ptBR.set(sortedPoints[3].x.toFloat(), sortedPoints[3].y.toFloat())
 
-        // 7. 격자 크기 추정 (후보 크기 테스트)
+        // 크기 추정
         val candidates = listOf(
             8 to 8, 8 to 9, 8 to 10,
             9 to 8, 9 to 9, 9 to 10, 9 to 11,
@@ -795,148 +957,13 @@ class SolverService : Service() {
             11 to 8, 11 to 9, 11 to 10, 11 to 11,
             12 to 8, 12 to 9, 12 to 10, 12 to 11
         )
-
-        var bestRows = rows
-        var bestCols = cols
-        var bestScore = -1.0
-
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        var bestRows = rows; var bestCols = cols; var bestScore = -1.0
+        val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
         for ((r, c) in candidates) {
-            var validCount = 0
-            var total = 0
-            for (rr in 0 until r) {
-                for (cc in 0 until c) {
-                    val u = (cc + 0.5f) / c
-                    val v = (rr + 0.5f) / r
-                    val topX = (1 - u) * ptTL.x + u * ptTR.x
-                    val topY = (1 - u) * ptTL.y + u * ptTR.y
-                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
-                    val cx = (1 - v) * topX + v * bottomX
-                    val cy = (1 - v) * topY + v * bottomY
-                    val ix = cx.toInt().coerceIn(0, width - 1)
-                    val iy = cy.toInt().coerceIn(0, height - 1)
-                    val pixel = pixels[iy * width + ix]
-                    val hsv = FloatArray(3)
-                    Color.colorToHSV(pixel, hsv)
-                    total++
-                    if (hsv[1] > 0.2f && hsv[2] > 0.2f) validCount++
-                }
-            }
-            val score = validCount.toDouble() / total
-            if (score > bestScore) {
-                bestScore = score
-                bestRows = r
-                bestCols = c
-            }
-        }
-
-        // 🔥 신뢰도가 20% 이상이면 적용 (이전 25%에서 낮춤)
-        if (bestScore > 0.2) {
-            rows = bestRows
-            cols = bestCols
-            savePreferences()
-            Log.d(TAG, "자동 인식 성공: ${rows}x${cols}, 신뢰도 ${"%.0f".format(bestScore * 100)}%")
-            mainHandler.post {
-                Toast.makeText(applicationContext, "✅ 판 인식: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
-            }
-            return true
-        }
-
-        src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
-        return false
-    }
-
-    // 4개 점을 좌상, 우상, 좌하, 우하 순으로 정렬
-    private fun sortCorners(points: Array<org.opencv.core.Point>): List<org.opencv.core.Point> {
-        val sorted = points.sortedBy { it.y }
-        val top = sorted.take(2).sortedBy { it.x }
-        val bottom = sorted.drop(2).sortedBy { it.x }
-        return listOf(top[0], top[1], bottom[0], bottom[1])
-    }
-
-    // 🔥 스캔 실행 (자동 보드 인식 포함)
-    private fun performScan() {
-        if (isScanning) return
-        isScanning = true
-
-        backgroundHandler?.post {
-            val reader = imageReader ?: return@post
-            var image = reader.acquireLatestImage()
-            if (image == null) {
-                try { Thread.sleep(50) } catch (e: Exception) {}
-                image = reader.acquireNextImage()
-            }
-            if (image == null) {
-                mainHandler.post { isScanning = false }
-                return@post
-            }
-
-            try {
-                val metrics = resources.displayMetrics
-                val planes = image.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
-                val w = metrics.widthPixels
-                val h = metrics.heightPixels
-                val rowPadding = rowStride - pixelStride * w
-
-                val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
-                bitmap.copyPixelsFromBuffer(buffer)
-
-                // 🔥 자동 보드 인식 (매 스캔마다 시도)
-                val detected = autoDetectBoard(bitmap)
-
-                // 디버그: 인식 실패 시 이미지 저장
-                if (!detected) {
-                    try {
-                        val debugDir = getExternalFilesDir("debug")
-                        if (debugDir != null && !debugDir.exists()) debugDir.mkdirs()
-                        val file = File(debugDir, "failed_${System.currentTimeMillis()}.png")
-                        FileOutputStream(file).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        }
-                        Log.d(TAG, "디버그 이미지 저장: ${file.absolutePath}")
-                    } catch (e: Exception) { /* 무시 */ }
-                }
-
-                // OOXOO 패턴 탐색
-                val positions = findOOXOO(bitmap)
-
-                mainHandler.post {
-                    foundPositions.clear()
-                    foundPositions.addAll(positions)
-                    overlayView?.updatePositions(positions)
-                    refreshControlUI()
-                    isScanning = false
-                }
-
-                bitmap.recycle()
-            } catch (e: Exception) {
-                Log.e(TAG, "스캔 오류", e)
-                mainHandler.post { isScanning = false }
-            } finally {
-                image.close()
-            }
-        }
-    }
-
-    // 🔥 OOXOO 탐색 (기믹 인식 포함)
-    private fun findOOXOO(bitmap: Bitmap): List<Pair<Int, Int>> {
-        val width = bitmap.width
-        val height = bitmap.height
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        val colorGrid = Array(rows) { IntArray(cols) }
-
-        for (r in 0 until rows) {
-            for (c in 0 until cols) {
-                val u = (c + 0.5f) / cols
-                val v = (r + 0.5f) / rows
+            var valid = 0; var total = 0
+            for (rr in 0 until r) for (cc in 0 until c) {
+                val u = (cc + 0.5f) / c; val v = (rr + 0.5f) / r
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
                 val topY = (1 - u) * ptTL.y + u * ptTR.y
                 val bottomX = (1 - u) * ptBL.x + u * ptBR.x
@@ -946,89 +973,137 @@ class SolverService : Service() {
                 val ix = cx.toInt().coerceIn(0, width - 1)
                 val iy = cy.toInt().coerceIn(0, height - 1)
                 val pixel = pixels[iy * width + ix]
+                val hsv = FloatArray(3); Color.colorToHSV(pixel, hsv)
+                total++
+                if (hsv[1] > 0.2f && hsv[2] > 0.2f) valid++
+            }
+            val score = valid.toDouble() / total
+            if (score > bestScore) { bestScore = score; bestRows = r; bestCols = c }
+        }
 
-                // 기믹 체크 (임계값 0.65로 낮춤)
-                if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
-                    val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
-                    val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
-                    val halfW = cellW / 2; val halfH = cellH / 2
-                    val startX = (cx - halfW).toInt().coerceIn(0, width - cellW)
-                    val startY = (cy - halfH).toInt().coerceIn(0, height - cellH)
-                    try {
-                        val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, cellW, cellH)
-                        if (isGimmick(cellBitmap)) {
-                            colorGrid[r][c] = -1
-                            cellBitmap.recycle()
-                            continue
-                        }
-                        cellBitmap.recycle()
-                    } catch (e: Exception) {}
-                }
+        if (bestScore > 0.2) {
+            rows = bestRows; cols = bestCols
+            savePreferences()
+            Log.d(TAG, "자동 인식 성공: ${rows}x${cols}, 신뢰도 ${"%.0f".format(bestScore * 100)}%")
+            mainHandler.post { Toast.makeText(applicationContext, "✅ 판 인식: ${rows}x${cols}", Toast.LENGTH_SHORT).show() }
+            src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
+            return true
+        }
 
-                val hsv = FloatArray(3)
-                Color.colorToHSV(pixel, hsv)
-                val hue = hsv[0]; val sat = hsv[1]
-                colorGrid[r][c] = when {
-                    sat < 0.2f -> -1
-                    hue in 0f..30f -> 1
-                    hue in 31f..70f -> 2
-                    hue in 71f..160f -> 3
-                    hue in 161f..230f -> 4
-                    hue in 231f..360f -> 5
-                    else -> -1
+        src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
+        return false
+    }
+
+    private fun sortCorners(points: Array<org.opencv.core.Point>): List<org.opencv.core.Point> {
+        val sorted = points.sortedBy { it.y }
+        val top = sorted.take(2).sortedBy { it.x }
+        val bottom = sorted.drop(2).sortedBy { it.x }
+        return listOf(top[0], top[1], bottom[0], bottom[1])
+    }
+
+    // --- 스캔 실행 ---
+    private fun performScan() {
+        if (isScanning) return
+        isScanning = true
+        backgroundHandler?.post {
+            val reader = imageReader ?: return@post
+            var image = reader.acquireLatestImage()
+            if (image == null) { try { Thread.sleep(50) } catch (e: Exception) {}; image = reader.acquireNextImage() }
+            if (image == null) { mainHandler.post { isScanning = false }; return@post }
+
+            try {
+                val metrics = resources.displayMetrics
+                val planes = image.planes; val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride; val rowStride = planes[0].rowStride
+                val w = metrics.widthPixels; val h = metrics.heightPixels
+                val rowPadding = rowStride - pixelStride * w
+                val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                bitmap.copyPixelsFromBuffer(buffer)
+
+                autoDetectBoard(bitmap)
+                val positions = findOOXOO(bitmap)
+
+                mainHandler.post {
+                    foundPositions.clear(); foundPositions.addAll(positions)
+                    overlayView?.updatePositions(positions)
+                    refreshControlUI()
+                    isScanning = false
                 }
+                bitmap.recycle()
+            } catch (e: Exception) { Log.e(TAG, "스캔 오류", e); mainHandler.post { isScanning = false } }
+            finally { image.close() }
+        }
+    }
+
+    // --- OOXOO 탐색 ---
+    private fun findOOXOO(bitmap: Bitmap): List<Pair<Int, Int>> {
+        val width = bitmap.width; val height = bitmap.height
+        val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        val colorGrid = Array(rows) { IntArray(cols) }
+
+        for (r in 0 until rows) for (c in 0 until cols) {
+            val u = (c + 0.5f) / cols; val v = (r + 0.5f) / rows
+            val topX = (1 - u) * ptTL.x + u * ptTR.x
+            val topY = (1 - u) * ptTL.y + u * ptTR.y
+            val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+            val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+            val cx = (1 - v) * topX + v * bottomX
+            val cy = (1 - v) * topY + v * bottomY
+            val ix = cx.toInt().coerceIn(0, width - 1); val iy = cy.toInt().coerceIn(0, height - 1)
+            val pixel = pixels[iy * width + ix]
+
+            if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
+                val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
+                val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
+                val halfW = cellW / 2; val halfH = cellH / 2
+                val startX = (cx - halfW).toInt().coerceIn(0, width - cellW)
+                val startY = (cy - halfH).toInt().coerceIn(0, height - cellH)
+                try {
+                    val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, cellW, cellH)
+                    if (isGimmick(cellBitmap)) { colorGrid[r][c] = -1; cellBitmap.recycle(); continue }
+                    cellBitmap.recycle()
+                } catch (e: Exception) {}
+            }
+
+            val hsv = FloatArray(3); Color.colorToHSV(pixel, hsv)
+            val hue = hsv[0]; val sat = hsv[1]
+            colorGrid[r][c] = when {
+                sat < 0.2f -> -1
+                hue in 0f..30f -> 1
+                hue in 31f..70f -> 2
+                hue in 71f..160f -> 3
+                hue in 161f..230f -> 4
+                hue in 231f..360f -> 5
+                else -> -1
             }
         }
 
         val result = mutableListOf<Pair<Int, Int>>()
-
-        // 가로 OOXOO
-        for (r in 0 until rows) {
-            for (c in 0 until cols - 4) {
-                val color = colorGrid[r][c]
-                if (color == -1) continue
-                if (colorGrid[r][c] == color &&
-                    colorGrid[r][c + 1] == color &&
-                    colorGrid[r][c + 2] != color &&
-                    colorGrid[r][c + 3] == color &&
-                    colorGrid[r][c + 4] == color) {
-                    val xCol = c + 2
-                    val hasAdjacent = (r > 0 && colorGrid[r - 1][xCol] == color) ||
-                                      (r < rows - 1 && colorGrid[r + 1][xCol] == color)
-                    if (hasAdjacent) result.add(Pair(r, xCol))
-                }
+        for (r in 0 until rows) for (c in 0 until cols - 4) {
+            val color = colorGrid[r][c]; if (color == -1) continue
+            if (colorGrid[r][c] == color && colorGrid[r][c+1] == color &&
+                colorGrid[r][c+2] != color && colorGrid[r][c+3] == color && colorGrid[r][c+4] == color) {
+                val xCol = c + 2
+                if ((r > 0 && colorGrid[r-1][xCol] == color) || (r < rows-1 && colorGrid[r+1][xCol] == color))
+                    result.add(Pair(r, xCol))
             }
         }
-
-        // 세로 OOXOO
-        for (c in 0 until cols) {
-            for (r in 0 until rows - 4) {
-                val color = colorGrid[r][c]
-                if (color == -1) continue
-                if (colorGrid[r][c] == color &&
-                    colorGrid[r + 1][c] == color &&
-                    colorGrid[r + 2][c] != color &&
-                    colorGrid[r + 3][c] == color &&
-                    colorGrid[r + 4][c] == color) {
-                    val xRow = r + 2
-                    val hasAdjacent = (c > 0 && colorGrid[xRow][c - 1] == color) ||
-                                      (c < cols - 1 && colorGrid[xRow][c + 1] == color)
-                    if (hasAdjacent) result.add(Pair(xRow, c))
-                }
+        for (c in 0 until cols) for (r in 0 until rows - 4) {
+            val color = colorGrid[r][c]; if (color == -1) continue
+            if (colorGrid[r][c] == color && colorGrid[r+1][c] == color &&
+                colorGrid[r+2][c] != color && colorGrid[r+3][c] == color && colorGrid[r+4][c] == color) {
+                val xRow = r + 2
+                if ((c > 0 && colorGrid[xRow][c-1] == color) || (c < cols-1 && colorGrid[xRow][c+1] == color))
+                    result.add(Pair(xRow, c))
             }
         }
-
         return result.distinct()
     }
 
-    // 🔥 기믹 인식 (임계값 0.65)
     private fun isGimmick(cellBitmap: Bitmap): Boolean {
         if (!isOpenCVInitialized || dynamicTemplates.isEmpty()) return false
-        val cellMat = Mat()
-        Utils.bitmapToMat(cellBitmap, cellMat)
-        Imgproc.cvtColor(cellMat, cellMat, Imgproc.COLOR_RGBA2GRAY)
-        val resultMat = Mat()
-        var matched = false
+        val cellMat = Mat(); Utils.bitmapToMat(cellBitmap, cellMat); Imgproc.cvtColor(cellMat, cellMat, Imgproc.COLOR_RGBA2GRAY)
+        val resultMat = Mat(); var matched = false
         synchronized(dynamicTemplates) {
             for (template in dynamicTemplates) {
                 if (cellMat.cols() >= template.cols() && cellMat.rows() >= template.rows()) {
@@ -1041,37 +1116,23 @@ class SolverService : Service() {
         return matched
     }
 
-    // 🔥 기믹 캡처 개선 (크롭 영역 90%로 확대)
     private fun captureCellForGimmick(row: Int, col: Int) {
         val reader = imageReader ?: return
         backgroundHandler?.post {
             var image = reader.acquireLatestImage()
-            if (image == null) {
-                try { Thread.sleep(50) } catch (e: Exception) {}
-                image = reader.acquireNextImage()
-            }
-            if (image == null) {
-                isGrabberProcessing = false
-                mainHandler.post {
-                    Toast.makeText(applicationContext, "❌ 이미지 캡처 실패", Toast.LENGTH_SHORT).show()
-                }
-                return@post
-            }
+            if (image == null) { try { Thread.sleep(50) } catch (e: Exception) {}; image = reader.acquireNextImage() }
+            if (image == null) { isGrabberProcessing = false; mainHandler.post { Toast.makeText(applicationContext, "❌ 이미지 캡처 실패", Toast.LENGTH_SHORT).show() }; return@post }
 
             try {
                 val metrics = resources.displayMetrics
-                val planes = image.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
+                val planes = image.planes; val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride; val rowStride = planes[0].rowStride
                 val w = metrics.widthPixels; val h = metrics.heightPixels
                 val rowPadding = rowStride - pixelStride * w
                 val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 fullBitmap.copyPixelsFromBuffer(buffer)
 
-                // 셀 중심 좌표
-                val u = (col + 0.5f) / cols
-                val v = (row + 0.5f) / rows
+                val u = (col + 0.5f) / cols; val v = (row + 0.5f) / rows
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
                 val topY = (1 - u) * ptTL.y + u * ptTR.y
                 val bottomX = (1 - u) * ptBL.x + u * ptBR.x
@@ -1079,42 +1140,21 @@ class SolverService : Service() {
                 val cx = (1 - v) * topX + v * bottomX
                 val cy = (1 - v) * topY + v * bottomY
 
-                // 셀 크기
                 val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(20)
                 val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(20)
-
-                // 🔥 크롭 영역 (셀의 90% 크기로 중앙 정렬, 이전 80%에서 확대)
                 val cropSize = minOf(cellW, cellH) * 0.9f
                 val half = (cropSize / 2).toInt()
-                val startX = (cx - half).toInt().coerceIn(0, fullBitmap.width - 1)
-                val startY = (cy - half).toInt().coerceIn(0, fullBitmap.height - 1)
+                var startX = (cx - half).toInt(); var startY = (cy - half).toInt()
                 val size = cropSize.toInt().coerceAtLeast(1)
+                startX = startX.coerceIn(0, fullBitmap.width - size)
+                startY = startY.coerceIn(0, fullBitmap.height - size)
 
-                // 안전하게 크롭
-                val endX = (startX + size).coerceAtMost(fullBitmap.width)
-                val endY = (startY + size).coerceAtMost(fullBitmap.height)
-                val realSize = minOf(endX - startX, endY - startY).coerceAtLeast(1)
-
-                val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, realSize, realSize)
-
-                // 저장
+                val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, size, size)
                 saveGimmickBitmap(cellBitmap)
-                cellBitmap.recycle()
-                fullBitmap.recycle()
-
-                mainHandler.post {
-                    Toast.makeText(applicationContext, "✅ 기믹 저장 완료!", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "셀 캡처 실패", e)
-                mainHandler.post {
-                    Toast.makeText(applicationContext, "❌ 캡처 오류: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-                isGrabberProcessing = false
-            } finally {
-                image.close()
-                isGrabberProcessing = false
-            }
+                cellBitmap.recycle(); fullBitmap.recycle()
+                mainHandler.post { Toast.makeText(applicationContext, "✅ 기믹 저장 완료!", Toast.LENGTH_SHORT).show() }
+            } catch (e: Exception) { Log.e(TAG, "셀 캡처 실패", e); mainHandler.post { Toast.makeText(applicationContext, "❌ 캡처 오류: ${e.message}", Toast.LENGTH_SHORT).show() } }
+            finally { image.close(); isGrabberProcessing = false }
         }
     }
 
@@ -1129,13 +1169,10 @@ class SolverService : Service() {
             val metrics = resources.displayMetrics
             imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
             virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "OOXOO_Capture",
-                metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface, null, backgroundHandler
+                "OOXOO_Capture", metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, backgroundHandler
             )
             isCapturing = true
-
             mainHandler.post {
                 isAutoScanEnabled = true
                 startAutoScan()
@@ -1145,8 +1182,7 @@ class SolverService : Service() {
     }
 
     private fun stopCapture() {
-        isCapturing = false
-        stopAutoScan()
+        isCapturing = false; stopAutoScan()
         virtualDisplay?.release(); virtualDisplay = null
         imageReader?.close(); imageReader = null
         mediaProjection?.stop(); mediaProjection = null
@@ -1168,10 +1204,7 @@ class SolverService : Service() {
         val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
         val metrics = resources.displayMetrics
         val w = metrics.widthPixels.toFloat(); val h = metrics.heightPixels.toFloat()
-
-        rows = prefs.getInt("rows", 11)
-        cols = prefs.getInt("cols", 9)
-
+        rows = prefs.getInt("rows", 11); cols = prefs.getInt("cols", 9)
         ptTL.set(prefs.getFloat("ptTL_x", w * 0.10f), prefs.getFloat("ptTL_y", h * 0.25f))
         ptTR.set(prefs.getFloat("ptTR_x", w * 0.90f), prefs.getFloat("ptTR_y", h * 0.25f))
         ptBL.set(prefs.getFloat("ptBL_x", w * 0.10f), prefs.getFloat("ptBL_y", h * 0.75f))
@@ -1179,12 +1212,8 @@ class SolverService : Service() {
     }
 
     override fun onDestroy() {
-        stopCapture()
-        hideGimmickManager()
-        synchronized(dynamicTemplates) {
-            dynamicTemplates.forEach { it.release() }
-            dynamicTemplates.clear(); dynamicTemplateFiles.clear()
-        }
+        stopCapture(); hideGimmickManager()
+        synchronized(dynamicTemplates) { dynamicTemplates.forEach { it.release() }; dynamicTemplates.clear(); dynamicTemplateFiles.clear() }
         controlView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
         overlayView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
         backgroundThread?.quitSafely()
