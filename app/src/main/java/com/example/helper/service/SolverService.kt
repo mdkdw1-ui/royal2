@@ -90,7 +90,6 @@ class SolverService : Service() {
             Log.e(TAG, "OpenCV 로드 실패")
         }
 
-        // 🔥 저장된 값이 있으면 불러오고, 없으면 기본값
         loadPreferences()
 
         createOverlayWindow()
@@ -460,6 +459,7 @@ class SolverService : Service() {
         }
     }
 
+    // 🔥🔥🔥 드래그 가능한 컨트롤 패널
     private fun createControlWindow() {
         mainHandler.post {
             val context = applicationContext
@@ -470,13 +470,54 @@ class SolverService : Service() {
                 else WindowManager.LayoutParams.TYPE_PHONE,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
-            ).apply { gravity = Gravity.TOP or Gravity.START; x = 30; y = 100 }
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 30
+                y = 100
+            }
 
-            controlView = LinearLayout(context).apply {
+            // 🔥 드래그 가능한 커스텀 LinearLayout
+            controlView = object : LinearLayout(context) {
+                private var initialX = 0
+                private var initialY = 0
+                private var initialTouchX = 0f
+                private var initialTouchY = 0f
+                private val touchSlop = 15f
+
+                override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                    when (ev.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            initialX = floatParams!!.x
+                            initialY = floatParams!!.y
+                            initialTouchX = ev.rawX
+                            initialTouchY = ev.rawY
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx = abs(ev.rawX - initialTouchX)
+                            val dy = abs(ev.rawY - initialTouchY)
+                            if (dx > touchSlop || dy > touchSlop) return true
+                        }
+                    }
+                    return super.onInterceptTouchEvent(ev)
+                }
+
+                override fun onTouchEvent(event: MotionEvent): Boolean {
+                    when (event.action) {
+                        MotionEvent.ACTION_MOVE -> {
+                            floatParams!!.x = initialX + (event.rawX - initialTouchX).toInt()
+                            floatParams!!.y = initialY + (event.rawY - initialTouchY).toInt()
+                            windowManager.updateViewLayout(this, floatParams)
+                            return true
+                        }
+                    }
+                    return super.onTouchEvent(event)
+                }
+            }.apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#DD111111"))
                 setPadding(20, 15, 20, 15)
             }
+
             refreshControlUI()
             windowManager.addView(controlView, floatParams)
         }
@@ -610,14 +651,12 @@ class SolverService : Service() {
         }
 
         if (bestContour == null) {
-            // 컨투어 실패 시 기본값 사용
             src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
             return false
         }
 
         // 5. 컨투어의 바운딩 박스 또는 최소 사각형
         val points = bestContour.toArray()
-        // 각 점을 정렬 (좌상, 우상, 좌하, 우하)
         val sortedPoints = sortCorners(points)
 
         // 6. 모서리 설정
@@ -672,7 +711,7 @@ class SolverService : Service() {
             }
         }
 
-        if (bestScore > 0.3) { // 최소 30% 이상 인식되면 적용
+        if (bestScore > 0.3) {
             rows = bestRows
             cols = bestCols
             savePreferences()
@@ -686,9 +725,9 @@ class SolverService : Service() {
 
     // 4개 점을 좌상, 우상, 좌하, 우하 순으로 정렬
     private fun sortCorners(points: Array<org.opencv.core.Point>): List<org.opencv.core.Point> {
-        val sorted = points.sortedBy { it.y } // y 기준 정렬
-        val top = sorted.take(2).sortedBy { it.x } // 상단 두 점
-        val bottom = sorted.drop(2).sortedBy { it.x } // 하단 두 점
+        val sorted = points.sortedBy { it.y }
+        val top = sorted.take(2).sortedBy { it.x }
+        val bottom = sorted.drop(2).sortedBy { it.x }
         return listOf(top[0], top[1], bottom[0], bottom[1])
     }
 
