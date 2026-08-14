@@ -13,21 +13,30 @@ import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.Toast
+import android.widget.*
 import androidx.core.app.NotificationCompat
-import java.lang.StringBuilder
+import org.opencv.android.OpenCVLoader
+import org.opencv.android.Utils
+import org.opencv.core.*
+import org.opencv.imgproc.Imgproc
+import java.io.File
+import java.io.FileOutputStream
+import kotlin.math.abs
 
 class SolverService : Service() {
-    private val TAG = "OOXOO_Service"
+    private val TAG = "OOXOO_Auto"
     private val binder = SolverBinder()
 
-    // 고정 격자 크기 (Royal Match 기본값)
-    private val ROWS = 11
-    private val COLS = 9
+    // 🔥 자동으로 결정될 변수들
+    private var rows = 11
+    private var cols = 9
+    private val ptTL = PointF()
+    private val ptTR = PointF()
+    private val ptBL = PointF()
+    private val ptBR = PointF()
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -36,6 +45,7 @@ class SolverService : Service() {
 
     private var overlayView: OverlayView? = null
     private var controlView: LinearLayout? = null
+    private var gimmickManagerView: View? = null
     private var floatParams: WindowManager.LayoutParams? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -44,14 +54,18 @@ class SolverService : Service() {
 
     private var isCapturing = false
     private var isScanning = false
+    private var isImageGrabberMode = false
+    private var isGrabberProcessing = false
 
-    // 격자 모서리 (고정값 - 화면 중앙 영역)
-    private val ptTL = PointF()
-    private val ptTR = PointF()
-    private val ptBL = PointF()
-    private val ptBR = PointF()
+    private var isAutoScanEnabled = true
+    private val AUTO_SCAN_INTERVAL = 1000L
+    private var autoScanRunnable: Runnable? = null
 
-    // 발견된 OOXOO 위치 목록
+    // 기믹 템플릿
+    private val dynamicTemplates = mutableListOf<Mat>()
+    private val dynamicTemplateFiles = mutableListOf<File>()
+    private var isOpenCVInitialized = false
+
     private var foundPositions = mutableListOf<Pair<Int, Int>>()
 
     inner class SolverBinder : Binder() {
@@ -67,15 +81,16 @@ class SolverService : Service() {
         backgroundThread = HandlerThread("OOXOO_Worker").apply { start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
 
-        // 격자 모서리 초기화 (화면 비율에 맞게)
-        val metrics = resources.displayMetrics
-        val w = metrics.widthPixels.toFloat()
-        val h = metrics.heightPixels.toFloat()
+        if (OpenCVLoader.initDebug()) {
+            Log.d(TAG, "OpenCV 로드 성공")
+            isOpenCVInitialized = true
+            backgroundHandler?.post { loadTemplatesFromStorage() }
+        } else {
+            Log.e(TAG, "OpenCV 로드 실패")
+        }
 
-        ptTL.set(w * 0.05f, h * 0.20f)
-        ptTR.set(w * 0.95f, h * 0.20f)
-        ptBL.set(w * 0.05f, h * 0.80f)
-        ptBR.set(w * 0.95f, h * 0.80f)
+        // 🔥 저장된 값이 있으면 불러오고, 없으면 기본값
+        loadPreferences()
 
         createOverlayWindow()
         createControlWindow()
@@ -100,25 +115,332 @@ class SolverService : Service() {
         return START_STICKY
     }
 
+    // 🔥 자동 스캔 시작
+    private fun startAutoScan() {
+        if (!isAutoScanEnabled || isScanning) return
+
+        autoScanRunnable = object : Runnable {
+            override fun run() {
+                if (!isAutoScanEnabled || !isCapturing) return
+                performScan()
+                backgroundHandler?.postDelayed(this, AUTO_SCAN_INTERVAL)
+            }
+        }
+        backgroundHandler?.post(autoScanRunnable!!)
+    }
+
+    private fun stopAutoScan() {
+        isAutoScanEnabled = false
+        autoScanRunnable?.let { backgroundHandler?.removeCallbacks(it) }
+        autoScanRunnable = null
+    }
+
+    // 🔥 저장된 템플릿 로드 (기믹)
+    private fun loadTemplatesFromStorage() {
+        if (!isOpenCVInitialized) return
+        synchronized(dynamicTemplates) {
+            dynamicTemplates.forEach { it.release() }
+            dynamicTemplates.clear()
+            dynamicTemplateFiles.clear()
+        }
+        try {
+            val dir = getExternalFilesDir("gimmicks")
+            if (dir != null && dir.exists()) {
+                dir.listFiles { _, name -> name.endsWith(".png") }?.forEach { file ->
+                    val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+                    if (bitmap != null) {
+                        val mat = Mat()
+                        Utils.bitmapToMat(bitmap, mat)
+                        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
+                        synchronized(dynamicTemplates) {
+                            dynamicTemplates.add(mat)
+                            dynamicTemplateFiles.add(file)
+                        }
+                        bitmap.recycle()
+                    }
+                }
+                mainHandler.post { refreshControlUI() }
+            }
+        } catch (e: Exception) { Log.e(TAG, "템플릿 로드 실패", e) }
+    }
+
+    private fun saveGimmickBitmap(bitmap: Bitmap) {
+        try {
+            val dir = getExternalFilesDir("gimmicks")
+            if (dir != null && !dir.exists()) dir.mkdirs()
+            val file = File(dir, "gimmick_${System.currentTimeMillis()}.png")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            val newMat = Mat()
+            Utils.bitmapToMat(bitmap, newMat)
+            Imgproc.cvtColor(newMat, newMat, Imgproc.COLOR_RGBA2GRAY)
+            synchronized(dynamicTemplates) {
+                dynamicTemplates.add(newMat)
+                dynamicTemplateFiles.add(file)
+            }
+            mainHandler.post {
+                Toast.makeText(applicationContext, "✅ 기믹 저장 완료! (${dynamicTemplates.size}개)", Toast.LENGTH_SHORT).show()
+                refreshControlUI()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "기믹 저장 실패", e)
+        } finally {
+            isImageGrabberMode = false
+            isGrabberProcessing = false
+            overlayView?.let {
+                val params = it.layoutParams as WindowManager.LayoutParams
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                windowManager.updateViewLayout(it, params)
+            }
+            refreshControlUI()
+        }
+    }
+
+    private fun deleteGimmick(file: File) {
+        backgroundHandler?.post {
+            try {
+                synchronized(dynamicTemplates) {
+                    val idx = dynamicTemplateFiles.indexOf(file)
+                    if (idx != -1) {
+                        dynamicTemplates[idx].release()
+                        dynamicTemplates.removeAt(idx)
+                        dynamicTemplateFiles.removeAt(idx)
+                        file.delete()
+                    }
+                }
+                mainHandler.post {
+                    Toast.makeText(applicationContext, "🗑️ 삭제됨", Toast.LENGTH_SHORT).show()
+                    refreshControlUI()
+                    hideGimmickManager()
+                    showGimmickManager()
+                }
+            } catch (e: Exception) { Log.e(TAG, "삭제 실패", e) }
+        }
+    }
+
+    private fun clearAllGimmicks() {
+        backgroundHandler?.post {
+            try {
+                synchronized(dynamicTemplates) {
+                    dynamicTemplates.forEach { it.release() }
+                    dynamicTemplates.clear()
+                    dynamicTemplateFiles.clear()
+                }
+                getExternalFilesDir("gimmicks")?.listFiles()?.forEach { it.delete() }
+                mainHandler.post {
+                    Toast.makeText(applicationContext, "🧹 전체 삭제됨", Toast.LENGTH_SHORT).show()
+                    refreshControlUI()
+                    hideGimmickManager()
+                }
+                overlayView?.invalidate()
+            } catch (e: Exception) { Log.e(TAG, "전체 삭제 실패", e) }
+        }
+    }
+
+    private fun showGimmickManager() {
+        mainHandler.post {
+            if (gimmickManagerView != null) return@post
+            val context = applicationContext
+            val mainLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#FA1E1E1E"))
+                setPadding(30, 30, 30, 30)
+            }
+            val tvTitle = TextView(context).apply {
+                text = "📋 등록된 기믹 (${dynamicTemplateFiles.size}개)"
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, 20)
+            }
+            mainLayout.addView(tvTitle)
+
+            val scrollView = ScrollView(context).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(300), dpToPx(350))
+            }
+            val listContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+
+            val currentFiles = synchronized(dynamicTemplates) { ArrayList(dynamicTemplateFiles) }
+            if (currentFiles.isEmpty()) {
+                val tvEmpty = TextView(context).apply {
+                    text = "저장된 기믹이 없습니다."
+                    setTextColor(Color.LTGRAY)
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    setPadding(0, 50, 0, 50)
+                }
+                listContainer.addView(tvEmpty)
+            } else {
+                currentFiles.forEach { file ->
+                    val row = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, 10, 0, 10)
+                    }
+                    val ivThumb = ImageView(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(50))
+                        setBackgroundColor(Color.DKGRAY)
+                        setPadding(2, 2, 2, 2)
+                        try { setImageBitmap(BitmapFactory.decodeFile(file.absolutePath)) }
+                        catch (e: Exception) { setImageResource(android.R.drawable.ic_menu_report_image) }
+                    }
+                    row.addView(ivThumb)
+                    val tvInfo = TextView(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            setMargins(20, 0, 20, 0)
+                        }
+                        text = file.name.substringBefore(".png").take(15)
+                        setTextColor(Color.WHITE)
+                        textSize = 11f
+                    }
+                    row.addView(tvInfo)
+                    val btnDelete = Button(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(dpToPx(65), dpToPx(35))
+                        text = "삭제"
+                        textSize = 11f
+                        setBackgroundColor(Color.parseColor("#D32F2F"))
+                        setTextColor(Color.WHITE)
+                        setOnClickListener { deleteGimmick(file) }
+                    }
+                    row.addView(btnDelete)
+                    listContainer.addView(row)
+                }
+            }
+            scrollView.addView(listContainer)
+            mainLayout.addView(scrollView)
+
+            val btnClearAll = Button(context).apply {
+                text = "🧹 전체 삭제"
+                setBackgroundColor(Color.parseColor("#FF8C00"))
+                setTextColor(Color.WHITE)
+                setOnClickListener { clearAllGimmicks() }
+            }
+            mainLayout.addView(btnClearAll)
+
+            val btnClose = Button(context).apply {
+                text = "닫기"
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { hideGimmickManager() }
+            }
+            mainLayout.addView(btnClose)
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.CENTER }
+
+            gimmickManagerView = mainLayout
+            windowManager.addView(gimmickManagerView, params)
+        }
+    }
+
+    private fun hideGimmickManager() {
+        mainHandler.post {
+            gimmickManagerView?.let {
+                try { windowManager.removeView(it) } catch (e: Exception) {}
+                gimmickManagerView = null
+            }
+        }
+    }
+
     private fun startForegroundServiceInternal() {
         val channelId = "OOXOO_Channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val chan = NotificationChannel(channelId, "OOXOO Helper", NotificationManager.IMPORTANCE_LOW)
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(chan)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(chan)
         }
-
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("OOXOO 헬퍼")
-            .setContentText("OOXOO 패턴 감지 중...")
+            .setContentText("🔄 자동 스캔 중... (1초 간격)")
             .setSmallIcon(android.R.drawable.ic_menu_search)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
             startForeground(1001, notification)
+        }
+    }
+
+    // 🔥 오버레이 뷰 (터치로 기믹 따기 지원)
+    inner class OverlayView(context: Context) : View(context) {
+        private var positions = listOf<Pair<Int, Int>>()
+        private val circlePaint = Paint().apply { color = Color.RED; style = Paint.Style.FILL; alpha = 180 }
+        private val borderPaint = Paint().apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f }
+        private val textPaint = Paint().apply { color = Color.WHITE; textSize = 30f; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+        private val gridPaint = Paint().apply { color = Color.parseColor("#80FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 2f }
+
+        fun updatePositions(newPositions: List<Pair<Int, Int>>) {
+            this.positions = newPositions
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            // 격자선
+            for (i in 0..cols) {
+                val ratio = i.toFloat() / cols
+                val topX = (1 - ratio) * ptTL.x + ratio * ptTR.x
+                val topY = (1 - ratio) * ptTL.y + ratio * ptTR.y
+                val botX = (1 - ratio) * ptBL.x + ratio * ptBR.x
+                val botY = (1 - ratio) * ptBL.y + ratio * ptBR.y
+                canvas.drawLine(topX, topY, botX, botY, gridPaint)
+            }
+            for (j in 0..rows) {
+                val ratio = j.toFloat() / rows
+                val leftX = (1 - ratio) * ptTL.x + ratio * ptBL.x
+                val leftY = (1 - ratio) * ptTL.y + ratio * ptBL.y
+                val rightX = (1 - ratio) * ptTR.x + ratio * ptBR.x
+                val rightY = (1 - ratio) * ptTR.y + ratio * ptBR.y
+                canvas.drawLine(leftX, leftY, rightX, rightY, gridPaint)
+            }
+            // OOXOO 위치
+            for ((row, col) in positions) {
+                val u = (col + 0.5f) / cols
+                val v = (row + 0.5f) / rows
+                val topX = (1 - u) * ptTL.x + u * ptTR.x
+                val topY = (1 - u) * ptTL.y + u * ptTR.y
+                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                val cx = (1 - v) * topX + v * bottomX
+                val cy = (1 - v) * topY + v * bottomY
+                canvas.drawCircle(cx, cy, 40f, circlePaint)
+                canvas.drawCircle(cx, cy, 40f, borderPaint)
+                canvas.drawText("X", cx, cy + 10f, textPaint)
+            }
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (!isImageGrabberMode || isGrabberProcessing) return false
+            if (event.action != MotionEvent.ACTION_DOWN) return false
+
+            val x = event.x; val y = event.y
+            var minDist = Float.MAX_VALUE
+            var targetRow = -1; var targetCol = -1
+            for (r in 0 until rows) {
+                for (c in 0 until cols) {
+                    val u = (c + 0.5f) / cols
+                    val v = (r + 0.5f) / rows
+                    val topX = (1 - u) * ptTL.x + u * ptTR.x
+                    val topY = (1 - u) * ptTL.y + u * ptTR.y
+                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                    val cx = (1 - v) * topX + v * bottomX
+                    val cy = (1 - v) * topY + v * bottomY
+                    val dist = Math.hypot((x - cx).toDouble(), (y - cy).toDouble()).toFloat()
+                    if (dist < minDist) { minDist = dist; targetRow = r; targetCol = c }
+                }
+            }
+            if (minDist > 150f) return false
+            isGrabberProcessing = true
+            captureCellForGimmick(targetRow, targetCol)
+            return true
         }
     }
 
@@ -128,16 +450,11 @@ class SolverService : Service() {
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                else
-                    WindowManager.LayoutParams.TYPE_PHONE,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
-            ).apply {
-                flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            }
+            ).apply { flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE }
             windowManager.addView(overlayView, params)
         }
     }
@@ -148,70 +465,237 @@ class SolverService : Service() {
             floatParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                else
-                    WindowManager.LayoutParams.TYPE_PHONE,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else WindowManager.LayoutParams.TYPE_PHONE,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = 30
-                y = 100
-            }
+            ).apply { gravity = Gravity.TOP or Gravity.START; x = 30; y = 100 }
 
             controlView = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#DD111111"))
                 setPadding(20, 15, 20, 15)
             }
-
-            // 상태 표시
-            val tvStatus = TextView(context).apply {
-                text = "🎯 OOXOO 패턴 감지기"
-                setTextColor(Color.WHITE)
-                textSize = 14f
-                setPadding(0, 0, 0, 10)
-            }
-            controlView!!.addView(tvStatus)
-
-            // 스캔 버튼
-            val btnScan = Button(context).apply {
-                text = "🔍 지금 스캔"
-                setBackgroundColor(Color.parseColor("#FF6200EE"))
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    if (!isScanning) {
-                        isScanning = true
-                        performScan()
-                    }
-                }
-            }
-            controlView!!.addView(btnScan)
-
-            // 결과 개수 표시
-            val tvCount = TextView(context).apply {
-                text = "발견: 0개"
-                setTextColor(Color.parseColor("#FFCCCC"))
-                textSize = 12f
-                setPadding(0, 10, 0, 0)
-            }
-            controlView!!.addView(tvCount)
-
-            // 종료 버튼
-            val btnKill = Button(context).apply {
-                text = "❌ 종료"
-                setBackgroundColor(Color.RED)
-                setTextColor(Color.WHITE)
-                setOnClickListener { stopSelf() }
-            }
-            controlView!!.addView(btnKill)
-
+            refreshControlUI()
             windowManager.addView(controlView, floatParams)
         }
     }
 
+    private fun refreshControlUI() {
+        val view = controlView ?: return
+        view.removeAllViews()
+        val context = applicationContext
+
+        TextView(context).apply {
+            text = "🎯 OOXOO 자동 감지기"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, 10)
+        }.also { view.addView(it) }
+
+        val statusText = if (isAutoScanEnabled) "🔄 자동 스캔 ON (1초)" else "⏸️ 자동 스캔 OFF"
+        TextView(context).apply {
+            text = statusText
+            setTextColor(if (isAutoScanEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
+            textSize = 12f
+            setPadding(0, 0, 0, 5)
+        }.also { view.addView(it) }
+
+        TextView(context).apply {
+            text = "발견: ${foundPositions.size}개  |  ${rows}x${cols}"
+            setTextColor(Color.parseColor("#FFCCCC"))
+            textSize = 13f
+            setPadding(0, 0, 0, 10)
+        }.also { view.addView(it) }
+
+        Button(context).apply {
+            text = if (isAutoScanEnabled) "⏸️ 자동 스캔 중지" else "▶️ 자동 스캔 시작"
+            setBackgroundColor(if (isAutoScanEnabled) Color.parseColor("#D32F2F") else Color.parseColor("#4CAF50"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                isAutoScanEnabled = !isAutoScanEnabled
+                if (isAutoScanEnabled) { startAutoScan(); Toast.makeText(context, "🔄 재개", Toast.LENGTH_SHORT).show() }
+                else { stopAutoScan(); Toast.makeText(context, "⏸️ 중지", Toast.LENGTH_SHORT).show() }
+                refreshControlUI()
+            }
+        }.also { view.addView(it) }
+
+        Button(context).apply {
+            text = if (isImageGrabberMode) "❌ 기믹 따기 취소" else "📷 기믹 따기"
+            setBackgroundColor(if (isImageGrabberMode) Color.parseColor("#D32F2F") else Color.parseColor("#5A0063"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                if (isImageGrabberMode) {
+                    isImageGrabberMode = false
+                    overlayView?.let {
+                        val p = it.layoutParams as WindowManager.LayoutParams
+                        p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        windowManager.updateViewLayout(it, p)
+                    }
+                    Toast.makeText(context, "기믹 따기 종료", Toast.LENGTH_SHORT).show()
+                } else {
+                    isImageGrabberMode = true
+                    overlayView?.let {
+                        val p = it.layoutParams as WindowManager.LayoutParams
+                        p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                        windowManager.updateViewLayout(it, p)
+                    }
+                    Toast.makeText(context, "📷 셀을 터치하세요", Toast.LENGTH_SHORT).show()
+                }
+                refreshControlUI()
+            }
+        }.also { view.addView(it) }
+
+        Button(context).apply {
+            text = "📋 기믹 목록 (${dynamicTemplateFiles.size})"
+            setBackgroundColor(Color.parseColor("#00574B"))
+            setTextColor(Color.WHITE)
+            setOnClickListener { showGimmickManager() }
+        }.also { view.addView(it) }
+
+        Button(context).apply {
+            text = "❌ 종료"
+            setBackgroundColor(Color.RED)
+            setTextColor(Color.WHITE)
+            setOnClickListener { stopSelf() }
+        }.also { view.addView(it) }
+
+        floatParams?.let { params ->
+            try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {}
+        }
+    }
+
+    private fun dpToPx(dp: Int) = (dp * resources.displayMetrics.density).toInt()
+
+    // 🔥🔥🔥 자동 보드 검출 (OpenCV + 후보 크기 테스트)
+    private fun autoDetectBoard(bitmap: Bitmap): Boolean {
+        if (!isOpenCVInitialized) return false
+
+        val width = bitmap.width
+        val height = bitmap.height
+
+        // 1. 그레이스케일 + 블러
+        val src = Mat()
+        Utils.bitmapToMat(bitmap, src)
+        val gray = Mat()
+        Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+        val blurred = Mat()
+        Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
+
+        // 2. 에지 검출
+        val edges = Mat()
+        Imgproc.Canny(blurred, edges, 50.0, 150.0)
+
+        // 3. 컨투어 찾기
+        val contours = ArrayList<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+
+        // 4. 가장 큰 사각형 찾기 (면적 기준)
+        var bestContour: MatOfPoint? = null
+        var bestArea = 0.0
+        for (contour in contours) {
+            val area = Imgproc.contourArea(contour)
+            if (area > bestArea && area > 50000) { // 최소 면적 조건
+                val peri = Imgproc.arcLength(MatOfPoint2f(*contour.toArray()), true)
+                val approx = MatOfPoint2f()
+                Imgproc.approxPolyDP(MatOfPoint2f(*contour.toArray()), approx, peri * 0.02, true)
+                if (approx.toArray().size == 4) {
+                    bestContour = contour
+                    bestArea = area
+                }
+            }
+        }
+
+        if (bestContour == null) {
+            // 컨투어 실패 시 기본값 사용
+            src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
+            return false
+        }
+
+        // 5. 컨투어의 바운딩 박스 또는 최소 사각형
+        val points = bestContour.toArray()
+        // 각 점을 정렬 (좌상, 우상, 좌하, 우하)
+        val sortedPoints = sortCorners(points)
+
+        // 6. 모서리 설정
+        ptTL.set(sortedPoints[0].x.toFloat(), sortedPoints[0].y.toFloat())
+        ptTR.set(sortedPoints[1].x.toFloat(), sortedPoints[1].y.toFloat())
+        ptBL.set(sortedPoints[2].x.toFloat(), sortedPoints[2].y.toFloat())
+        ptBR.set(sortedPoints[3].x.toFloat(), sortedPoints[3].y.toFloat())
+
+        // 7. 격자 크기 추정 (후보 크기 테스트)
+        val candidates = listOf(
+            8 to 8, 8 to 9, 8 to 10,
+            9 to 8, 9 to 9, 9 to 10, 9 to 11,
+            10 to 8, 10 to 9, 10 to 10, 10 to 11,
+            11 to 8, 11 to 9, 11 to 10, 11 to 11,
+            12 to 8, 12 to 9, 12 to 10, 12 to 11
+        )
+
+        var bestRows = rows
+        var bestCols = cols
+        var bestScore = -1.0
+
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        for ((r, c) in candidates) {
+            var validCount = 0
+            var total = 0
+            for (rr in 0 until r) {
+                for (cc in 0 until c) {
+                    val u = (cc + 0.5f) / c
+                    val v = (rr + 0.5f) / r
+                    val topX = (1 - u) * ptTL.x + u * ptTR.x
+                    val topY = (1 - u) * ptTL.y + u * ptTR.y
+                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                    val cx = (1 - v) * topX + v * bottomX
+                    val cy = (1 - v) * topY + v * bottomY
+                    val ix = cx.toInt().coerceIn(0, width - 1)
+                    val iy = cy.toInt().coerceIn(0, height - 1)
+                    val pixel = pixels[iy * width + ix]
+                    val hsv = FloatArray(3)
+                    Color.colorToHSV(pixel, hsv)
+                    total++
+                    if (hsv[1] > 0.25f && hsv[2] > 0.25f) validCount++
+                }
+            }
+            val score = validCount.toDouble() / total
+            if (score > bestScore) {
+                bestScore = score
+                bestRows = r
+                bestCols = c
+            }
+        }
+
+        if (bestScore > 0.3) { // 최소 30% 이상 인식되면 적용
+            rows = bestRows
+            cols = bestCols
+            savePreferences()
+            Log.d(TAG, "자동 인식 성공: ${rows}x${cols}, 신뢰도 ${"%.0f".format(bestScore * 100)}%")
+            return true
+        }
+
+        src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
+        return false
+    }
+
+    // 4개 점을 좌상, 우상, 좌하, 우하 순으로 정렬
+    private fun sortCorners(points: Array<org.opencv.core.Point>): List<org.opencv.core.Point> {
+        val sorted = points.sortedBy { it.y } // y 기준 정렬
+        val top = sorted.take(2).sortedBy { it.x } // 상단 두 점
+        val bottom = sorted.drop(2).sortedBy { it.x } // 하단 두 점
+        return listOf(top[0], top[1], bottom[0], bottom[1])
+    }
+
+    // 🔥 스캔 실행 (자동 보드 인식 포함)
     private fun performScan() {
+        if (isScanning) return
+        isScanning = true
+
         backgroundHandler?.post {
             val reader = imageReader ?: return@post
             var image = reader.acquireLatestImage()
@@ -220,10 +704,7 @@ class SolverService : Service() {
                 image = reader.acquireNextImage()
             }
             if (image == null) {
-                mainHandler.post {
-                    Toast.makeText(applicationContext, "화면 캡처 실패", Toast.LENGTH_SHORT).show()
-                    isScanning = false
-                }
+                mainHandler.post { isScanning = false }
                 return@post
             }
 
@@ -240,6 +721,9 @@ class SolverService : Service() {
                 val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 bitmap.copyPixelsFromBuffer(buffer)
 
+                // 🔥 자동 보드 인식 (매 스캔마다 시도)
+                autoDetectBoard(bitmap)
+
                 // OOXOO 패턴 탐색
                 val positions = findOOXOO(bitmap)
 
@@ -247,22 +731,8 @@ class SolverService : Service() {
                     foundPositions.clear()
                     foundPositions.addAll(positions)
                     overlayView?.updatePositions(positions)
-                    updateControlUI(positions.size)
+                    refreshControlUI()
                     isScanning = false
-
-                    if (positions.isNotEmpty()) {
-                        Toast.makeText(
-                            applicationContext,
-                            "✅ OOXOO 발견! ${positions.size}개 위치 표시됨",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        Toast.makeText(
-                            applicationContext,
-                            "❌ OOXOO 패턴 없음",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
                 }
 
                 bitmap.recycle()
@@ -275,44 +745,57 @@ class SolverService : Service() {
         }
     }
 
+    // 🔥 OOXOO 탐색 (기믹 인식 포함)
     private fun findOOXOO(bitmap: Bitmap): List<Pair<Int, Int>> {
         val width = bitmap.width
         val height = bitmap.height
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
-        // 색상 맵 생성
-        val colorGrid = Array(ROWS) { IntArray(COLS) }
+        val colorGrid = Array(rows) { IntArray(cols) }
 
-        for (r in 0 until ROWS) {
-            for (c in 0 until COLS) {
-                val u = (c + 0.5f) / COLS
-                val v = (r + 0.5f) / ROWS
-
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val u = (c + 0.5f) / cols
+                val v = (r + 0.5f) / rows
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
                 val topY = (1 - u) * ptTL.y + u * ptTR.y
                 val bottomX = (1 - u) * ptBL.x + u * ptBR.x
                 val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                val cx = (1 - v) * topX + v * bottomX
+                val cy = (1 - v) * topY + v * bottomY
+                val ix = cx.toInt().coerceIn(0, width - 1)
+                val iy = cy.toInt().coerceIn(0, height - 1)
+                val pixel = pixels[iy * width + ix]
 
-                val targetX = (1 - v) * topX + v * bottomX
-                val targetY = (1 - v) * topY + v * bottomY
-
-                val cx = targetX.toInt().coerceIn(0, width - 1)
-                val cy = targetY.toInt().coerceIn(0, height - 1)
-                val pixel = pixels[cy * width + cx]
+                // 기믹 체크
+                if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
+                    val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(1)
+                    val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(1)
+                    val halfW = cellW / 2; val halfH = cellH / 2
+                    val startX = (cx - halfW).toInt().coerceIn(0, width - cellW)
+                    val startY = (cy - halfH).toInt().coerceIn(0, height - cellH)
+                    try {
+                        val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, cellW, cellH)
+                        if (isGimmick(cellBitmap)) {
+                            colorGrid[r][c] = -1
+                            cellBitmap.recycle()
+                            continue
+                        }
+                        cellBitmap.recycle()
+                    } catch (e: Exception) {}
+                }
 
                 val hsv = FloatArray(3)
                 Color.colorToHSV(pixel, hsv)
-                val hue = hsv[0]
-                val sat = hsv[1]
-
+                val hue = hsv[0]; val sat = hsv[1]
                 colorGrid[r][c] = when {
-                    sat < 0.25f -> -1  // 빈칸
-                    hue in 0f..30f -> 1  // 빨강/갈색
-                    hue in 31f..70f -> 2 // 노랑
-                    hue in 71f..160f -> 3 // 초록
-                    hue in 161f..230f -> 4 // 파랑
-                    hue in 231f..360f -> 5 // 보라
+                    sat < 0.25f -> -1
+                    hue in 0f..30f -> 1
+                    hue in 31f..70f -> 2
+                    hue in 71f..160f -> 3
+                    hue in 161f..230f -> 4
+                    hue in 231f..360f -> 5
                     else -> -1
                 }
             }
@@ -320,58 +803,38 @@ class SolverService : Service() {
 
         val result = mutableListOf<Pair<Int, Int>>()
 
-        // 가로 OOXOO 검사
-        for (r in 0 until ROWS) {
-            for (c in 0 until COLS - 4) {
+        // 가로 OOXOO
+        for (r in 0 until rows) {
+            for (c in 0 until cols - 4) {
                 val color = colorGrid[r][c]
                 if (color == -1) continue
-
-                // O O X O O
                 if (colorGrid[r][c] == color &&
                     colorGrid[r][c + 1] == color &&
                     colorGrid[r][c + 2] != color &&
                     colorGrid[r][c + 3] == color &&
                     colorGrid[r][c + 4] == color) {
-
                     val xCol = c + 2
-                    // X의 위/아래에 같은 색 O가 있는지 확인
-                    val hasAdjacentO =
-                        (r > 0 && colorGrid[r - 1][xCol] == color) ||
-                        (r < ROWS - 1 && colorGrid[r + 1][xCol] == color)
-
-                    if (hasAdjacentO) {
-                        result.add(Pair(r, xCol))  // (행, 열)
-                    }
+                    val hasAdjacent = (r > 0 && colorGrid[r - 1][xCol] == color) ||
+                                      (r < rows - 1 && colorGrid[r + 1][xCol] == color)
+                    if (hasAdjacent) result.add(Pair(r, xCol))
                 }
             }
         }
 
-        // 세로 OOXOO 검사
-        for (c in 0 until COLS) {
-            for (r in 0 until ROWS - 4) {
+        // 세로 OOXOO
+        for (c in 0 until cols) {
+            for (r in 0 until rows - 4) {
                 val color = colorGrid[r][c]
                 if (color == -1) continue
-
-                // O
-                // O
-                // X
-                // O
-                // O
                 if (colorGrid[r][c] == color &&
                     colorGrid[r + 1][c] == color &&
                     colorGrid[r + 2][c] != color &&
                     colorGrid[r + 3][c] == color &&
                     colorGrid[r + 4][c] == color) {
-
                     val xRow = r + 2
-                    // X의 좌/우에 같은 색 O가 있는지 확인
-                    val hasAdjacentO =
-                        (c > 0 && colorGrid[xRow][c - 1] == color) ||
-                        (c < COLS - 1 && colorGrid[xRow][c + 1] == color)
-
-                    if (hasAdjacentO) {
-                        result.add(Pair(xRow, c))  // (행, 열)
-                    }
+                    val hasAdjacent = (c > 0 && colorGrid[xRow][c - 1] == color) ||
+                                      (c < cols - 1 && colorGrid[xRow][c + 1] == color)
+                    if (hasAdjacent) result.add(Pair(xRow, c))
                 }
             }
         }
@@ -379,122 +842,142 @@ class SolverService : Service() {
         return result.distinct()
     }
 
-    private fun updateControlUI(count: Int) {
-        controlView?.let { view ->
-            val tvCount = view.getChildAt(2) as? TextView
-            tvCount?.text = "발견: $count개"
+    private fun isGimmick(cellBitmap: Bitmap): Boolean {
+        if (!isOpenCVInitialized || dynamicTemplates.isEmpty()) return false
+        val cellMat = Mat()
+        Utils.bitmapToMat(cellBitmap, cellMat)
+        Imgproc.cvtColor(cellMat, cellMat, Imgproc.COLOR_RGBA2GRAY)
+        val resultMat = Mat()
+        var matched = false
+        synchronized(dynamicTemplates) {
+            for (template in dynamicTemplates) {
+                if (cellMat.cols() >= template.cols() && cellMat.rows() >= template.rows()) {
+                    Imgproc.matchTemplate(cellMat, template, resultMat, Imgproc.TM_CCOEFF_NORMED)
+                    if (Core.minMaxLoc(resultMat).maxVal >= 0.75) { matched = true; break }
+                }
+            }
+        }
+        cellMat.release(); resultMat.release()
+        return matched
+    }
+
+    private fun captureCellForGimmick(row: Int, col: Int) {
+        val reader = imageReader ?: return
+        backgroundHandler?.post {
+            var image = reader.acquireLatestImage()
+            if (image == null) { try { Thread.sleep(50) } catch (e: Exception) {}; image = reader.acquireNextImage() }
+            if (image == null) { isGrabberProcessing = false; return@post }
+
+            try {
+                val metrics = resources.displayMetrics
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val w = metrics.widthPixels; val h = metrics.heightPixels
+                val rowPadding = rowStride - pixelStride * w
+                val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                fullBitmap.copyPixelsFromBuffer(buffer)
+
+                val u = (col + 0.5f) / cols
+                val v = (row + 0.5f) / rows
+                val topX = (1 - u) * ptTL.x + u * ptTR.x
+                val topY = (1 - u) * ptTL.y + u * ptTR.y
+                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                val cx = (1 - v) * topX + v * bottomX
+                val cy = (1 - v) * topY + v * bottomY
+
+                val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(10)
+                val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(10)
+                val cropSize = minOf(cellW, cellH) * 0.8f
+                val half = (cropSize / 2).toInt()
+                val startX = (cx - half).toInt().coerceIn(0, fullBitmap.width - 1)
+                val startY = (cy - half).toInt().coerceIn(0, fullBitmap.height - 1)
+                val size = cropSize.toInt().coerceAtLeast(1)
+
+                val cellBitmap = Bitmap.createBitmap(
+                    fullBitmap,
+                    startX.coerceAtMost(fullBitmap.width - size),
+                    startY.coerceAtMost(fullBitmap.height - size),
+                    size, size
+                )
+                saveGimmickBitmap(cellBitmap)
+                cellBitmap.recycle(); fullBitmap.recycle()
+            } catch (e: Exception) { Log.e(TAG, "셀 캡처 실패", e) } finally { image.close() }
         }
     }
 
     private fun setupScreenCapture(resultCode: Int, resultData: Intent) {
         try {
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-
             mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { super.onStop(); stopCapture() }
             }, backgroundHandler)
 
             val metrics = resources.displayMetrics
-            imageReader = ImageReader.newInstance(
-                metrics.widthPixels,
-                metrics.heightPixels,
-                PixelFormat.RGBA_8888,
-                2
-            )
-
+            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
             virtualDisplay = mediaProjection?.createVirtualDisplay(
                 "OOXOO_Capture",
-                metrics.widthPixels,
-                metrics.heightPixels,
-                metrics.densityDpi,
+                metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface,
-                null,
-                backgroundHandler
+                imageReader?.surface, null, backgroundHandler
             )
-
             isCapturing = true
 
-            // 첫 스캔 자동 실행
-            backgroundHandler?.postDelayed({
-                if (isCapturing && !isScanning) {
-                    isScanning = true
-                    performScan()
-                }
-            }, 500)
-
-        } catch (e: Exception) {
-            Log.e(TAG, "캡처 설정 실패", e)
-        }
+            mainHandler.post {
+                isAutoScanEnabled = true
+                startAutoScan()
+                Toast.makeText(applicationContext, "🔄 자동 스캔 시작 (1초 간격)", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) { Log.e(TAG, "캡처 설정 실패", e) }
     }
 
     private fun stopCapture() {
         isCapturing = false
-        virtualDisplay?.release()
-        virtualDisplay = null
-        imageReader?.close()
-        imageReader = null
-        mediaProjection?.stop()
-        mediaProjection = null
+        stopAutoScan()
+        virtualDisplay?.release(); virtualDisplay = null
+        imageReader?.close(); imageReader = null
+        mediaProjection?.stop(); mediaProjection = null
+    }
+
+    private fun savePreferences() {
+        val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            putInt("rows", rows); putInt("cols", cols)
+            putFloat("ptTL_x", ptTL.x); putFloat("ptTL_y", ptTL.y)
+            putFloat("ptTR_x", ptTR.x); putFloat("ptTR_y", ptTR.y)
+            putFloat("ptBL_x", ptBL.x); putFloat("ptBL_y", ptBL.y)
+            putFloat("ptBR_x", ptBR.x); putFloat("ptBR_y", ptBR.y)
+            apply()
+        }
+    }
+
+    private fun loadPreferences() {
+        val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
+        val metrics = resources.displayMetrics
+        val w = metrics.widthPixels.toFloat(); val h = metrics.heightPixels.toFloat()
+
+        rows = prefs.getInt("rows", 11)
+        cols = prefs.getInt("cols", 9)
+
+        ptTL.set(prefs.getFloat("ptTL_x", w * 0.10f), prefs.getFloat("ptTL_y", h * 0.25f))
+        ptTR.set(prefs.getFloat("ptTR_x", w * 0.90f), prefs.getFloat("ptTR_y", h * 0.25f))
+        ptBL.set(prefs.getFloat("ptBL_x", w * 0.10f), prefs.getFloat("ptBL_y", h * 0.75f))
+        ptBR.set(prefs.getFloat("ptBR_x", w * 0.90f), prefs.getFloat("ptBR_y", h * 0.75f))
     }
 
     override fun onDestroy() {
         stopCapture()
+        hideGimmickManager()
+        synchronized(dynamicTemplates) {
+            dynamicTemplates.forEach { it.release() }
+            dynamicTemplates.clear(); dynamicTemplateFiles.clear()
+        }
         controlView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
         overlayView?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
         backgroundThread?.quitSafely()
         super.onDestroy()
-    }
-
-    // 오버레이 뷰 - 발견된 위치에 빨간 동그라미 표시
-    inner class OverlayView(context: Context) : View(context) {
-        private var positions = listOf<Pair<Int, Int>>()
-        private val circlePaint = Paint().apply {
-            color = Color.RED
-            style = Paint.Style.FILL
-            alpha = 180
-        }
-        private val borderPaint = Paint().apply {
-            color = Color.WHITE
-            style = Paint.Style.STROKE
-            strokeWidth = 4f
-        }
-        private val textPaint = Paint().apply {
-            color = Color.WHITE
-            textSize = 30f
-            textAlign = Paint.Align.CENTER
-            isFakeBoldText = true
-        }
-
-        fun updatePositions(newPositions: List<Pair<Int, Int>>) {
-            this.positions = newPositions
-            invalidate()
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-
-            for ((row, col) in positions) {
-                // 해당 셀의 중심 좌표 계산
-                val u = (col + 0.5f) / COLS
-                val v = (row + 0.5f) / ROWS
-
-                val topX = (1 - u) * ptTL.x + u * ptTR.x
-                val topY = (1 - u) * ptTL.y + u * ptTR.y
-                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
-
-                val cx = (1 - v) * topX + v * bottomX
-                val cy = (1 - v) * topY + v * bottomY
-
-                // 빨간 동그라미
-                canvas.drawCircle(cx, cy, 40f, circlePaint)
-                canvas.drawCircle(cx, cy, 40f, borderPaint)
-
-                // "X" 표시
-                canvas.drawText("X", cx, cy + 10f, textPaint)
-            }
-        }
     }
 }
