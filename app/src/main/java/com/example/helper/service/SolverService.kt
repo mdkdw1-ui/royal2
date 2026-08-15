@@ -137,7 +137,6 @@ class SolverService : Service() {
         autoScanRunnable = null
     }
 
-    // 🔥 기믹 템플릿 로드
     private fun loadTemplatesFromStorage() {
         if (!isOpenCVInitialized) return
         synchronized(dynamicTemplates) {
@@ -161,22 +160,16 @@ class SolverService : Service() {
                             templateSizes.add(Pair(mat.width(), mat.height()))
                         }
                         bitmap.recycle()
-                        Log.d(TAG, "템플릿 로드: ${file.name} (${mat.width()}x${mat.height()})")
                     }
                 }
                 mainHandler.post {
-                    Toast.makeText(
-                        applicationContext,
-                        "📋 기믹 ${dynamicTemplates.size}개 로드됨",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(applicationContext, "📋 기믹 ${dynamicTemplates.size}개 로드됨", Toast.LENGTH_SHORT).show()
                     refreshControlUI()
                 }
             }
         } catch (e: Exception) { Log.e(TAG, "템플릿 로드 실패", e) }
     }
 
-    // 🔥 기믹 저장
     private fun saveGimmickBitmap(bitmap: Bitmap) {
         try {
             val dir = getExternalFilesDir("gimmicks")
@@ -203,11 +196,7 @@ class SolverService : Service() {
             resizedBitmap.recycle()
 
             mainHandler.post {
-                Toast.makeText(
-                    applicationContext,
-                    "✅ 기믹 저장 완료! (${dynamicTemplates.size}개)",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(applicationContext, "✅ 기믹 저장 완료! (${dynamicTemplates.size}개)", Toast.LENGTH_SHORT).show()
                 refreshControlUI()
             }
         } catch (e: Exception) {
@@ -467,8 +456,32 @@ class SolverService : Service() {
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
-            if (!isCalibrationMode && !isImageGrabberMode) return false
+            // 🔥 기믹 따기 모드 우선 처리
+            if (isImageGrabberMode && !isGrabberProcessing && event.action == MotionEvent.ACTION_DOWN) {
+                val x = event.x; val y = event.y
+                var minDist = Float.MAX_VALUE; var targetRow = -1; var targetCol = -1
+                for (r in 0 until rows) for (c in 0 until cols) {
+                    val u = (c + 0.5f) / cols; val v = (r + 0.5f) / rows
+                    val topX = (1 - u) * ptTL.x + u * ptTR.x
+                    val topY = (1 - u) * ptTL.y + u * ptTR.y
+                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                    val cx = (1 - v) * topX + v * bottomX
+                    val cy = (1 - v) * topY + v * bottomY
+                    val dist = Math.hypot((x - cx).toDouble(), (y - cy).toDouble()).toFloat()
+                    if (dist < minDist) { minDist = dist; targetRow = r; targetCol = c }
+                }
+                if (minDist < 150f) {
+                    Log.d(TAG, "📷 기믹 따기: row=$targetRow, col=$targetCol")
+                    isGrabberProcessing = true
+                    captureCellForGimmick(targetRow, targetCol)
+                    return true
+                }
+                Toast.makeText(context, "⚠️ 셀을 정확히 터치하세요", Toast.LENGTH_SHORT).show()
+                return true
+            }
 
+            // 보정 모드
             if (isCalibrationMode) {
                 val x = event.x; val y = event.y
                 val corners = listOf(ptTL, ptTR, ptBL, ptBR)
@@ -514,27 +527,6 @@ class SolverService : Service() {
                 return false
             }
 
-            if (isImageGrabberMode && !isGrabberProcessing && event.action == MotionEvent.ACTION_DOWN) {
-                val x = event.x; val y = event.y
-                var minDist = Float.MAX_VALUE; var targetRow = -1; var targetCol = -1
-                for (r in 0 until rows) for (c in 0 until cols) {
-                    val u = (c + 0.5f) / cols; val v = (r + 0.5f) / rows
-                    val topX = (1 - u) * ptTL.x + u * ptTR.x
-                    val topY = (1 - u) * ptTL.y + u * ptTR.y
-                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
-                    val cx = (1 - v) * topX + v * bottomX
-                    val cy = (1 - v) * topY + v * bottomY
-                    val dist = Math.hypot((x - cx).toDouble(), (y - cy).toDouble()).toFloat()
-                    if (dist < minDist) { minDist = dist; targetRow = r; targetCol = c }
-                }
-                if (minDist < 150f) {
-                    isGrabberProcessing = true
-                    captureCellForGimmick(targetRow, targetCol)
-                    return true
-                }
-                Toast.makeText(applicationContext, "⚠️ 셀을 정확히 터치하세요", Toast.LENGTH_SHORT).show()
-            }
             return false
         }
     }
@@ -585,7 +577,6 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 컨트롤 패널
     private fun createControlWindow() {
         mainHandler.post {
             val context = applicationContext
@@ -642,7 +633,7 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 UI 새로고침
+    // 🔥 UI 새로고침 (전체 기능 포함)
     private fun refreshControlUI() {
         val view = controlView ?: return
         view.removeAllViews()
@@ -802,7 +793,7 @@ class SolverService : Service() {
         }
 
         // =========================================================
-        // 일반 모드
+        // 일반 모드 (간이/확장)
         // =========================================================
         val topRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -836,6 +827,7 @@ class SolverService : Service() {
             setPadding(0, 5, 0, 5)
         }.also { view.addView(it) }
 
+        // 간이 모드
         if (isCompactMode) {
             Button(context).apply {
                 text = "❌ 종료"
@@ -847,7 +839,8 @@ class SolverService : Service() {
             return
         }
 
-        // --- 확장 모드 ---
+        // --- 확장 모드 (전체 기능) ---
+        // 1. 크기 조정
         val sizeRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -874,6 +867,7 @@ class SolverService : Service() {
         }
         view.addView(sizeRow)
 
+        // 2. 자동 스캔 토글
         Button(context).apply {
             text = if (isAutoScanEnabled) "⏸️ 자동 중지" else "▶️ 자동 시작"
             setBackgroundColor(if (isAutoScanEnabled) Color.parseColor("#D32F2F") else Color.parseColor("#4CAF50"))
@@ -886,6 +880,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 3. 자동 격자 감지 토글
         Button(context).apply {
             text = if (isAutoDetectEnabled) "📐 자동격자: ON" else "📐 자동격자: OFF"
             setBackgroundColor(if (isAutoDetectEnabled) Color.parseColor("#007F0E") else Color.parseColor("#444444"))
@@ -897,6 +892,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 4. 격자 보기 토글
         Button(context).apply {
             text = if (isGridVisible) "🌐 격자: 보임" else "🌐 격자: 숨김"
             setBackgroundColor(if (isGridVisible) Color.parseColor("#007F0E") else Color.parseColor("#444444"))
@@ -908,6 +904,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 5. 격자 보정 (진입)
         Button(context).apply {
             text = "📐 격자 보정"
             setBackgroundColor(Color.parseColor("#444444"))
@@ -926,6 +923,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 6. 기믹 따기
         Button(context).apply {
             text = if (isImageGrabberMode) "❌ 기믹 취소" else "📷 기믹 따기"
             setBackgroundColor(if (isImageGrabberMode) Color.parseColor("#D32F2F") else Color.parseColor("#5A0063"))
@@ -952,6 +950,7 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 7. 기믹 목록
         Button(context).apply {
             text = "📋 기믹 목록 (${dynamicTemplateFiles.size})"
             setBackgroundColor(Color.parseColor("#00574B"))
@@ -959,6 +958,7 @@ class SolverService : Service() {
             setOnClickListener { showGimmickManager() }
         }.also { view.addView(it) }
 
+        // 8. 종료
         Button(context).apply {
             text = "❌ 종료"
             setBackgroundColor(Color.RED)
@@ -1178,7 +1178,7 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 OOXOO 탐색
+    // 🔥 OOXOO 탐색 (5칸 정확히)
     private fun findOOXOO(bitmap: Bitmap): List<Pair<Int, Int>> {
         val width = bitmap.width; val height = bitmap.height
         val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
@@ -1195,7 +1195,7 @@ class SolverService : Service() {
             val ix = cx.toInt().coerceIn(0, width - 1); val iy = cy.toInt().coerceIn(0, height - 1)
             val pixel = pixels[iy * width + ix]
 
-            // 🔥 기믹 체크
+            // 기믹 체크
             if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
                 val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(20)
                 val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(20)
@@ -1235,24 +1235,49 @@ class SolverService : Service() {
         }
 
         val result = mutableListOf<Pair<Int, Int>>()
-        for (r in 0 until rows) for (c in 0 until cols - 4) {
-            val color = colorGrid[r][c]; if (color == -1) continue
-            if (colorGrid[r][c] == color && colorGrid[r][c+1] == color &&
-                colorGrid[r][c+2] != color && colorGrid[r][c+3] == color && colorGrid[r][c+4] == color) {
-                val xCol = c + 2
-                if ((r > 0 && colorGrid[r-1][xCol] == color) || (r < rows-1 && colorGrid[r+1][xCol] == color))
-                    result.add(Pair(r, xCol))
+
+        // 🔥 가로 OOXOO (5칸: O O X O O)
+        if (cols >= 5) {
+            for (r in 0 until rows) {
+                for (c in 0 until cols - 4) {
+                    val color = colorGrid[r][c]
+                    if (color == -1) continue
+                    if (colorGrid[r][c] == color &&
+                        colorGrid[r][c + 1] == color &&
+                        colorGrid[r][c + 2] != color &&
+                        colorGrid[r][c + 3] == color &&
+                        colorGrid[r][c + 4] == color) {
+                        val xCol = c + 2
+                        if ((r > 0 && colorGrid[r - 1][xCol] == color) ||
+                            (r < rows - 1 && colorGrid[r + 1][xCol] == color)) {
+                            result.add(Pair(r, xCol))
+                        }
+                    }
+                }
             }
         }
-        for (c in 0 until cols) for (r in 0 until rows - 4) {
-            val color = colorGrid[r][c]; if (color == -1) continue
-            if (colorGrid[r][c] == color && colorGrid[r+1][c] == color &&
-                colorGrid[r+2][c] != color && colorGrid[r+3][c] == color && colorGrid[r+4][c] == color) {
-                val xRow = r + 2
-                if ((c > 0 && colorGrid[xRow][c-1] == color) || (c < cols-1 && colorGrid[xRow][c+1] == color))
-                    result.add(Pair(xRow, c))
+
+        // 🔥 세로 OOXOO (5칸: O O X O O)
+        if (rows >= 5) {
+            for (c in 0 until cols) {
+                for (r in 0 until rows - 4) {
+                    val color = colorGrid[r][c]
+                    if (color == -1) continue
+                    if (colorGrid[r][c] == color &&
+                        colorGrid[r + 1][c] == color &&
+                        colorGrid[r + 2][c] != color &&
+                        colorGrid[r + 3][c] == color &&
+                        colorGrid[r + 4][c] == color) {
+                        val xRow = r + 2
+                        if ((c > 0 && colorGrid[xRow][c - 1] == color) ||
+                            (c < cols - 1 && colorGrid[xRow][c + 1] == color)) {
+                            result.add(Pair(xRow, c))
+                        }
+                    }
+                }
             }
         }
+
         return result.distinct()
     }
 
@@ -1266,15 +1291,12 @@ class SolverService : Service() {
 
         val resultMat = Mat()
         var matched = false
-        var maxMatch = 0.0
 
         synchronized(dynamicTemplates) {
             for (template in dynamicTemplates) {
                 if (cellMat.cols() >= template.cols() && cellMat.rows() >= template.rows()) {
                     Imgproc.matchTemplate(cellMat, template, resultMat, Imgproc.TM_CCOEFF_NORMED)
-                    val matchVal = Core.minMaxLoc(resultMat).maxVal
-                    if (matchVal > maxMatch) { maxMatch = matchVal }
-                    if (matchVal >= 0.55) {
+                    if (Core.minMaxLoc(resultMat).maxVal >= 0.55) {
                         matched = true
                         break
                     }
@@ -1284,16 +1306,18 @@ class SolverService : Service() {
 
         cellMat.release()
         resultMat.release()
-
-        if (matched) {
-            Log.d(TAG, "기믹 감지됨 (매칭율: ${"%.2f".format(maxMatch)})")
-        }
         return matched
     }
 
     // 🔥 기믹 캡처
     private fun captureCellForGimmick(row: Int, col: Int) {
-        val reader = imageReader ?: return
+        Log.d(TAG, "📷 기믹 캡처 시작: row=$row, col=$col")
+        val reader = imageReader ?: run {
+            Log.e(TAG, "❌ imageReader가 null입니다")
+            isGrabberProcessing = false
+            return
+        }
+
         backgroundHandler?.post {
             var image = reader.acquireLatestImage()
             if (image == null) {
