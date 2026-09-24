@@ -1117,88 +1117,105 @@ class SolverService : Service() {
     // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
     private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
         try {
-            // 1. 보드를 정면 사각형으로 원근 보정
+            val warpW = 720
+            val warpH = 900
             val srcPts = MatOfPoint2f(
                 org.opencv.core.Point(ptTL.x.toDouble(), ptTL.y.toDouble()),
                 org.opencv.core.Point(ptTR.x.toDouble(), ptTR.y.toDouble()),
                 org.opencv.core.Point(ptBR.x.toDouble(), ptBR.y.toDouble()),
                 org.opencv.core.Point(ptBL.x.toDouble(), ptBL.y.toDouble())
             )
-            val warpW = 720
-            val warpH = 880
             val dstPts = MatOfPoint2f(
                 org.opencv.core.Point(0.0, 0.0),
                 org.opencv.core.Point(warpW.toDouble(), 0.0),
                 org.opencv.core.Point(warpW.toDouble(), warpH.toDouble()),
                 org.opencv.core.Point(0.0, warpH.toDouble())
             )
-
             val srcMat = Mat()
             Utils.bitmapToMat(bitmap, srcMat)
             val warped = Mat()
             val transform = Imgproc.getPerspectiveTransform(srcPts, dstPts)
             Imgproc.warpPerspective(srcMat, warped, transform, Size(warpW.toDouble(), warpH.toDouble()))
 
-            // 2. 엣지 검출
-            val gray = Mat()
-            Imgproc.cvtColor(warped, gray, Imgproc.COLOR_RGBA2GRAY)
-            val blurred = Mat()
-            Imgproc.GaussianBlur(gray, blurred, Size(3.0, 3.0), 0.0)
-            val edges = Mat()
-            Imgproc.Canny(blurred, edges, 40.0, 120.0)
+            val rgb = Mat()
+            Imgproc.cvtColor(warped, rgb, Imgproc.COLOR_RGBA2RGB)
+            val hsv = Mat()
+            Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            // 3. Y축 프로젝션 → 가로선 검출
-            val rowProj = DoubleArray(warpH)
-            for (y in 0 until warpH) {
-                var s = 0.0
-                for (x in 0 until warpW) {
-                    s += edges.get(y, x)[0] / 255.0
-                }
-                rowProj[y] = s
-            }
+            // 타일 마스크: 채도>60, 밝기>60 → 컬러 타일
+            val tileMask = Mat()
+            Core.inRange(hsv, Scalar(0.0, 60.0, 60.0), Scalar(180.0, 255.0, 255.0), tileMask)
 
-            // 4. X축 프로젝션 → 세로선 검출
+            // 컬럼 프로젝션
             val colProj = DoubleArray(warpW)
             for (x in 0 until warpW) {
-                var s = 0.0
+                var count = 0
                 for (y in 0 until warpH) {
-                    s += edges.get(y, x)[0] / 255.0
+                    if (tileMask.get(y, x)[0] > 128) count++
                 }
-                colProj[x] = s
+                colProj[x] = count.toDouble()
+            }
+            // 로우 프로젝션
+            val rowProj = DoubleArray(warpH)
+            for (y in 0 until warpH) {
+                var count = 0
+                for (x in 0 until warpW) {
+                    if (tileMask.get(y, x)[0] > 128) count++
+                }
+                rowProj[y] = count.toDouble()
             }
 
-            val rowPeaks = findLinePeaks(rowProj, warpH)
-            val colPeaks = findLinePeaks(colProj, warpW)
+            val colSmooth = smoothArray(colProj, 5)
+            val rowSmooth = smoothArray(rowProj, 5)
 
-            AppLogger.d("격자선 검출: 가로 ${rowPeaks.size}개, 세로 ${colPeaks.size}개")
+            val colPeaks = findPeaksV2(colSmooth, warpW, 50)
+            val rowPeaks = findPeaksV2(rowSmooth, warpH, 50)
 
-            srcMat.release(); warped.release(); gray.release(); blurred.release(); edges.release()
+            AppLogger.d("colPeaks(${colPeaks.size}): $colPeaks")
+            AppLogger.d("rowPeaks(${rowPeaks.size}): $rowPeaks")
 
-            if (rowPeaks.size < 6 || colPeaks.size < 6) return null
+            srcMat.release(); warped.release(); rgb.release(); hsv.release(); tileMask.release()
 
-            val dRows = rowPeaks.size - 1
-            val dCols = colPeaks.size - 1
-            if (dRows !in 5..15 || dCols !in 5..15) return null
+            val detectedRows = rowPeaks.size
+            val detectedCols = colPeaks.size
 
-            // 5. 간격 균일성 검사
-            val rowGaps = rowPeaks.zipWithNext { a, b -> b - a }
-            val colGaps = colPeaks.zipWithNext { a, b -> b - a }
-            val rowMean = rowGaps.average()
-            val colMean = colGaps.average()
-            val rowStd = calculateStdDev(rowGaps)
-            val colStd = calculateStdDev(colGaps)
-
-            if (rowStd > rowMean * 0.3 || colStd > colMean * 0.3) {
-                AppLogger.d("격자 간격 불규칙 → 오탐")
-                return null
-            }
-
-            AppLogger.d("✅ 격자 검출: ${dRows}행 x ${dCols}열")
-            return Pair(dRows, dCols)
+            if (detectedRows !in 5..15 || detectedCols !in 5..15) return null
+            AppLogger.d("OK 격자: ${detectedRows}행 x ${detectedCols}열")
+            return Pair(detectedRows, detectedCols)
         } catch (e: Exception) {
             AppLogger.e("격자 검출 오류", e)
             return null
         }
+    }
+
+    private fun smoothArray(arr: DoubleArray, kernelSize: Int): DoubleArray {
+        val result = DoubleArray(arr.size)
+        val half = kernelSize / 2
+        for (i in arr.indices) {
+            var sum = 0.0
+            var count = 0
+            for (j in -half..half) {
+                val idx = i + j
+                if (idx in arr.indices) { sum += arr[idx]; count++ }
+            }
+            result[i] = sum / count
+        }
+        return result
+    }
+
+    private fun findPeaksV2(proj: DoubleArray, len: Int, minGap: Int): List<Int> {
+        val maxVal = proj.maxOrNull() ?: 0.0
+        if (maxVal < 1.0) return emptyList()
+        val threshold = maxVal * 0.5
+        val peaks = mutableListOf<Int>()
+        var i = 1
+        while (i < len - 1) {
+            if (proj[i] > threshold && proj[i] >= proj[i-1] && proj[i] >= proj[i+1]) {
+                peaks.add(i)
+                i += minGap
+            } else { i++ }
+        }
+        return peaks
     }
 
     // 🔥 피크 검출
