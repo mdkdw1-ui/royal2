@@ -1271,17 +1271,21 @@ class SolverService : Service() {
             ptBL.set(boardLeft.toFloat(), boardBottom.toFloat())
             ptBR.set(boardRight.toFloat(), boardBottom.toFloat())
 
-            // 🔥 cols=9 강제, floor 방식으로 rows 계산
+            // 🔥🔥 v12: Royal Match 타일 특성 반영 (세로가 ~10% 김)
+            // rowsRaw가 10.0~12.5면 11로 스냅 (Royal Match 11행 압도적)
             val COLS = 9
             val tileW = boardW.toFloat() / COLS
             val rowsRaw = boardH.toFloat() / tileW
 
-            // floor + 0.3 보정 (경계 케이스 안정화)
-            var rows = Math.floor(rowsRaw + 0.3).toInt()
+            var rows = when {
+                rowsRaw < 9.5f -> 9
+                rowsRaw < 12.5f -> 11   // 🔥 Royal Match 11행 강제
+                rowsRaw < 14.0f -> 13
+                else -> Math.round(rowsRaw).toInt()
+            }
 
             AppLogger.d("계산: tileW=${tileW.toInt()}, rowsRaw=${"%.2f".format(rowsRaw)} → rows=$rows")
 
-            // 범위 제한
             if (rows < 9) rows = 9
             if (rows > 13) rows = 13
 
