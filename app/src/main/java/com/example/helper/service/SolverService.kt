@@ -1159,7 +1159,7 @@ class SolverService : Service() {
                 val area = Imgproc.contourArea(c)
                 if (area < minArea) continue
                 val r = Imgproc.boundingRect(c)
-                val centerY = r.top + r.height / 2f
+                val centerY = r.y + r.height / 2f
                 if (centerY < bitmap.height * 0.25f) continue
                 val ar = r.height.toFloat() / r.width.toFloat()
                 if (ar < 0.6f || ar > 2.0f) continue
