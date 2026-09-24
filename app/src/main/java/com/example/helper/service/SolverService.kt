@@ -1116,8 +1116,7 @@ class SolverService : Service() {
 
 
     // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
-    // 🔥🔥🔥 v6: 보드 검출 + 정사각형 타일 가정
-    // 주기 검출 대신 종횡비로 격자 크기 도출
+    // 🔥🔥🔥 v7: 컨투어 클러스터링 + 타일 크기 필터
     private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
         var src: Mat? = null
         var rgb: Mat? = null
@@ -1131,11 +1130,11 @@ class SolverService : Service() {
             rgb = Mat(); Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
             hsv = Mat(); Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 80.0, 80.0), Scalar(12.0, 255.0, 255.0), m1)
-            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 80.0, 120.0), Scalar(35.0, 255.0, 255.0), m2)
-            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 80.0, 80.0), Scalar(85.0, 255.0, 255.0), m3)
-            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 80.0, 80.0), Scalar(135.0, 255.0, 255.0), m4)
-            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 80.0, 80.0), Scalar(180.0, 255.0, 255.0), m5)
+            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 90.0, 100.0), Scalar(12.0, 255.0, 255.0), m1)
+            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 90.0, 140.0), Scalar(35.0, 255.0, 255.0), m2)
+            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 90.0, 100.0), Scalar(85.0, 255.0, 255.0), m3)
+            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 90.0, 100.0), Scalar(135.0, 255.0, 255.0), m4)
+            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 90.0, 100.0), Scalar(180.0, 255.0, 255.0), m5)
 
             tileMask = Mat()
             Core.bitwise_or(m1, m2, tileMask)
@@ -1145,7 +1144,6 @@ class SolverService : Service() {
             m1.release(); m2.release(); m3.release(); m4.release(); m5.release()
 
             kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
-            Imgproc.morphologyEx(tileMask, tileMask, Imgproc.MORPH_CLOSE, kernel)
             Imgproc.morphologyEx(tileMask, tileMask, Imgproc.MORPH_OPEN, kernel)
 
             // 2. 컨투어 검출
@@ -1153,73 +1151,81 @@ class SolverService : Service() {
             hierarchy = Mat()
             Imgproc.findContours(tileMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
-            if (contours.isEmpty()) {
-                AppLogger.d("컨투어 없음")
+            if (contours.isEmpty()) { AppLogger.d("컨투어 없음"); return null }
+
+            // 3. 타일 크기 필터: 30~350px, 정사각형 근사 (0.6~1.7)
+            data class RectInfo(val rect: org.opencv.core.Rect, val cy: Int, val area: Double)
+
+            val filtered = contours.mapNotNull { c ->
+                val area = Imgproc.contourArea(c)
+                if (area < 400) return@mapNotNull null
+                val r = Imgproc.boundingRect(c)
+                if (r.width < 30 || r.width > 400) return@mapNotNull null
+                if (r.height < 30 || r.height > 400) return@mapNotNull null
+                val ar = r.width.toFloat() / r.height.toFloat()
+                if (ar < 0.6f || ar > 1.7f) return@mapNotNull null
+                RectInfo(r, r.y + r.height / 2, area)
+            }
+
+            if (filtered.size < 5) {
+                AppLogger.d("필터 통과 컨투어 부족: ${filtered.size}")
                 return null
             }
 
-            // 3. 큰 컨투어 병합 (union)
-            val minArea = bitmap.width.toDouble() * bitmap.height * 0.02
+            // 4. Y축 클러스터: 컨투어를 cy로 정렬 후, 밀집 윈도우 찾기
+            val sorted = filtered.sortedBy { it.cy }
+            val windowSize = minOf(15, sorted.size).coerceAtLeast(5)
+            var bestStart = 0
+            var bestSpread = Int.MAX_VALUE
+            for (i in 0..sorted.size - windowSize) {
+                val spread = sorted[i + windowSize - 1].cy - sorted[i].cy
+                if (spread < bestSpread) {
+                    bestSpread = spread
+                    bestStart = i
+                }
+            }
+            val cluster = sorted.subList(bestStart, bestStart + windowSize)
+            AppLogger.d("클러스터: ${cluster.size}개, Y-spread=${bestSpread}px")
+
+            // 5. 클러스터 union
             var unionLeft = Int.MAX_VALUE
             var unionTop = Int.MAX_VALUE
             var unionRight = 0
             var unionBottom = 0
-            var foundCount = 0
-            var totalArea = 0.0
-
-            for (c in contours) {
-                val area = Imgproc.contourArea(c)
-                if (area < minArea) continue
-                val r = Imgproc.boundingRect(c)
-                // 화면 하단 1/3 이하만 (게임 보드가 아래쪽)
-                if (r.y < bitmap.height * 0.15f) continue
-
-                unionLeft = Math.min(unionLeft, r.x)
-                unionTop = Math.min(unionTop, r.y)
-                unionRight = Math.max(unionRight, r.x + r.width)
-                unionBottom = Math.max(unionBottom, r.y + r.height)
-                foundCount++
-                totalArea += area
-            }
-
-            if (foundCount < 1) {
-                AppLogger.d("큰 컨투어 없음")
-                return null
+            for (info in cluster) {
+                unionLeft = Math.min(unionLeft, info.rect.x)
+                unionTop = Math.min(unionTop, info.rect.y)
+                unionRight = Math.max(unionRight, info.rect.x + info.rect.width)
+                unionBottom = Math.max(unionBottom, info.rect.y + info.rect.height)
             }
 
             val boardW = unionRight - unionLeft
             val boardH = unionBottom - unionTop
+            if (boardW < 200 || boardH < 200) { AppLogger.d("보드 너무 작음"); return null }
 
-            if (boardW < 200 || boardH < 200) {
-                AppLogger.d("보드 너무 작음: ${boardW}x${boardH}")
-                return null
-            }
+            AppLogger.d("보드(클러스터): ${boardW}x${boardH} @ (${unionLeft},${unionTop})")
 
-            AppLogger.d("보드(union): ${boardW}x${boardH} @ (${unionLeft},${unionTop})")
-
-            // 4. ptTL 등 업데이트
             ptTL.set(unionLeft.toFloat(), unionTop.toFloat())
             ptTR.set(unionRight.toFloat(), unionTop.toFloat())
             ptBL.set(unionLeft.toFloat(), unionBottom.toFloat())
             ptBR.set(unionRight.toFloat(), unionBottom.toFloat())
 
-            // 🔥 5. 종횡비로 격자 크기 결정 (정사각형 타일 가정)
-            // cols: 7~10, rows: 7~13 시도, 타일 정사각형 오차 최소 선택
+            // 6. 종횡비로 rows/cols 결정
+            // ⚠️ Royal Match는 세로 게임. cols: 7~10, rows: 7~14
             var bestRows = 11
             var bestCols = 9
             var bestError = Float.MAX_VALUE
 
             for (c in 7..10) {
                 val tileW = boardW.toFloat() / c
+                if (tileW < 40f || tileW > 200f) continue  // 타일 크기 합리적 범위
                 val rowsRaw = boardH.toFloat() / tileW
                 val r = Math.round(rowsRaw).toInt()
-                if (r !in 7..13) continue
+                if (r !in 7..14) continue
 
                 val tileH = boardH.toFloat() / r
                 val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
-
-                // Royal Match는 주로 9칸
-                val prior = if (c == 9) 0f else 0.03f
+                val prior = if (c == 9) 0f else 0.02f
                 val score = err + prior
 
                 AppLogger.d("후보 ${c}×${r}: 타일=${tileW.toInt()}x${tileH.toInt()} 오차=${"%.3f".format(err)}")
@@ -1232,7 +1238,7 @@ class SolverService : Service() {
             }
 
             if (bestError > 0.10f) {
-                AppLogger.d("정사각형 오차 과대: ${"%.3f".format(bestError)}")
+                AppLogger.d("오차 과대: ${"%.3f".format(bestError)}")
                 return null
             }
 
