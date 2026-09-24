@@ -1116,8 +1116,8 @@ class SolverService : Service() {
 
 
     // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
-    // 🔥🔥🔥 완전 자동: 컬러 타일 마스크 + 주기 검출
-    // 사용자 모서리 지정 불필요 - 매 프레임 자동으로 보드를 찾음
+    // 🔥🔥🔥 v6: 보드 검출 + 정사각형 타일 가정
+    // 주기 검출 대신 종횡비로 격자 크기 도출
     private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
         var src: Mat? = null
         var rgb: Mat? = null
@@ -1126,16 +1126,16 @@ class SolverService : Service() {
         var kernel: Mat? = null
         var hierarchy: Mat? = null
         try {
-            // 1. 타일 마스크 (여러 색상 범위 OR)
+            // 1. 컬러 타일 마스크
             src = Mat(); Utils.bitmapToMat(bitmap, src)
             rgb = Mat(); Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
             hsv = Mat(); Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 90.0), Scalar(12.0, 255.0, 255.0), m1)
-            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 100.0, 130.0), Scalar(35.0, 255.0, 255.0), m2)
-            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 100.0, 90.0), Scalar(85.0, 255.0, 255.0), m3)
-            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 100.0, 90.0), Scalar(135.0, 255.0, 255.0), m4)
-            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 100.0, 90.0), Scalar(180.0, 255.0, 255.0), m5)
+            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 80.0, 80.0), Scalar(12.0, 255.0, 255.0), m1)
+            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 80.0, 120.0), Scalar(35.0, 255.0, 255.0), m2)
+            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 80.0, 80.0), Scalar(85.0, 255.0, 255.0), m3)
+            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 80.0, 80.0), Scalar(135.0, 255.0, 255.0), m4)
+            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 80.0, 80.0), Scalar(180.0, 255.0, 255.0), m5)
 
             tileMask = Mat()
             Core.bitwise_or(m1, m2, tileMask)
@@ -1144,126 +1144,106 @@ class SolverService : Service() {
             Core.bitwise_or(tileMask, m5, tileMask)
             m1.release(); m2.release(); m3.release(); m4.release(); m5.release()
 
-            kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+            kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
+            Imgproc.morphologyEx(tileMask, tileMask, Imgproc.MORPH_CLOSE, kernel)
             Imgproc.morphologyEx(tileMask, tileMask, Imgproc.MORPH_OPEN, kernel)
 
-            // 2. 최대 컨투어 = 보드 영역
+            // 2. 컨투어 검출
             val contours = ArrayList<MatOfPoint>()
             hierarchy = Mat()
             Imgproc.findContours(tileMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
-            var bestContour: MatOfPoint? = null
-            var bestArea = 0.0
-            val minArea = bitmap.width.toDouble() * bitmap.height * 0.15
+            if (contours.isEmpty()) {
+                AppLogger.d("컨투어 없음")
+                return null
+            }
+
+            // 3. 큰 컨투어 병합 (union)
+            val minArea = bitmap.width.toDouble() * bitmap.height * 0.02
+            var unionLeft = Int.MAX_VALUE
+            var unionTop = Int.MAX_VALUE
+            var unionRight = 0
+            var unionBottom = 0
+            var foundCount = 0
+            var totalArea = 0.0
+
             for (c in contours) {
                 val area = Imgproc.contourArea(c)
                 if (area < minArea) continue
                 val r = Imgproc.boundingRect(c)
-                val centerY = r.y + r.height / 2f
-                if (centerY < bitmap.height * 0.25f) continue
-                val ar = r.height.toFloat() / r.width.toFloat()
-                if (ar < 0.6f || ar > 2.0f) continue
-                if (area > bestArea) { bestArea = area; bestContour = c }
+                // 화면 하단 1/3 이하만 (게임 보드가 아래쪽)
+                if (r.y < bitmap.height * 0.15f) continue
+
+                unionLeft = Math.min(unionLeft, r.x)
+                unionTop = Math.min(unionTop, r.y)
+                unionRight = Math.max(unionRight, r.x + r.width)
+                unionBottom = Math.max(unionBottom, r.y + r.height)
+                foundCount++
+                totalArea += area
             }
 
-            if (bestContour == null) {
-                AppLogger.d("보드 컨투어 검출 실패")
+            if (foundCount < 1) {
+                AppLogger.d("큰 컨투어 없음")
                 return null
             }
 
-            val boardRect = Imgproc.boundingRect(bestContour)
-            AppLogger.d("보드: ${boardRect.width}x${boardRect.height} @ (${boardRect.x},${boardRect.y})")
+            val boardW = unionRight - unionLeft
+            val boardH = unionBottom - unionTop
 
-            // 3. ptTL 등 업데이트
-            ptTL.set(boardRect.x.toFloat(), boardRect.y.toFloat())
-            ptTR.set((boardRect.x + boardRect.width).toFloat(), boardRect.y.toFloat())
-            ptBL.set(boardRect.x.toFloat(), (boardRect.y + boardRect.height).toFloat())
-            ptBR.set((boardRect.x + boardRect.width).toFloat(), (boardRect.y + boardRect.height).toFloat())
+            if (boardW < 200 || boardH < 200) {
+                AppLogger.d("보드 너무 작음: ${boardW}x${boardH}")
+                return null
+            }
 
-            // 4. 컬럼 프로젝션 (컬러 픽셀 개수)
-            val colProj = DoubleArray(boardRect.width)
-            for (x in 0 until boardRect.width) {
-                var sum = 0
-                for (y in boardRect.y until (boardRect.y + boardRect.height)) {
-                    if (tileMask.get(y, boardRect.x + x)[0] > 128.0) sum++
+            AppLogger.d("보드(union): ${boardW}x${boardH} @ (${unionLeft},${unionTop})")
+
+            // 4. ptTL 등 업데이트
+            ptTL.set(unionLeft.toFloat(), unionTop.toFloat())
+            ptTR.set(unionRight.toFloat(), unionTop.toFloat())
+            ptBL.set(unionLeft.toFloat(), unionBottom.toFloat())
+            ptBR.set(unionRight.toFloat(), unionBottom.toFloat())
+
+            // 🔥 5. 종횡비로 격자 크기 결정 (정사각형 타일 가정)
+            // cols: 7~10, rows: 7~13 시도, 타일 정사각형 오차 최소 선택
+            var bestRows = 11
+            var bestCols = 9
+            var bestError = Float.MAX_VALUE
+
+            for (c in 7..10) {
+                val tileW = boardW.toFloat() / c
+                val rowsRaw = boardH.toFloat() / tileW
+                val r = Math.round(rowsRaw).toInt()
+                if (r !in 7..13) continue
+
+                val tileH = boardH.toFloat() / r
+                val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
+
+                // Royal Match는 주로 9칸
+                val prior = if (c == 9) 0f else 0.03f
+                val score = err + prior
+
+                AppLogger.d("후보 ${c}×${r}: 타일=${tileW.toInt()}x${tileH.toInt()} 오차=${"%.3f".format(err)}")
+
+                if (score < bestError) {
+                    bestError = score
+                    bestRows = r
+                    bestCols = c
                 }
-                colProj[x] = sum.toDouble() / boardRect.height
             }
 
-            // 5. 로우 프로젝션
-            val rowProj = DoubleArray(boardRect.height)
-            for (y in 0 until boardRect.height) {
-                var sum = 0
-                for (x in boardRect.x until (boardRect.x + boardRect.width)) {
-                    if (tileMask.get(boardRect.y + y, x)[0] > 128.0) sum++
-                }
-                rowProj[y] = sum.toDouble() / boardRect.width
-            }
-
-            // 6. 주기 검출
-            val tileW = findTilePeriod(colProj)
-            val tileH = findTilePeriod(rowProj)
-            AppLogger.d("주기: tileW=${tileW?.toInt() ?: -1}, tileH=${tileH?.toInt() ?: -1}")
-
-            if (tileW == null || tileH == null || tileW < 20f || tileH < 20f) {
-                AppLogger.d("주기 검출 실패")
+            if (bestError > 0.10f) {
+                AppLogger.d("정사각형 오차 과대: ${"%.3f".format(bestError)}")
                 return null
             }
 
-            val cols = Math.round(boardRect.width.toFloat() / tileW).toInt()
-            val rows = Math.round(boardRect.height.toFloat() / tileH).toInt()
-            AppLogger.d("추정: ${rows}행 x ${cols}열")
-
-            if (cols !in 6..12 || rows !in 6..14) {
-                AppLogger.d("범위 초과")
-                return null
-            }
-
-            AppLogger.d("OK 격자: ${rows}행 x ${cols}열")
-            return Pair(rows, cols)
+            AppLogger.d("OK 격자: ${bestRows}행 x ${bestCols}열 (오차=${"%.3f".format(bestError)})")
+            return Pair(bestRows, bestCols)
         } catch (e: Exception) {
             AppLogger.e("격자 검출 오류", e)
             return null
         } finally {
             try { src?.release(); rgb?.release(); hsv?.release(); tileMask?.release(); kernel?.release(); hierarchy?.release() } catch (ex: Exception) {}
         }
-    }
-
-    // 프로젝션에서 타일 주기(간격) 검출
-    private fun findTilePeriod(proj: DoubleArray): Float? {
-        val n = proj.size
-        if (n < 80) return null
-
-        val smooth = smoothArray(proj, 7)
-        val mean = smooth.average()
-        if (mean < 0.1) return null
-        val maxVal = smooth.maxOrNull() ?: return null
-        if (maxVal < mean * 1.5) return null
-
-        val threshold = (mean + maxVal) * 0.55
-
-        val peaks = mutableListOf<Int>()
-        var i = 3
-        while (i < n - 3) {
-            if (smooth[i] > threshold &&
-                smooth[i] > smooth[i-1] && smooth[i] > smooth[i-2] &&
-                smooth[i] >= smooth[i+1] && smooth[i] >= smooth[i+2]) {
-                peaks.add(i)
-                i += 10
-            } else i++
-        }
-
-        if (peaks.size < 4) return null
-
-        val gaps = peaks.zipWithNext { a, b -> b - a }.filter { it > 20 }
-        if (gaps.size < 3) return null
-
-        val sorted = gaps.sorted()
-        val median = sorted[sorted.size / 2]
-        val filtered = gaps.filter { Math.abs(it - median) < median * 0.35 }
-        if (filtered.size < 2) return null
-
-        return filtered.average().toFloat()
     }
 
     private fun smoothArray(arr: DoubleArray, kernelSize: Int): DoubleArray {
