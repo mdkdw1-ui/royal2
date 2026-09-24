@@ -1279,7 +1279,8 @@ class SolverService : Service() {
 
             var rows = when {
                 rowsRaw < 9.3f -> 9
-                rowsRaw < 13.0f -> 11   // 🔥 v14: 9.3~13.0 → 11행 강제 (Royal Match 다수)
+                rowsRaw < 10.5f -> 10   // 🔥 v15: 9.3~10.5 → 10행 (이번 케이스)
+                rowsRaw < 13.0f -> 11   // 10.5~13.0 → 11행
                 rowsRaw < 14.5f -> 13
                 else -> Math.round(rowsRaw).toInt()
             }
