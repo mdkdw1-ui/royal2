@@ -24,8 +24,10 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: 8.2
 
     - name: Read version
       id: ver
@@ -35,7 +37,7 @@ jobs:
         echo "📦 Building version: $VER"
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      run: gradle assembleDebug --no-daemon
 
     - name: Rename APK
       run: |
@@ -51,8 +53,8 @@ jobs:
     - name: Delete old releases
       continue-on-error: true
       run: |
-        gh release list --limit 100 --json tagName -q '.[].tagName' | while read tag; do
-          gh release delete "$tag" --yes --cleanup-tag || true
+        gh release list --limit 100 --json tagName -q '.[].tagName' 2>/dev/null | while read tag; do
+          [ -n "$tag" ] && gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
         done
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
