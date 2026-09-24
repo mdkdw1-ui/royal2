@@ -833,6 +833,95 @@ class SolverService : Service() {
 
         // 간이 모드
         if (isCompactMode) {
+            // 🔥 v16: 컴팩트 모드에 미니 행/열 조정
+            val miniRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 5, 0, 5)
+            }
+
+            Button(context).apply {
+                text = "행-"
+                textSize = 11f
+                setPadding(8, 4, 8, 4)
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    if (rows > 5) {
+                        rows--
+                        isAutoDetectEnabled = false
+                        savePreferences()
+                        refreshControlUI()
+                    }
+                }
+            }.also { miniRow.addView(it) }
+
+            TextView(context).apply {
+                text = "${rows}x${cols}"
+                setTextColor(Color.YELLOW)
+                textSize = 13f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(12, 0, 12, 0)
+            }.also { miniRow.addView(it) }
+
+            Button(context).apply {
+                text = "행+"
+                textSize = 11f
+                setPadding(8, 4, 8, 4)
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    if (rows < 15) {
+                        rows++
+                        isAutoDetectEnabled = false
+                        savePreferences()
+                        refreshControlUI()
+                    }
+                }
+            }.also { miniRow.addView(it) }
+
+            Button(context).apply {
+                text = "열-"
+                textSize = 11f
+                setPadding(8, 4, 8, 4)
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    if (cols > 5) {
+                        cols--
+                        isAutoDetectEnabled = false
+                        savePreferences()
+                        refreshControlUI()
+                    }
+                }
+            }.also { miniRow.addView(it) }
+
+            Button(context).apply {
+                text = "열+"
+                textSize = 11f
+                setPadding(8, 4, 8, 4)
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    if (cols < 15) {
+                        cols++
+                        isAutoDetectEnabled = false
+                        savePreferences()
+                        refreshControlUI()
+                    }
+                }
+            }.also { miniRow.addView(it) }
+
+            view.addView(miniRow)
+
+            // 자동격자 상태 표시
+            TextView(context).apply {
+                text = if (isAutoDetectEnabled) "📐 자동격자 ON" else "📌 수동 고정 (자동 OFF)"
+                setTextColor(if (isAutoDetectEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
+                textSize = 10f
+                setPadding(0, 3, 0, 3)
+            }.also { view.addView(it) }
+
             Button(context).apply {
                 text = "❌ 종료"
                 setBackgroundColor(Color.RED)
