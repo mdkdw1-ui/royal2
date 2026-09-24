@@ -1131,8 +1131,7 @@ class SolverService : Service() {
 
 
     // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
-    // 🔥🔥🔥 v8: 컬러 픽셀 밀도 프로젝션으로 보드 영역 자동 검출
-    // 컨투어 대신 각 Y/X 좌표의 컬러 픽셀 개수 분포를 사용
+    // 🔥🔥🔥 v9: 안정화된 Y범위 (first~last dense) + cols=9 강제
     private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
         var src: Mat? = null
         var rgb: Mat? = null
@@ -1143,7 +1142,6 @@ class SolverService : Service() {
             rgb = Mat(); Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
             hsv = Mat(); Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            // 컬러 타일 마스크 (5색)
             val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 100.0), Scalar(10.0, 255.0, 255.0), m1)
             val m2 = Mat(); Core.inRange(hsv, Scalar(15.0, 100.0, 140.0), Scalar(35.0, 255.0, 255.0), m2)
             val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 100.0, 100.0), Scalar(85.0, 255.0, 255.0), m3)
@@ -1160,7 +1158,7 @@ class SolverService : Service() {
             val w = bitmap.width
             val h = bitmap.height
 
-            // 1. Y 프로젝션 (각 y좌표의 컬러 픽셀 수)
+            // Y 프로젝션
             val rowProj = IntArray(h)
             for (y in 0 until h) {
                 var count = 0
@@ -1169,51 +1167,51 @@ class SolverService : Service() {
                 }
                 rowProj[y] = count * 3
             }
-
-            // 스무딩 (5-tap)
             val rowSmooth = IntArray(h)
-            for (y in 2 until h - 2) {
-                rowSmooth[y] = (rowProj[y-2] + rowProj[y-1] + rowProj[y] + rowProj[y+1] + rowProj[y+2]) / 5
+            for (y in 5 until h - 5) {
+                var s = 0
+                for (k in -5..5) s += rowProj[y+k]
+                rowSmooth[y] = s / 11
             }
 
             val maxRow = rowSmooth.maxOrNull() ?: 0
-            if (maxRow < 30) { AppLogger.d("rowProj 신호 약함: $maxRow"); return null }
+            if (maxRow < 30) { AppLogger.d("rowProj 약함: $maxRow"); return null }
 
-            // 2. 게임 영역 제한 (상단 12%~하단 90%)
-            val minY = (h * 0.12).toInt()
+            val minY = (h * 0.15).toInt()
             val maxY = (h * 0.90).toInt()
-            val rowThr = maxRow * 0.35
+            val rowThr = maxRow * 0.40
 
-            // 가장 긴 연속 구간 찾기
-            var bestStartY = -1; var bestEndY = -1
-            var curStart = -1
+            // 🔥 first ~ last dense (큰 갭은 30px 이내만 무시)
+            var firstDense = -1
+            var lastDense = -1
+            var gapCount = 0
+            val maxGap = 40
+
             for (y in minY until maxY) {
                 if (rowSmooth[y] >= rowThr) {
-                    if (curStart == -1) curStart = y
+                    if (firstDense == -1) firstDense = y
+                    lastDense = y
+                    gapCount = 0
                 } else {
-                    if (curStart != -1) {
-                        if (bestStartY == -1 || (y - curStart) > (bestEndY - bestStartY)) {
-                            bestStartY = curStart; bestEndY = y
-                        }
-                        curStart = -1
+                    gapCount++
+                    if (firstDense != -1 && gapCount > maxGap) {
+                        // 큰 갭 → 여기서 종료 (뒷부분은 다른 요소)
+                        break
                     }
                 }
             }
-            if (curStart != -1 && (maxY - curStart) > (bestEndY - bestStartY)) {
-                bestStartY = curStart; bestEndY = maxY
-            }
 
-            if (bestStartY == -1 || bestEndY - bestStartY < 400) {
-                AppLogger.d("Y범위 실패: start=$bestStartY, end=$bestEndY")
+            if (firstDense == -1 || lastDense - firstDense < 500) {
+                AppLogger.d("Y범위 실패: first=$firstDense, last=$lastDense")
                 return null
             }
 
-            val boardTop = bestStartY
-            val boardBottom = bestEndY
+            val boardTop = firstDense
+            val boardBottom = lastDense
             val boardH = boardBottom - boardTop
             AppLogger.d("Y범위: ${boardTop}~${boardBottom} (H=$boardH)")
 
-            // 3. X 프로젝션 (boardTop~boardBottom 내에서만)
+            // X 프로젝션
             val colProj = IntArray(w)
             for (x in 0 until w) {
                 var count = 0
@@ -1222,93 +1220,65 @@ class SolverService : Service() {
                 }
                 colProj[x] = count * 3
             }
-
             val colSmooth = IntArray(w)
-            for (x in 2 until w - 2) {
-                colSmooth[x] = (colProj[x-2] + colProj[x-1] + colProj[x] + colProj[x+1] + colProj[x+2]) / 5
+            for (x in 5 until w - 5) {
+                var s = 0
+                for (k in -5..5) s += colProj[x+k]
+                colSmooth[x] = s / 11
             }
 
             val maxCol = colSmooth.maxOrNull() ?: 0
-            if (maxCol < 30) { AppLogger.d("colProj 신호 약함: $maxCol"); return null }
+            if (maxCol < 30) { AppLogger.d("colProj 약함: $maxCol"); return null }
 
-            val colThr = maxCol * 0.35
-            var bestStartX = -1; var bestEndX = -1
-            var curStartX = -1
+            val colThr = maxCol * 0.40
+            var boardLeft = -1
+            var boardRight = -1
+            var gapCntX = 0
             for (x in 0 until w) {
                 if (colSmooth[x] >= colThr) {
-                    if (curStartX == -1) curStartX = x
+                    if (boardLeft == -1) boardLeft = x
+                    boardRight = x
+                    gapCntX = 0
                 } else {
-                    if (curStartX != -1) {
-                        if (bestStartX == -1 || (x - curStartX) > (bestEndX - bestStartX)) {
-                            bestStartX = curStartX; bestEndX = x
-                        }
-                        curStartX = -1
-                    }
+                    gapCntX++
+                    if (boardLeft != -1 && gapCntX > 40) break
                 }
             }
-            if (curStartX != -1 && (w - curStartX) > (bestEndX - bestStartX)) {
-                bestStartX = curStartX; bestEndX = w
-            }
 
-            if (bestStartX == -1 || bestEndX - bestStartX < 400) {
-                AppLogger.d("X범위 실패: start=$bestStartX, end=$bestEndX")
+            if (boardLeft == -1 || boardRight - boardLeft < 400) {
+                AppLogger.d("X범위 실패")
                 return null
             }
 
-            val boardLeft = bestStartX
-            val boardRight = bestEndX
             val boardW = boardRight - boardLeft
             AppLogger.d("보드(proj): ${boardW}x${boardH} @ (${boardLeft},${boardTop})")
 
-            // ptTL 등 업데이트
             ptTL.set(boardLeft.toFloat(), boardTop.toFloat())
             ptTR.set(boardRight.toFloat(), boardTop.toFloat())
             ptBL.set(boardLeft.toFloat(), boardBottom.toFloat())
             ptBR.set(boardRight.toFloat(), boardBottom.toFloat())
 
-            // 4. 종횡비 검증 (Royal Match는 1.1 ~ 1.4)
-            val aspect = boardH.toFloat() / boardW.toFloat()
-            AppLogger.d("종횡비: ${"%.3f".format(aspect)}")
+            // 🔥 Royal Match 표준: cols=9 강제, tileW 기반 rows 계산
+            val COLS = 9
+            val tileW = boardW.toFloat() / COLS
+            val rowsRaw = boardH.toFloat() / tileW
+            var rows = Math.round(rowsRaw).toInt()
 
-            if (aspect < 0.8f || aspect > 1.8f) {
-                AppLogger.d("종횡비 이상: ${"%.3f".format(aspect)}")
-                return null
-            }
+            AppLogger.d("계산: tileW=${tileW.toInt()}, rowsRaw=${"%.2f".format(rowsRaw)} → rows=$rows")
 
-            // 5. rows/cols 결정 (정사각형 타일, 9 우선)
-            var bestRows = 11; var bestCols = 9; var bestError = Float.MAX_VALUE
+            // 🔥 rows 범위 제한 (Royal Match는 보통 9~12)
+            if (rows < 9) rows = 9
+            if (rows > 12) rows = 12
 
-            for (c in 7..10) {
-                val tileW = boardW.toFloat() / c
-                if (tileW < 50f || tileW > 180f) continue
-                val rowsRaw = boardH.toFloat() / tileW
-                val r = Math.round(rowsRaw).toInt()
-                if (r !in 7..14) continue
+            // 🔥 rows=12인데 rowsRaw가 11.7 미만이면 11로 낮춤 (경계 케이스)
+            if (rows == 12 && rowsRaw < 11.7f) rows = 11
 
-                val tileH = boardH.toFloat() / r
-                val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
-                val prior = when (c) {
-                    9 -> 0f
-                    8, 10 -> 0.02f
-                    else -> 0.05f
-                }
-                val score = err + prior
+            val tileH = boardH.toFloat() / rows
+            val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
+            AppLogger.d("최종: ${rows}행 x ${COLS}열, tile=${tileW.toInt()}x${tileH.toInt()}, 오차=${"%.3f".format(err)}")
 
-                AppLogger.d("후보 ${c}×${r}: 타일=${tileW.toInt()}x${tileH.toInt()} 오차=${"%.3f".format(err)}")
-
-                if (score < bestError) {
-                    bestError = score
-                    bestRows = r; bestCols = c
-                }
-            }
-
-            if (bestError > 0.08f) {
-                AppLogger.d("오차 과대: ${"%.3f".format(bestError)}")
-                return null
-            }
-
-            AppLogger.d("OK 격자: ${bestRows}행 x ${bestCols}열 (오차=${"%.3f".format(bestError)})")
-            return Pair(bestRows, bestCols)
+            AppLogger.d("OK 격자: ${rows}행 x ${COLS}열")
+            return Pair(rows, COLS)
         } catch (e: Exception) {
             AppLogger.e("격자 검출 오류", e)
             return null
