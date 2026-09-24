@@ -1116,25 +1116,24 @@ class SolverService : Service() {
 
 
     // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
-    // 🔥🔥🔥 v7: 컨투어 클러스터링 + 타일 크기 필터
+    // 🔥🔥🔥 v8: 컬러 픽셀 밀도 프로젝션으로 보드 영역 자동 검출
+    // 컨투어 대신 각 Y/X 좌표의 컬러 픽셀 개수 분포를 사용
     private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
         var src: Mat? = null
         var rgb: Mat? = null
         var hsv: Mat? = null
         var tileMask: Mat? = null
-        var kernel: Mat? = null
-        var hierarchy: Mat? = null
         try {
-            // 1. 컬러 타일 마스크
             src = Mat(); Utils.bitmapToMat(bitmap, src)
             rgb = Mat(); Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
             hsv = Mat(); Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 90.0, 100.0), Scalar(12.0, 255.0, 255.0), m1)
-            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 90.0, 140.0), Scalar(35.0, 255.0, 255.0), m2)
-            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 90.0, 100.0), Scalar(85.0, 255.0, 255.0), m3)
-            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 90.0, 100.0), Scalar(135.0, 255.0, 255.0), m4)
-            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 90.0, 100.0), Scalar(180.0, 255.0, 255.0), m5)
+            // 컬러 타일 마스크 (5색)
+            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 100.0), Scalar(10.0, 255.0, 255.0), m1)
+            val m2 = Mat(); Core.inRange(hsv, Scalar(15.0, 100.0, 140.0), Scalar(35.0, 255.0, 255.0), m2)
+            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 100.0, 100.0), Scalar(85.0, 255.0, 255.0), m3)
+            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 100.0, 100.0), Scalar(135.0, 255.0, 255.0), m4)
+            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 100.0, 100.0), Scalar(180.0, 255.0, 255.0), m5)
 
             tileMask = Mat()
             Core.bitwise_or(m1, m2, tileMask)
@@ -1143,101 +1142,152 @@ class SolverService : Service() {
             Core.bitwise_or(tileMask, m5, tileMask)
             m1.release(); m2.release(); m3.release(); m4.release(); m5.release()
 
-            kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
-            Imgproc.morphologyEx(tileMask, tileMask, Imgproc.MORPH_OPEN, kernel)
+            val w = bitmap.width
+            val h = bitmap.height
 
-            // 2. 컨투어 검출
-            val contours = ArrayList<MatOfPoint>()
-            hierarchy = Mat()
-            Imgproc.findContours(tileMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-
-            if (contours.isEmpty()) { AppLogger.d("컨투어 없음"); return null }
-
-            // 3. 타일 크기 필터: 30~350px, 정사각형 근사 (0.6~1.7)
-            data class RectInfo(val rect: org.opencv.core.Rect, val cy: Int, val area: Double)
-
-            val filtered = contours.mapNotNull { c ->
-                val area = Imgproc.contourArea(c)
-                if (area < 400) return@mapNotNull null
-                val r = Imgproc.boundingRect(c)
-                if (r.width < 30 || r.width > 400) return@mapNotNull null
-                if (r.height < 30 || r.height > 400) return@mapNotNull null
-                val ar = r.width.toFloat() / r.height.toFloat()
-                if (ar < 0.6f || ar > 1.7f) return@mapNotNull null
-                RectInfo(r, r.y + r.height / 2, area)
+            // 1. Y 프로젝션 (각 y좌표의 컬러 픽셀 수)
+            val rowProj = IntArray(h)
+            for (y in 0 until h) {
+                var count = 0
+                for (x in 0 until w step 3) {
+                    if (tileMask.get(y, x)[0] > 128.0) count++
+                }
+                rowProj[y] = count * 3
             }
 
-            if (filtered.size < 5) {
-                AppLogger.d("필터 통과 컨투어 부족: ${filtered.size}")
+            // 스무딩 (5-tap)
+            val rowSmooth = IntArray(h)
+            for (y in 2 until h - 2) {
+                rowSmooth[y] = (rowProj[y-2] + rowProj[y-1] + rowProj[y] + rowProj[y+1] + rowProj[y+2]) / 5
+            }
+
+            val maxRow = rowSmooth.maxOrNull() ?: 0
+            if (maxRow < 30) { AppLogger.d("rowProj 신호 약함: $maxRow"); return null }
+
+            // 2. 게임 영역 제한 (상단 12%~하단 90%)
+            val minY = (h * 0.12).toInt()
+            val maxY = (h * 0.90).toInt()
+            val rowThr = maxRow * 0.35
+
+            // 가장 긴 연속 구간 찾기
+            var bestStartY = -1; var bestEndY = -1
+            var curStart = -1
+            for (y in minY until maxY) {
+                if (rowSmooth[y] >= rowThr) {
+                    if (curStart == -1) curStart = y
+                } else {
+                    if (curStart != -1) {
+                        if (bestStartY == -1 || (y - curStart) > (bestEndY - bestStartY)) {
+                            bestStartY = curStart; bestEndY = y
+                        }
+                        curStart = -1
+                    }
+                }
+            }
+            if (curStart != -1 && (maxY - curStart) > (bestEndY - bestStartY)) {
+                bestStartY = curStart; bestEndY = maxY
+            }
+
+            if (bestStartY == -1 || bestEndY - bestStartY < 400) {
+                AppLogger.d("Y범위 실패: start=$bestStartY, end=$bestEndY")
                 return null
             }
 
-            // 4. Y축 클러스터: 컨투어를 cy로 정렬 후, 밀집 윈도우 찾기
-            val sorted = filtered.sortedBy { it.cy }
-            val windowSize = minOf(15, sorted.size).coerceAtLeast(5)
-            var bestStart = 0
-            var bestSpread = Int.MAX_VALUE
-            for (i in 0..sorted.size - windowSize) {
-                val spread = sorted[i + windowSize - 1].cy - sorted[i].cy
-                if (spread < bestSpread) {
-                    bestSpread = spread
-                    bestStart = i
+            val boardTop = bestStartY
+            val boardBottom = bestEndY
+            val boardH = boardBottom - boardTop
+            AppLogger.d("Y범위: ${boardTop}~${boardBottom} (H=$boardH)")
+
+            // 3. X 프로젝션 (boardTop~boardBottom 내에서만)
+            val colProj = IntArray(w)
+            for (x in 0 until w) {
+                var count = 0
+                for (y in boardTop until boardBottom step 3) {
+                    if (tileMask.get(y, x)[0] > 128.0) count++
+                }
+                colProj[x] = count * 3
+            }
+
+            val colSmooth = IntArray(w)
+            for (x in 2 until w - 2) {
+                colSmooth[x] = (colProj[x-2] + colProj[x-1] + colProj[x] + colProj[x+1] + colProj[x+2]) / 5
+            }
+
+            val maxCol = colSmooth.maxOrNull() ?: 0
+            if (maxCol < 30) { AppLogger.d("colProj 신호 약함: $maxCol"); return null }
+
+            val colThr = maxCol * 0.35
+            var bestStartX = -1; var bestEndX = -1
+            var curStartX = -1
+            for (x in 0 until w) {
+                if (colSmooth[x] >= colThr) {
+                    if (curStartX == -1) curStartX = x
+                } else {
+                    if (curStartX != -1) {
+                        if (bestStartX == -1 || (x - curStartX) > (bestEndX - bestStartX)) {
+                            bestStartX = curStartX; bestEndX = x
+                        }
+                        curStartX = -1
+                    }
                 }
             }
-            val cluster = sorted.subList(bestStart, bestStart + windowSize)
-            AppLogger.d("클러스터: ${cluster.size}개, Y-spread=${bestSpread}px")
-
-            // 5. 클러스터 union
-            var unionLeft = Int.MAX_VALUE
-            var unionTop = Int.MAX_VALUE
-            var unionRight = 0
-            var unionBottom = 0
-            for (info in cluster) {
-                unionLeft = Math.min(unionLeft, info.rect.x)
-                unionTop = Math.min(unionTop, info.rect.y)
-                unionRight = Math.max(unionRight, info.rect.x + info.rect.width)
-                unionBottom = Math.max(unionBottom, info.rect.y + info.rect.height)
+            if (curStartX != -1 && (w - curStartX) > (bestEndX - bestStartX)) {
+                bestStartX = curStartX; bestEndX = w
             }
 
-            val boardW = unionRight - unionLeft
-            val boardH = unionBottom - unionTop
-            if (boardW < 200 || boardH < 200) { AppLogger.d("보드 너무 작음"); return null }
+            if (bestStartX == -1 || bestEndX - bestStartX < 400) {
+                AppLogger.d("X범위 실패: start=$bestStartX, end=$bestEndX")
+                return null
+            }
 
-            AppLogger.d("보드(클러스터): ${boardW}x${boardH} @ (${unionLeft},${unionTop})")
+            val boardLeft = bestStartX
+            val boardRight = bestEndX
+            val boardW = boardRight - boardLeft
+            AppLogger.d("보드(proj): ${boardW}x${boardH} @ (${boardLeft},${boardTop})")
 
-            ptTL.set(unionLeft.toFloat(), unionTop.toFloat())
-            ptTR.set(unionRight.toFloat(), unionTop.toFloat())
-            ptBL.set(unionLeft.toFloat(), unionBottom.toFloat())
-            ptBR.set(unionRight.toFloat(), unionBottom.toFloat())
+            // ptTL 등 업데이트
+            ptTL.set(boardLeft.toFloat(), boardTop.toFloat())
+            ptTR.set(boardRight.toFloat(), boardTop.toFloat())
+            ptBL.set(boardLeft.toFloat(), boardBottom.toFloat())
+            ptBR.set(boardRight.toFloat(), boardBottom.toFloat())
 
-            // 6. 종횡비로 rows/cols 결정
-            // ⚠️ Royal Match는 세로 게임. cols: 7~10, rows: 7~14
-            var bestRows = 11
-            var bestCols = 9
-            var bestError = Float.MAX_VALUE
+            // 4. 종횡비 검증 (Royal Match는 1.1 ~ 1.4)
+            val aspect = boardH.toFloat() / boardW.toFloat()
+            AppLogger.d("종횡비: ${"%.3f".format(aspect)}")
+
+            if (aspect < 0.8f || aspect > 1.8f) {
+                AppLogger.d("종횡비 이상: ${"%.3f".format(aspect)}")
+                return null
+            }
+
+            // 5. rows/cols 결정 (정사각형 타일, 9 우선)
+            var bestRows = 11; var bestCols = 9; var bestError = Float.MAX_VALUE
 
             for (c in 7..10) {
                 val tileW = boardW.toFloat() / c
-                if (tileW < 40f || tileW > 200f) continue  // 타일 크기 합리적 범위
+                if (tileW < 50f || tileW > 180f) continue
                 val rowsRaw = boardH.toFloat() / tileW
                 val r = Math.round(rowsRaw).toInt()
                 if (r !in 7..14) continue
 
                 val tileH = boardH.toFloat() / r
                 val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
-                val prior = if (c == 9) 0f else 0.02f
+                val prior = when (c) {
+                    9 -> 0f
+                    8, 10 -> 0.02f
+                    else -> 0.05f
+                }
                 val score = err + prior
 
                 AppLogger.d("후보 ${c}×${r}: 타일=${tileW.toInt()}x${tileH.toInt()} 오차=${"%.3f".format(err)}")
 
                 if (score < bestError) {
                     bestError = score
-                    bestRows = r
-                    bestCols = c
+                    bestRows = r; bestCols = c
                 }
             }
 
-            if (bestError > 0.10f) {
+            if (bestError > 0.08f) {
                 AppLogger.d("오차 과대: ${"%.3f".format(bestError)}")
                 return null
             }
@@ -1248,7 +1298,7 @@ class SolverService : Service() {
             AppLogger.e("격자 검출 오류", e)
             return null
         } finally {
-            try { src?.release(); rgb?.release(); hsv?.release(); tileMask?.release(); kernel?.release(); hierarchy?.release() } catch (ex: Exception) {}
+            try { src?.release(); rgb?.release(); hsv?.release(); tileMask?.release() } catch (ex: Exception) {}
         }
     }
 
