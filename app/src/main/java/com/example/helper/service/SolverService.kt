@@ -1142,25 +1142,36 @@ class SolverService : Service() {
             rgb = Mat(); Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
             hsv = Mat(); Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 90.0, 90.0), Scalar(12.0, 255.0, 255.0), m1)
-            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 90.0, 120.0), Scalar(35.0, 255.0, 255.0), m2)
-            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 90.0, 90.0), Scalar(85.0, 255.0, 255.0), m3)
-            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 90.0, 90.0), Scalar(135.0, 255.0, 255.0), m4)
-            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 90.0, 90.0), Scalar(180.0, 255.0, 255.0), m5)
+            // 🔥 v11: 진한 빨강(자물쇠) + 갈색/탠색(나무상자) 추가
+            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 90.0, 90.0), Scalar(12.0, 255.0, 255.0), m1)      // 빨강
+            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 90.0, 120.0), Scalar(35.0, 255.0, 255.0), m2)    // 노랑
+            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 90.0, 90.0), Scalar(85.0, 255.0, 255.0), m3)     // 초록
+            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 90.0, 90.0), Scalar(135.0, 255.0, 255.0), m4)    // 파랑
+            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 90.0, 90.0), Scalar(180.0, 255.0, 255.0), m5)   // 보라
+            // 🔥 추가 1: 진한 빨강/마룬 (자물쇠) - 낮은 밝기 허용
+            val m6 = Mat(); Core.inRange(hsv, Scalar(0.0, 60.0, 40.0), Scalar(15.0, 255.0, 140.0), m6)
+            // 🔥 추가 2: 갈색/탠색 (나무 상자) - hue 10~25
+            val m7 = Mat(); Core.inRange(hsv, Scalar(10.0, 50.0, 100.0), Scalar(28.0, 255.0, 255.0), m7)
+            // 🔥 추가 3: 밝은 살구색/베이지 (상자 하이라이트)
+            val m8 = Mat(); Core.inRange(hsv, Scalar(15.0, 40.0, 180.0), Scalar(30.0, 180.0, 255.0), m8)
 
             tileMask = Mat()
             Core.bitwise_or(m1, m2, tileMask)
             Core.bitwise_or(tileMask, m3, tileMask)
             Core.bitwise_or(tileMask, m4, tileMask)
             Core.bitwise_or(tileMask, m5, tileMask)
+            Core.bitwise_or(tileMask, m6, tileMask)
+            Core.bitwise_or(tileMask, m7, tileMask)
+            Core.bitwise_or(tileMask, m8, tileMask)
             m1.release(); m2.release(); m3.release(); m4.release(); m5.release()
+            m6.release(); m7.release(); m8.release()
 
             val w = bitmap.width
             val h = bitmap.height
 
             // 🔥 Y 검색 범위: 상단 15% ~ 68% (파워업 바 제외)
             val minY = (h * 0.15).toInt()
-            val maxY = (h * 0.68).toInt()  // ← 핵심 변경
+            val maxY = (h * 0.80).toInt()  // 🔥 v11: 자물쇠/상자 포함
 
             // Y 프로젝션
             val rowProj = IntArray(h)
@@ -1272,7 +1283,7 @@ class SolverService : Service() {
 
             // 범위 제한
             if (rows < 9) rows = 9
-            if (rows > 12) rows = 12
+            if (rows > 13) rows = 13
 
             val tileH = boardH.toFloat() / rows
             val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
