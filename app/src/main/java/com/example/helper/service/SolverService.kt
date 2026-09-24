@@ -1170,8 +1170,8 @@ class SolverService : Service() {
             val h = bitmap.height
 
             // 🔥 Y 검색 범위: 상단 15% ~ 68% (파워업 바 제외)
-            val minY = (h * 0.15).toInt()
-            val maxY = (h * 0.80).toInt()  // 🔥 v11: 자물쇠/상자 포함
+            val minY = (h * 0.25).toInt()  // 🔥 v13: 상단 UI 제외
+            val maxY = (h * 0.75).toInt()  // 🔥 v13: 하단 UI 제외
 
             // Y 프로젝션
             val rowProj = IntArray(h)
@@ -1194,7 +1194,7 @@ class SolverService : Service() {
             for (y in minY until maxY) if (rowSmooth[y] > maxRow) maxRow = rowSmooth[y]
             if (maxRow < 30) { AppLogger.d("rowProj 약함: $maxRow"); return null }
 
-            val rowThr = maxRow * 0.40
+            val rowThr = maxRow * 0.50  // 🔥 v13: 엄격
 
             // first ~ last dense
             var firstDense = -1
@@ -1243,7 +1243,7 @@ class SolverService : Service() {
             for (x in 0 until w) if (colSmooth[x] > maxCol) maxCol = colSmooth[x]
             if (maxCol < 30) { AppLogger.d("colProj 약함: $maxCol"); return null }
 
-            val colThr = maxCol * 0.40
+            val colThr = maxCol * 0.50  // 🔥 v13: 엄격
             var boardLeft = -1
             var boardRight = -1
             var gapCntX = 0
@@ -1278,9 +1278,12 @@ class SolverService : Service() {
             val rowsRaw = boardH.toFloat() / tileW
 
             var rows = when {
-                rowsRaw < 9.5f -> 9
-                rowsRaw < 12.5f -> 11   // 🔥 Royal Match 11행 강제
-                rowsRaw < 14.0f -> 13
+                rowsRaw < 9.3f -> 9
+                rowsRaw < 10.5f -> 10   // 🔥 v13: 10행 지원
+                rowsRaw < 11.5f -> 11
+                rowsRaw < 12.5f -> 11   // 여유 있게 11
+                rowsRaw < 13.5f -> 12
+                rowsRaw < 14.5f -> 13
                 else -> Math.round(rowsRaw).toInt()
             }
 
