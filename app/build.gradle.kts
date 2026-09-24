@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.helper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1002
-        versionName = "1.002"
+        versionCode = 1003
+        versionName = "1.003"
     }
 
     buildTypes {

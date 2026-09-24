@@ -1131,7 +1131,7 @@ class SolverService : Service() {
 
 
     // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
-    // 🔥🔥🔥 v9: 안정화된 Y범위 (first~last dense) + cols=9 강제
+    // 🔥🔥🔥 v10: 파워업 바 제외 (maxY=0.68) + 넉넉한 gap + floor rows
     private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
         var src: Mat? = null
         var rgb: Mat? = null
@@ -1142,11 +1142,11 @@ class SolverService : Service() {
             rgb = Mat(); Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
             hsv = Mat(); Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 100.0), Scalar(10.0, 255.0, 255.0), m1)
-            val m2 = Mat(); Core.inRange(hsv, Scalar(15.0, 100.0, 140.0), Scalar(35.0, 255.0, 255.0), m2)
-            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 100.0, 100.0), Scalar(85.0, 255.0, 255.0), m3)
-            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 100.0, 100.0), Scalar(135.0, 255.0, 255.0), m4)
-            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 100.0, 100.0), Scalar(180.0, 255.0, 255.0), m5)
+            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 90.0, 90.0), Scalar(12.0, 255.0, 255.0), m1)
+            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 90.0, 120.0), Scalar(35.0, 255.0, 255.0), m2)
+            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 90.0, 90.0), Scalar(85.0, 255.0, 255.0), m3)
+            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 90.0, 90.0), Scalar(135.0, 255.0, 255.0), m4)
+            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 90.0, 90.0), Scalar(180.0, 255.0, 255.0), m5)
 
             tileMask = Mat()
             Core.bitwise_or(m1, m2, tileMask)
@@ -1157,6 +1157,10 @@ class SolverService : Service() {
 
             val w = bitmap.width
             val h = bitmap.height
+
+            // 🔥 Y 검색 범위: 상단 15% ~ 68% (파워업 바 제외)
+            val minY = (h * 0.15).toInt()
+            val maxY = (h * 0.68).toInt()  // ← 핵심 변경
 
             // Y 프로젝션
             val rowProj = IntArray(h)
@@ -1174,18 +1178,18 @@ class SolverService : Service() {
                 rowSmooth[y] = s / 11
             }
 
-            val maxRow = rowSmooth.maxOrNull() ?: 0
+            // maxRow는 검색 범위 내에서만
+            var maxRow = 0
+            for (y in minY until maxY) if (rowSmooth[y] > maxRow) maxRow = rowSmooth[y]
             if (maxRow < 30) { AppLogger.d("rowProj 약함: $maxRow"); return null }
 
-            val minY = (h * 0.15).toInt()
-            val maxY = (h * 0.90).toInt()
             val rowThr = maxRow * 0.40
 
-            // 🔥 first ~ last dense (큰 갭은 30px 이내만 무시)
+            // first ~ last dense
             var firstDense = -1
             var lastDense = -1
             var gapCount = 0
-            val maxGap = 40
+            val maxGap = 100  // ← 넉넉하게
 
             for (y in minY until maxY) {
                 if (rowSmooth[y] >= rowThr) {
@@ -1194,14 +1198,11 @@ class SolverService : Service() {
                     gapCount = 0
                 } else {
                     gapCount++
-                    if (firstDense != -1 && gapCount > maxGap) {
-                        // 큰 갭 → 여기서 종료 (뒷부분은 다른 요소)
-                        break
-                    }
+                    if (firstDense != -1 && gapCount > maxGap) break
                 }
             }
 
-            if (firstDense == -1 || lastDense - firstDense < 500) {
+            if (firstDense == -1 || lastDense - firstDense < 400) {
                 AppLogger.d("Y범위 실패: first=$firstDense, last=$lastDense")
                 return null
             }
@@ -1227,7 +1228,8 @@ class SolverService : Service() {
                 colSmooth[x] = s / 11
             }
 
-            val maxCol = colSmooth.maxOrNull() ?: 0
+            var maxCol = 0
+            for (x in 0 until w) if (colSmooth[x] > maxCol) maxCol = colSmooth[x]
             if (maxCol < 30) { AppLogger.d("colProj 약함: $maxCol"); return null }
 
             val colThr = maxCol * 0.40
@@ -1241,7 +1243,7 @@ class SolverService : Service() {
                     gapCntX = 0
                 } else {
                     gapCntX++
-                    if (boardLeft != -1 && gapCntX > 40) break
+                    if (boardLeft != -1 && gapCntX > 60) break
                 }
             }
 
@@ -1258,20 +1260,19 @@ class SolverService : Service() {
             ptBL.set(boardLeft.toFloat(), boardBottom.toFloat())
             ptBR.set(boardRight.toFloat(), boardBottom.toFloat())
 
-            // 🔥 Royal Match 표준: cols=9 강제, tileW 기반 rows 계산
+            // 🔥 cols=9 강제, floor 방식으로 rows 계산
             val COLS = 9
             val tileW = boardW.toFloat() / COLS
             val rowsRaw = boardH.toFloat() / tileW
-            var rows = Math.round(rowsRaw).toInt()
+
+            // floor + 0.3 보정 (경계 케이스 안정화)
+            var rows = Math.floor(rowsRaw + 0.3).toInt()
 
             AppLogger.d("계산: tileW=${tileW.toInt()}, rowsRaw=${"%.2f".format(rowsRaw)} → rows=$rows")
 
-            // 🔥 rows 범위 제한 (Royal Match는 보통 9~12)
+            // 범위 제한
             if (rows < 9) rows = 9
             if (rows > 12) rows = 12
-
-            // 🔥 rows=12인데 rowsRaw가 11.7 미만이면 11로 낮춤 (경계 케이스)
-            if (rows == 12 && rowsRaw < 11.7f) rows = 11
 
             val tileH = boardH.toFloat() / rows
             val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
