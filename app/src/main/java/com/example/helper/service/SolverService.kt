@@ -1085,47 +1085,140 @@ class SolverService : Service() {
         ptBL.set(sortedPoints[2].x.toFloat(), sortedPoints[2].y.toFloat())
         ptBR.set(sortedPoints[3].x.toFloat(), sortedPoints[3].y.toFloat())
 
-        val candidates = listOf(
-            8 to 8, 8 to 9, 8 to 10,
-            9 to 8, 9 to 9, 9 to 10, 9 to 11,
-            10 to 8, 10 to 9, 10 to 10, 10 to 11,
-            11 to 8, 11 to 9, 11 to 10, 11 to 11,
-            12 to 8, 12 to 9, 12 to 10, 12 to 11
-        )
-        var bestRows = rows; var bestCols = cols; var bestScore = -1.0
-        val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        for ((r, c) in candidates) {
-            var valid = 0; var total = 0
-            for (rr in 0 until r) for (cc in 0 until c) {
-                val u = (cc + 0.5f) / c; val v = (rr + 0.5f) / r
-                val topX = (1 - u) * ptTL.x + u * ptTR.x
-                val topY = (1 - u) * ptTL.y + u * ptTR.y
-                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
-                val cx = (1 - v) * topX + v * bottomX
-                val cy = (1 - v) * topY + v * bottomY
-                val ix = cx.toInt().coerceIn(0, width - 1)
-                val iy = cy.toInt().coerceIn(0, height - 1)
-                val pixel = pixels[iy * width + ix]
-                val hsv = FloatArray(3); Color.colorToHSV(pixel, hsv)
-                total++
-                if (hsv[1] > 0.15f && hsv[2] > 0.15f) valid++
-            }
-            val score = valid.toDouble() / total
-            if (score > bestScore) { bestScore = score; bestRows = r; bestCols = c }
-        }
-
-        if (bestScore > 0.15) {
-            rows = bestRows; cols = bestCols
+        // 🔥 격자선 프로젝션 방식으로 크기 검출
+        val detected = detectGridDimensions(bitmap)
+        if (detected != null) {
+            rows = detected.first
+            cols = detected.second
             savePreferences()
-            Log.d(TAG, "자동 인식 성공: ${rows}x${cols}, 신뢰도 ${"%.0f".format(bestScore * 100)}%")
+            Log.d(TAG, "✅ 자동 인식 성공: ${rows}x${cols}")
+            mainHandler.post {
+                Toast.makeText(applicationContext, "✅ 판 크기: ${rows}행 x ${cols}열", Toast.LENGTH_SHORT).show()
+            }
             src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
             return true
+        } else {
+            Log.d(TAG, "⚠️ 격자 크기 검출 실패, 기존 값 유지: ${rows}x${cols}")
+            src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
+            return false
         }
+    }
 
-        src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
-        return false
+
+    // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
+    private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
+        try {
+            // 1. 보드를 정면 사각형으로 원근 보정
+            val srcPts = MatOfPoint2f(
+                org.opencv.core.Point(ptTL.x.toDouble(), ptTL.y.toDouble()),
+                org.opencv.core.Point(ptTR.x.toDouble(), ptTR.y.toDouble()),
+                org.opencv.core.Point(ptBR.x.toDouble(), ptBR.y.toDouble()),
+                org.opencv.core.Point(ptBL.x.toDouble(), ptBL.y.toDouble())
+            )
+            val warpW = 720
+            val warpH = 880
+            val dstPts = MatOfPoint2f(
+                org.opencv.core.Point(0.0, 0.0),
+                org.opencv.core.Point(warpW.toDouble(), 0.0),
+                org.opencv.core.Point(warpW.toDouble(), warpH.toDouble()),
+                org.opencv.core.Point(0.0, warpH.toDouble())
+            )
+
+            val srcMat = Mat()
+            Utils.bitmapToMat(bitmap, srcMat)
+            val warped = Mat()
+            val transform = Imgproc.getPerspectiveTransform(srcPts, dstPts)
+            Imgproc.warpPerspective(srcMat, warped, transform, Size(warpW.toDouble(), warpH.toDouble()))
+
+            // 2. 엣지 검출
+            val gray = Mat()
+            Imgproc.cvtColor(warped, gray, Imgproc.COLOR_RGBA2GRAY)
+            val blurred = Mat()
+            Imgproc.GaussianBlur(gray, blurred, Size(3.0, 3.0), 0.0)
+            val edges = Mat()
+            Imgproc.Canny(blurred, edges, 40.0, 120.0)
+
+            // 3. Y축 프로젝션 → 가로선 검출
+            val rowProj = DoubleArray(warpH)
+            for (y in 0 until warpH) {
+                var s = 0.0
+                for (x in 0 until warpW) {
+                    s += edges.get(y, x)[0] / 255.0
+                }
+                rowProj[y] = s
+            }
+
+            // 4. X축 프로젝션 → 세로선 검출
+            val colProj = DoubleArray(warpW)
+            for (x in 0 until warpW) {
+                var s = 0.0
+                for (y in 0 until warpH) {
+                    s += edges.get(y, x)[0] / 255.0
+                }
+                colProj[x] = s
+            }
+
+            val rowPeaks = findLinePeaks(rowProj, warpH)
+            val colPeaks = findLinePeaks(colProj, warpW)
+
+            Log.d(TAG, "격자선 검출: 가로 ${rowPeaks.size}개, 세로 ${colPeaks.size}개")
+
+            srcMat.release(); warped.release(); gray.release(); blurred.release(); edges.release()
+
+            if (rowPeaks.size < 6 || colPeaks.size < 6) return null
+
+            val dRows = rowPeaks.size - 1
+            val dCols = colPeaks.size - 1
+            if (dRows !in 5..15 || dCols !in 5..15) return null
+
+            // 5. 간격 균일성 검사
+            val rowGaps = rowPeaks.zipWithNext { a, b -> b - a }
+            val colGaps = colPeaks.zipWithNext { a, b -> b - a }
+            val rowMean = rowGaps.average()
+            val colMean = colGaps.average()
+            val rowStd = calculateStdDev(rowGaps)
+            val colStd = calculateStdDev(colGaps)
+
+            if (rowStd > rowMean * 0.3 || colStd > colMean * 0.3) {
+                Log.d(TAG, "격자 간격 불규칙 → 오탐")
+                return null
+            }
+
+            Log.d(TAG, "✅ 격자 검출: ${dRows}행 x ${dCols}열")
+            return Pair(dRows, dCols)
+        } catch (e: Exception) {
+            Log.e(TAG, "격자 검출 오류", e)
+            return null
+        }
+    }
+
+    // 🔥 피크 검출
+    private fun findLinePeaks(proj: DoubleArray, len: Int): List<Int> {
+        val smoothed = DoubleArray(len)
+        for (i in 1 until len - 1) {
+            smoothed[i] = (proj[i - 1] + proj[i] + proj[i + 1]) / 3.0
+        }
+        val maxVal = smoothed.maxOrNull() ?: 0.0
+        if (maxVal < 1.0) return emptyList()
+        val thr = maxVal * 0.4
+        val peaks = mutableListOf<Int>()
+        var i = 1
+        while (i < len - 1) {
+            if (smoothed[i] > thr && smoothed[i] >= smoothed[i - 1] && smoothed[i] >= smoothed[i + 1]) {
+                peaks.add(i)
+                i += 15
+            } else {
+                i++
+            }
+        }
+        return peaks
+    }
+
+    private fun calculateStdDev(values: List<Int>): Double {
+        if (values.isEmpty()) return 0.0
+        val mean = values.average()
+        val variance = values.map { (it - mean) * (it - mean) }.average()
+        return Math.sqrt(variance)
     }
 
     private fun sortCorners(points: Array<org.opencv.core.Point>): List<org.opencv.core.Point> {
