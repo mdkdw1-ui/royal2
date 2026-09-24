@@ -19,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.*
+import org.opencv.core.CvType
 import org.opencv.imgproc.Imgproc
 import java.io.File
 import java.io.FileOutputStream
@@ -1115,85 +1116,161 @@ class SolverService : Service() {
 
 
     // 🔥🔥🔥 [신규] 격자선 프로젝션으로 정확한 행/열 개수 검출
+    // 🔥🔥🔥 완전 자동: 컬러 타일 마스크 + 주기 검출
+    // 사용자 모서리 지정 불필요 - 매 프레임 자동으로 보드를 찾음
     private fun detectGridDimensions(bitmap: Bitmap): Pair<Int, Int>? {
+        var src: Mat? = null
+        var rgb: Mat? = null
+        var hsv: Mat? = null
+        var tileMask: Mat? = null
+        var kernel: Mat? = null
+        var hierarchy: Mat? = null
         try {
-            val warpW = 720
-            val warpH = 900
-            val srcPts = MatOfPoint2f(
-                org.opencv.core.Point(ptTL.x.toDouble(), ptTL.y.toDouble()),
-                org.opencv.core.Point(ptTR.x.toDouble(), ptTR.y.toDouble()),
-                org.opencv.core.Point(ptBR.x.toDouble(), ptBR.y.toDouble()),
-                org.opencv.core.Point(ptBL.x.toDouble(), ptBL.y.toDouble())
-            )
-            val dstPts = MatOfPoint2f(
-                org.opencv.core.Point(0.0, 0.0),
-                org.opencv.core.Point(warpW.toDouble(), 0.0),
-                org.opencv.core.Point(warpW.toDouble(), warpH.toDouble()),
-                org.opencv.core.Point(0.0, warpH.toDouble())
-            )
-            val srcMat = Mat()
-            Utils.bitmapToMat(bitmap, srcMat)
-            val warped = Mat()
-            val transform = Imgproc.getPerspectiveTransform(srcPts, dstPts)
-            Imgproc.warpPerspective(srcMat, warped, transform, Size(warpW.toDouble(), warpH.toDouble()))
+            // 1. 타일 마스크 (여러 색상 범위 OR)
+            src = Mat(); Utils.bitmapToMat(bitmap, src)
+            rgb = Mat(); Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
+            hsv = Mat(); Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
 
-            val rgb = Mat()
-            Imgproc.cvtColor(warped, rgb, Imgproc.COLOR_RGBA2RGB)
-            val hsv = Mat()
-            Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
+            val m1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 90.0), Scalar(12.0, 255.0, 255.0), m1)
+            val m2 = Mat(); Core.inRange(hsv, Scalar(13.0, 100.0, 130.0), Scalar(35.0, 255.0, 255.0), m2)
+            val m3 = Mat(); Core.inRange(hsv, Scalar(36.0, 100.0, 90.0), Scalar(85.0, 255.0, 255.0), m3)
+            val m4 = Mat(); Core.inRange(hsv, Scalar(86.0, 100.0, 90.0), Scalar(135.0, 255.0, 255.0), m4)
+            val m5 = Mat(); Core.inRange(hsv, Scalar(136.0, 100.0, 90.0), Scalar(180.0, 255.0, 255.0), m5)
 
-            // 타일 마스크: 채도>60, 밝기>60 → 컬러 타일
-            val tileMask = Mat()
-            Core.inRange(hsv, Scalar(0.0, 60.0, 60.0), Scalar(180.0, 255.0, 255.0), tileMask)
+            tileMask = Mat()
+            Core.bitwise_or(m1, m2, tileMask)
+            Core.bitwise_or(tileMask, m3, tileMask)
+            Core.bitwise_or(tileMask, m4, tileMask)
+            Core.bitwise_or(tileMask, m5, tileMask)
+            m1.release(); m2.release(); m3.release(); m4.release(); m5.release()
 
-            // 컬럼 프로젝션
-            val colProj = DoubleArray(warpW)
-            for (x in 0 until warpW) {
-                var count = 0
-                for (y in 0 until warpH) {
-                    if (tileMask.get(y, x)[0] > 128) count++
-                }
-                colProj[x] = count.toDouble()
-            }
-            // 로우 프로젝션
-            val rowProj = DoubleArray(warpH)
-            for (y in 0 until warpH) {
-                var count = 0
-                for (x in 0 until warpW) {
-                    if (tileMask.get(y, x)[0] > 128) count++
-                }
-                rowProj[y] = count.toDouble()
+            kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+            Imgproc.morphologyEx(tileMask, tileMask, Imgproc.MORPH_OPEN, kernel)
+
+            // 2. 최대 컨투어 = 보드 영역
+            val contours = ArrayList<MatOfPoint>()
+            hierarchy = Mat()
+            Imgproc.findContours(tileMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+
+            var bestContour: MatOfPoint? = null
+            var bestArea = 0.0
+            val minArea = bitmap.width.toDouble() * bitmap.height * 0.15
+            for (c in contours) {
+                val area = Imgproc.contourArea(c)
+                if (area < minArea) continue
+                val r = Imgproc.boundingRect(c)
+                val centerY = r.top + r.height / 2f
+                if (centerY < bitmap.height * 0.25f) continue
+                val ar = r.height.toFloat() / r.width.toFloat()
+                if (ar < 0.6f || ar > 2.0f) continue
+                if (area > bestArea) { bestArea = area; bestContour = c }
             }
 
-            val colSmooth = smoothArray(colProj, 5)
-            val rowSmooth = smoothArray(rowProj, 5)
+            if (bestContour == null) {
+                AppLogger.d("보드 컨투어 검출 실패")
+                return null
+            }
 
-            val colPeaks = findPeaksV2(colSmooth, warpW, 50)
-            val rowPeaks = findPeaksV2(rowSmooth, warpH, 50)
+            val boardRect = Imgproc.boundingRect(bestContour)
+            AppLogger.d("보드: ${boardRect.width}x${boardRect.height} @ (${boardRect.left},${boardRect.top})")
 
-            AppLogger.d("colPeaks(${colPeaks.size}): $colPeaks")
-            AppLogger.d("rowPeaks(${rowPeaks.size}): $rowPeaks")
+            // 3. ptTL 등 업데이트
+            ptTL.set(boardRect.left.toFloat(), boardRect.top.toFloat())
+            ptTR.set(boardRect.right.toFloat(), boardRect.top.toFloat())
+            ptBL.set(boardRect.left.toFloat(), boardRect.bottom.toFloat())
+            ptBR.set(boardRect.right.toFloat(), boardRect.bottom.toFloat())
 
-            srcMat.release(); warped.release(); rgb.release(); hsv.release(); tileMask.release()
+            // 4. 컬럼 프로젝션 (컬러 픽셀 개수)
+            val colProj = DoubleArray(boardRect.width)
+            for (x in 0 until boardRect.width) {
+                var sum = 0
+                for (y in boardRect.top until boardRect.bottom) {
+                    if (tileMask.get(y, boardRect.left + x)[0] > 128.0) sum++
+                }
+                colProj[x] = sum.toDouble() / boardRect.height
+            }
 
-            val detectedRows = rowPeaks.size
-            val detectedCols = colPeaks.size
+            // 5. 로우 프로젝션
+            val rowProj = DoubleArray(boardRect.height)
+            for (y in 0 until boardRect.height) {
+                var sum = 0
+                for (x in boardRect.left until boardRect.right) {
+                    if (tileMask.get(boardRect.top + y, x)[0] > 128.0) sum++
+                }
+                rowProj[y] = sum.toDouble() / boardRect.width
+            }
 
-            if (detectedRows !in 5..15 || detectedCols !in 5..15) return null
-            AppLogger.d("OK 격자: ${detectedRows}행 x ${detectedCols}열")
-            return Pair(detectedRows, detectedCols)
+            // 6. 주기 검출
+            val tileW = findTilePeriod(colProj)
+            val tileH = findTilePeriod(rowProj)
+            AppLogger.d("주기: tileW=${tileW?.toInt() ?: -1}, tileH=${tileH?.toInt() ?: -1}")
+
+            if (tileW == null || tileH == null || tileW < 20f || tileH < 20f) {
+                AppLogger.d("주기 검출 실패")
+                return null
+            }
+
+            val cols = Math.round(boardRect.width.toFloat() / tileW).toInt()
+            val rows = Math.round(boardRect.height.toFloat() / tileH).toInt()
+            AppLogger.d("추정: ${rows}행 x ${cols}열")
+
+            if (cols !in 6..12 || rows !in 6..14) {
+                AppLogger.d("범위 초과")
+                return null
+            }
+
+            AppLogger.d("OK 격자: ${rows}행 x ${cols}열")
+            return Pair(rows, cols)
         } catch (e: Exception) {
             AppLogger.e("격자 검출 오류", e)
             return null
+        } finally {
+            try { src?.release(); rgb?.release(); hsv?.release(); tileMask?.release(); kernel?.release(); hierarchy?.release() } catch (ex: Exception) {}
         }
+    }
+
+    // 프로젝션에서 타일 주기(간격) 검출
+    private fun findTilePeriod(proj: DoubleArray): Float? {
+        val n = proj.size
+        if (n < 80) return null
+
+        val smooth = smoothArray(proj, 7)
+        val mean = smooth.average()
+        if (mean < 0.1) return null
+        val maxVal = smooth.maxOrNull() ?: return null
+        if (maxVal < mean * 1.5) return null
+
+        val threshold = (mean + maxVal) * 0.55
+
+        val peaks = mutableListOf<Int>()
+        var i = 3
+        while (i < n - 3) {
+            if (smooth[i] > threshold &&
+                smooth[i] > smooth[i-1] && smooth[i] > smooth[i-2] &&
+                smooth[i] >= smooth[i+1] && smooth[i] >= smooth[i+2]) {
+                peaks.add(i)
+                i += 10
+            } else i++
+        }
+
+        if (peaks.size < 4) return null
+
+        val gaps = peaks.zipWithNext { a, b -> b - a }.filter { it > 20 }
+        if (gaps.size < 3) return null
+
+        val sorted = gaps.sorted()
+        val median = sorted[sorted.size / 2]
+        val filtered = gaps.filter { Math.abs(it - median) < median * 0.35 }
+        if (filtered.size < 2) return null
+
+        return filtered.average().toFloat()
     }
 
     private fun smoothArray(arr: DoubleArray, kernelSize: Int): DoubleArray {
         val result = DoubleArray(arr.size)
         val half = kernelSize / 2
         for (i in arr.indices) {
-            var sum = 0.0
-            var count = 0
+            var sum = 0.0; var count = 0
             for (j in -half..half) {
                 val idx = i + j
                 if (idx in arr.indices) { sum += arr[idx]; count++ }
@@ -1203,19 +1280,31 @@ class SolverService : Service() {
         return result
     }
 
-    private fun findPeaksV2(proj: DoubleArray, len: Int, minGap: Int): List<Int> {
+    // 🔥 강한 피크만 검출 (프로미넌스 검사)
+    private fun findPeaksV3(proj: DoubleArray): List<Int> {
+        if (proj.isEmpty()) return emptyList()
         val maxVal = proj.maxOrNull() ?: 0.0
-        if (maxVal < 1.0) return emptyList()
-        val threshold = maxVal * 0.5
+        if (maxVal < 5.0) return emptyList()
+
+        val threshold = maxVal * 0.45   // 상위 55%만
         val peaks = mutableListOf<Int>()
         var i = 1
-        while (i < len - 1) {
+        while (i < proj.size - 1) {
             if (proj[i] > threshold && proj[i] >= proj[i-1] && proj[i] >= proj[i+1]) {
                 peaks.add(i)
-                i += minGap
+                i += 40   // 최소 간격 40
             } else { i++ }
         }
-        return peaks
+
+        // 🔥 프로미넌스 필터: 주변 최소값 대비 30% 이상 높아야 인정
+        val filtered = peaks.filter { peak ->
+            val window = 30
+            val lo = (peak - window).coerceAtLeast(0)
+            val hi = (peak + window).coerceAtMost(proj.size - 1)
+            val localMin = (lo..hi).minOf { proj[it] }
+            proj[peak] > localMin * 1.3
+        }
+        return filtered
     }
 
     // 🔥 피크 검출
