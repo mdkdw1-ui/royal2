@@ -1172,20 +1172,20 @@ class SolverService : Service() {
             }
 
             val boardRect = Imgproc.boundingRect(bestContour)
-            AppLogger.d("보드: ${boardRect.width}x${boardRect.height} @ (${boardRect.left},${boardRect.top})")
+            AppLogger.d("보드: ${boardRect.width}x${boardRect.height} @ (${boardRect.x},${boardRect.y})")
 
             // 3. ptTL 등 업데이트
-            ptTL.set(boardRect.left.toFloat(), boardRect.top.toFloat())
-            ptTR.set(boardRect.right.toFloat(), boardRect.top.toFloat())
-            ptBL.set(boardRect.left.toFloat(), boardRect.bottom.toFloat())
-            ptBR.set(boardRect.right.toFloat(), boardRect.bottom.toFloat())
+            ptTL.set(boardRect.x.toFloat(), boardRect.y.toFloat())
+            ptTR.set((boardRect.x + boardRect.width).toFloat(), boardRect.y.toFloat())
+            ptBL.set(boardRect.x.toFloat(), (boardRect.y + boardRect.height).toFloat())
+            ptBR.set((boardRect.x + boardRect.width).toFloat(), (boardRect.y + boardRect.height).toFloat())
 
             // 4. 컬럼 프로젝션 (컬러 픽셀 개수)
             val colProj = DoubleArray(boardRect.width)
             for (x in 0 until boardRect.width) {
                 var sum = 0
-                for (y in boardRect.top until boardRect.bottom) {
-                    if (tileMask.get(y, boardRect.left + x)[0] > 128.0) sum++
+                for (y in boardRect.y until (boardRect.y + boardRect.height)) {
+                    if (tileMask.get(y, boardRect.x + x)[0] > 128.0) sum++
                 }
                 colProj[x] = sum.toDouble() / boardRect.height
             }
@@ -1194,8 +1194,8 @@ class SolverService : Service() {
             val rowProj = DoubleArray(boardRect.height)
             for (y in 0 until boardRect.height) {
                 var sum = 0
-                for (x in boardRect.left until boardRect.right) {
-                    if (tileMask.get(boardRect.top + y, x)[0] > 128.0) sum++
+                for (x in boardRect.x until (boardRect.x + boardRect.width)) {
+                    if (tileMask.get(boardRect.y + y, x)[0] > 128.0) sum++
                 }
                 rowProj[y] = sum.toDouble() / boardRect.width
             }
