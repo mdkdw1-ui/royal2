@@ -1,0 +1,71 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Read version
+      id: ver
+      run: |
+        VER=$(cat version.txt 2>/dev/null || echo "1.001")
+        echo "version=$VER" >> $GITHUB_OUTPUT
+        echo "📦 Building version: $VER"
+
+    - name: Build Debug APK
+      run: ./gradlew assembleDebug
+
+    - name: Rename APK
+      run: |
+        mkdir -p release
+        cp app/build/outputs/apk/debug/app-debug.apk "release/ooxoo-helper-${{ steps.ver.outputs.version }}.apk"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-debug-${{ steps.ver.outputs.version }}
+        path: release/*.apk
+
+    - name: Delete old releases
+      continue-on-error: true
+      run: |
+        gh release list --limit 100 --json tagName -q '.[].tagName' | while read tag; do
+          gh release delete "$tag" --yes --cleanup-tag || true
+        done
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ steps.ver.outputs.version }}
+        name: v${{ steps.ver.outputs.version }}
+        files: release/*.apk
+        make_latest: true
+        body: |
+          **OOXOO 헬퍼 v${{ steps.ver.outputs.version }}**
+          
+          - 자동 빌드: ${{ github.event.head_commit.message }}
+          - 커밋: ${{ github.sha }}

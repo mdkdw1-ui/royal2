@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.helper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 1001
+        versionName = "1.001"
     }
 
     buildTypes {
@@ -38,6 +38,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     // 🔥🔥🔥 OpenCV 추가 (필수!)
     implementation("com.quickbirdstudios:opencv:4.5.3.0")

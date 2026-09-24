@@ -13,6 +13,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.Log
 import com.example.helper.util.AppLogger
+import com.example.helper.util.UpdateChecker
 import android.view.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
@@ -962,6 +963,20 @@ class SolverService : Service() {
         }.also { view.addView(it) }
 
         // 8. 종료
+        Button(context).apply {
+            text = "🔄 업데이트 확인"
+            setBackgroundColor(Color.parseColor("#0288D1"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                Toast.makeText(context, "🔄 확인 중...", Toast.LENGTH_SHORT).show()
+                UpdateChecker.checkAndUpdate(context) { msg ->
+                    mainHandler.post {
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }.also { view.addView(it) }
+
         Button(context).apply {
             text = "📋 로그 보기 (${AppLogger.getAll().size})"
             setBackgroundColor(Color.parseColor("#37474F"))
