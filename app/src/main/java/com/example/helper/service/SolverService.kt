@@ -12,6 +12,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.Log
+import com.example.helper.util.AppLogger
 import android.view.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
@@ -54,6 +55,7 @@ class SolverService : Service() {
     private var overlayView: OverlayView? = null
     private var controlView: LinearLayout? = null
     private var gimmickManagerView: View? = null
+    private var logDialogView: View? = null
     private var floatParams: WindowManager.LayoutParams? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -90,11 +92,11 @@ class SolverService : Service() {
         backgroundHandler = Handler(backgroundThread!!.looper)
 
         if (OpenCVLoader.initDebug()) {
-            Log.d(TAG, "OpenCV 로드 성공")
+            AppLogger.d("OpenCV 로드 성공")
             isOpenCVInitialized = true
             backgroundHandler?.post { loadTemplatesFromStorage() }
         } else {
-            Log.e(TAG, "OpenCV 로드 실패")
+            AppLogger.e("OpenCV 로드 실패")
         }
 
         loadPreferences()
@@ -167,7 +169,7 @@ class SolverService : Service() {
                     refreshControlUI()
                 }
             }
-        } catch (e: Exception) { Log.e(TAG, "템플릿 로드 실패", e) }
+        } catch (e: Exception) { AppLogger.e("템플릿 로드 실패", e) }
     }
 
     private fun saveGimmickBitmap(bitmap: Bitmap) {
@@ -200,7 +202,7 @@ class SolverService : Service() {
                 refreshControlUI()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "기믹 저장 실패", e)
+            AppLogger.e("기믹 저장 실패", e)
             mainHandler.post {
                 Toast.makeText(applicationContext, "❌ 기믹 저장 실패: ${e.message}", Toast.LENGTH_SHORT).show()
             }
@@ -235,7 +237,7 @@ class SolverService : Service() {
                     hideGimmickManager()
                     showGimmickManager()
                 }
-            } catch (e: Exception) { Log.e(TAG, "삭제 실패", e) }
+            } catch (e: Exception) { AppLogger.e("삭제 실패", e) }
         }
     }
 
@@ -255,7 +257,7 @@ class SolverService : Service() {
                     hideGimmickManager()
                 }
                 overlayView?.invalidate()
-            } catch (e: Exception) { Log.e(TAG, "전체 삭제 실패", e) }
+            } catch (e: Exception) { AppLogger.e("전체 삭제 실패", e) }
         }
     }
 
@@ -472,7 +474,7 @@ class SolverService : Service() {
                     if (dist < minDist) { minDist = dist; targetRow = r; targetCol = c }
                 }
                 if (minDist < 150f) {
-                    Log.d(TAG, "📷 기믹 따기: row=$targetRow, col=$targetCol")
+                    AppLogger.d("📷 기믹 따기: row=$targetRow, col=$targetCol")
                     isGrabberProcessing = true
                     captureCellForGimmick(targetRow, targetCol)
                     return true
@@ -960,6 +962,13 @@ class SolverService : Service() {
 
         // 8. 종료
         Button(context).apply {
+            text = "📋 로그 보기 (${AppLogger.getAll().size})"
+            setBackgroundColor(Color.parseColor("#37474F"))
+            setTextColor(Color.WHITE)
+            setOnClickListener { showLogDialog() }
+        }.also { view.addView(it) }
+
+        Button(context).apply {
             text = "❌ 종료"
             setBackgroundColor(Color.RED)
             setTextColor(Color.WHITE)
@@ -1030,7 +1039,7 @@ class SolverService : Service() {
                     refreshControlUI()
                 }
                 bitmap.recycle()
-            } catch (e: Exception) { Log.e(TAG, "자동 감지 오류", e) }
+            } catch (e: Exception) { AppLogger.e("자동 감지 오류", e) }
             finally { image.close() }
         }
     }
@@ -1091,14 +1100,14 @@ class SolverService : Service() {
             rows = detected.first
             cols = detected.second
             savePreferences()
-            Log.d(TAG, "✅ 자동 인식 성공: ${rows}x${cols}")
+            AppLogger.d("✅ 자동 인식 성공: ${rows}x${cols}")
             mainHandler.post {
                 Toast.makeText(applicationContext, "✅ 판 크기: ${rows}행 x ${cols}열", Toast.LENGTH_SHORT).show()
             }
             src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
             return true
         } else {
-            Log.d(TAG, "⚠️ 격자 크기 검출 실패, 기존 값 유지: ${rows}x${cols}")
+            AppLogger.d("⚠️ 격자 크기 검출 실패, 기존 값 유지: ${rows}x${cols}")
             src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
             return false
         }
@@ -1161,7 +1170,7 @@ class SolverService : Service() {
             val rowPeaks = findLinePeaks(rowProj, warpH)
             val colPeaks = findLinePeaks(colProj, warpW)
 
-            Log.d(TAG, "격자선 검출: 가로 ${rowPeaks.size}개, 세로 ${colPeaks.size}개")
+            AppLogger.d("격자선 검출: 가로 ${rowPeaks.size}개, 세로 ${colPeaks.size}개")
 
             srcMat.release(); warped.release(); gray.release(); blurred.release(); edges.release()
 
@@ -1180,14 +1189,14 @@ class SolverService : Service() {
             val colStd = calculateStdDev(colGaps)
 
             if (rowStd > rowMean * 0.3 || colStd > colMean * 0.3) {
-                Log.d(TAG, "격자 간격 불규칙 → 오탐")
+                AppLogger.d("격자 간격 불규칙 → 오탐")
                 return null
             }
 
-            Log.d(TAG, "✅ 격자 검출: ${dRows}행 x ${dCols}열")
+            AppLogger.d("✅ 격자 검출: ${dRows}행 x ${dCols}열")
             return Pair(dRows, dCols)
         } catch (e: Exception) {
-            Log.e(TAG, "격자 검출 오류", e)
+            AppLogger.e("격자 검출 오류", e)
             return null
         }
     }
@@ -1266,7 +1275,7 @@ class SolverService : Service() {
                     isScanning = false
                 }
                 bitmap.recycle()
-            } catch (e: Exception) { Log.e(TAG, "스캔 오류", e); mainHandler.post { isScanning = false } }
+            } catch (e: Exception) { AppLogger.e("스캔 오류", e); mainHandler.post { isScanning = false } }
             finally { image.close() }
         }
     }
@@ -1404,9 +1413,9 @@ class SolverService : Service() {
 
     // 🔥 기믹 캡처
     private fun captureCellForGimmick(row: Int, col: Int) {
-        Log.d(TAG, "📷 기믹 캡처 시작: row=$row, col=$col")
+        AppLogger.d("📷 기믹 캡처 시작: row=$row, col=$col")
         val reader = imageReader ?: run {
-            Log.e(TAG, "❌ imageReader가 null입니다")
+            AppLogger.e("❌ imageReader가 null입니다")
             isGrabberProcessing = false
             return
         }
@@ -1461,7 +1470,7 @@ class SolverService : Service() {
                     Toast.makeText(applicationContext, "✅ 기믹 저장 완료!", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "셀 캡처 실패", e)
+                AppLogger.e("셀 캡처 실패", e)
                 mainHandler.post {
                     Toast.makeText(applicationContext, "❌ 캡처 오류: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
@@ -1493,7 +1502,7 @@ class SolverService : Service() {
                 startAutoScan()
                 Toast.makeText(applicationContext, "🔄 자동 스캔 시작 (1초 간격)", Toast.LENGTH_SHORT).show()
             }
-        } catch (e: Exception) { Log.e(TAG, "캡처 설정 실패", e) }
+        } catch (e: Exception) { AppLogger.e("캡처 설정 실패", e) }
     }
 
     private fun stopCapture() {
@@ -1529,6 +1538,117 @@ class SolverService : Service() {
         ptTR.set(prefs.getFloat("ptTR_x", w * 0.85f), prefs.getFloat("ptTR_y", h * 0.18f))
         ptBL.set(prefs.getFloat("ptBL_x", w * 0.15f), prefs.getFloat("ptBL_y", h * 0.82f))
         ptBR.set(prefs.getFloat("ptBR_x", w * 0.85f), prefs.getFloat("ptBR_y", h * 0.82f))
+    }
+
+    private fun showLogDialog() {
+        mainHandler.post {
+            if (logDialogView != null) return@post
+            val context = applicationContext
+            val layout = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#FA1E1E1E"))
+                setPadding(20, 20, 20, 20)
+            }
+
+            val tvTitle = TextView(context).apply {
+                text = "📋 최근 로그 (${AppLogger.getAll().size}/200)"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, 10)
+            }
+            layout.addView(tvTitle)
+
+            val scrollView = ScrollView(context).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(320), dpToPx(400))
+                setBackgroundColor(Color.parseColor("#111111"))
+            }
+            val tvLog = TextView(context).apply {
+                text = if (AppLogger.getAll().isEmpty()) "(로그 없음)" else AppLogger.getAsText()
+                setTextColor(Color.parseColor("#CCCCCC"))
+                textSize = 10f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setPadding(10, 10, 10, 10)
+                setTextIsSelectable(true)
+            }
+            scrollView.addView(tvLog)
+            layout.addView(scrollView)
+
+            val btnRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 10, 0, 0)
+            }
+
+            Button(context).apply {
+                text = "📋 복사"
+                textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                setBackgroundColor(Color.parseColor("#1976D2"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    val ok = AppLogger.copyToClipboard(context)
+                    Toast.makeText(context, if (ok) "📋 클립보드에 복사됨" else "❌ 복사 실패", Toast.LENGTH_SHORT).show()
+                }
+            }.also { btnRow.addView(it) }
+
+            Button(context).apply {
+                text = "💾 저장"
+                textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                setBackgroundColor(Color.parseColor("#388E3C"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    val path = AppLogger.saveToDownloads(context)
+                    Toast.makeText(
+                        context,
+                        if (path != null) "💾 저장됨: $path" else "❌ 저장 실패",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }.also { btnRow.addView(it) }
+
+            Button(context).apply {
+                text = "🗑️ 지우기"
+                textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                setBackgroundColor(Color.parseColor("#D32F2F"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    AppLogger.clear()
+                    Toast.makeText(context, "🗑️ 로그 초기화", Toast.LENGTH_SHORT).show()
+                    hideLogDialog()
+                }
+            }.also { btnRow.addView(it) }
+            layout.addView(btnRow)
+
+            Button(context).apply {
+                text = "닫기"
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setOnClickListener { hideLogDialog() }
+            }.also { layout.addView(it) }
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.CENTER }
+
+            logDialogView = layout
+            windowManager.addView(logDialogView, params)
+        }
+    }
+
+    private fun hideLogDialog() {
+        mainHandler.post {
+            logDialogView?.let {
+                try { windowManager.removeView(it) } catch (e: Exception) {}
+                logDialogView = null
+            }
+        }
     }
 
     override fun onDestroy() {
