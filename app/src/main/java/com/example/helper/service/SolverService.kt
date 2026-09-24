@@ -13,6 +13,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.Log
 import com.example.helper.util.AppLogger
+import com.example.helper.util.LevelGridMemory
 import com.example.helper.util.UpdateChecker
 import android.view.*
 import android.widget.*
@@ -38,6 +39,7 @@ class SolverService : Service() {
     private val ptBR = PointF()
 
     private var isAutoDetectEnabled = true
+    private var currentFingerprint: String = ""
 
     private var isCompactMode = true
     private var isGridVisible = true
@@ -1495,8 +1497,25 @@ class SolverService : Service() {
                 val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 bitmap.copyPixelsFromBuffer(buffer)
 
+                // 🔥 v17: 레벨별 격자 기억
+                currentFingerprint = LevelGridMemory.computeFingerprint(bitmap)
+
                 if (isAutoDetectEnabled) {
+                    val before = "${rows}x${cols}"
                     autoDetectBoard(bitmap)
+                    val after = "${rows}x${cols}"
+                    // 자동 검출 성공 시 메모리에 저장 (자동, manual=false)
+                    if (before != after || LevelGridMemory.find(applicationContext, currentFingerprint) == null) {
+                        LevelGridMemory.save(applicationContext, currentFingerprint, rows, cols, manual = false)
+                    }
+                } else {
+                    // 수동 모드: 기억된 격자 우선 조회
+                    val remembered = LevelGridMemory.find(applicationContext, currentFingerprint)
+                    if (remembered != null) {
+                        rows = remembered.rows
+                        cols = remembered.cols
+                        AppLogger.d("📌 기억 격자 복원: ${rows}x${cols} (manual=${remembered.manual})")
+                    }
                 }
 
                 val positions = findOOXOO(bitmap)
@@ -1746,6 +1765,11 @@ class SolverService : Service() {
     }
 
     private fun savePreferences() {
+        // 🔥 v17: 현재 화면 fingerprint에 rows/cols 저장 (수동)
+        if (currentFingerprint.isNotEmpty() && !isAutoDetectEnabled) {
+            LevelGridMemory.save(applicationContext, currentFingerprint, rows, cols, manual = true)
+            AppLogger.d("💾 수동 격자 저장: ${rows}x${cols}")
+        }
         val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
         prefs.edit().apply {
             putInt("rows", rows); putInt("cols", cols)
