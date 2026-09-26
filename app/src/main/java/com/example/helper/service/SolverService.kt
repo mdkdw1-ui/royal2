@@ -1665,19 +1665,17 @@ class SolverService : Service() {
                         cols = prediction.cols
                         finalSource = "k-NN"
 
-                        // 🔥 v27: 위치도 복원
-                        run {
-                            val pos = prediction.position
-                            var posInfo = ""
-                            if (pos != null && pos.size == 8) {
-                                ptTL.set(pos[0], pos[1])
-                                ptTR.set(pos[2], pos[3])
-                                ptBL.set(pos[4], pos[5])
-                                ptBR.set(pos[6], pos[7])
-                                overlayView?.invalidate()
-                                posInfo = " + 📍위치복원"
-                                AppLogger.d("📍 위치 복원: TL=(${pos[0].toInt()},${pos[1].toInt()}) BR=(${pos[6].toInt()},${pos[7].toInt()})")
+                        // 🔥 v31: 위치도 복원 (UI는 main 스레드에서)
+                        val pos = prediction.position
+                        if (pos != null && pos.size == 8) {
+                            ptTL.set(pos[0], pos[1])
+                            ptTR.set(pos[2], pos[3])
+                            ptBL.set(pos[4], pos[5])
+                            ptBR.set(pos[6], pos[7])
+                            mainHandler.post {
+                                try { overlayView?.invalidate() } catch (e: Exception) {}
                             }
+                            AppLogger.d("📍 위치 복원: TL=(${pos[0].toInt()},${pos[1].toInt()}) BR=(${pos[6].toInt()},${pos[7].toInt()})")
                         }
                         AppLogger.d("🧠 k-NN: ${rows}x${cols} (신뢰도=${"%.2f".format(prediction.confidence)}, 시드=${prediction.seedCount}) | auto=${autoRows}x${autoCols}")
                     } else {
