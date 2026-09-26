@@ -2133,280 +2133,317 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 v29: 정답 입력 다이얼로그 - 좌상/우하 터치 지정
+    // 🔥 v32: 정답 입력 다이얼로그 (완전 방어적)
     private fun showLabelingDialog() {
         mainHandler.post {
-            val ctx = applicationContext
-            val thumb = latestThumbnail
-            val fullBmp = latestFullBitmap
+            try {
+                // 1. 이전 다이얼로그 정리 (leftover 방지)
+                hideLabelDialog()
 
-            val container = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.parseColor("#FA1E1E1E"))
-                setPadding(20, 20, 20, 20)
-            }
+                val ctx = applicationContext
+                val thumb = latestThumbnail
+                val fullBmp = latestFullBitmap
 
-            // 안내
-            TextView(ctx).apply {
-                text = "📸 이미지 터치: 좌상 → 우하"
-                setTextColor(Color.YELLOW)
-                textSize = 13f
-                setPadding(0, 0, 0, 8)
-            }.also { container.addView(it) }
-
-            // 미리보기 이미지
-            val iv = ImageView(ctx).apply {
-                adjustViewBounds = true
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 550
-                )
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                setBackgroundColor(Color.parseColor("#111111"))
-            }
-            container.addView(iv)
-
-            // 좌표 상태 (원본 화면 좌표계)
-            var tlFull = android.graphics.PointF(ptTL.x, ptTL.y)
-            var brFull = android.graphics.PointF(ptBR.x, ptBR.y)
-            var firstTouchDone = false
-
-            // iv 좌표 → 썸네일 좌표 → 원본 좌표 변환
-            fun ivToOriginal(ivX: Float, ivY: Float): android.graphics.PointF? {
-                val t = thumb ?: return null
-                val f = fullBmp ?: return null
-                val ivW = iv.width.toFloat()
-                val ivH = iv.height.toFloat()
-                if (ivW <= 0f || ivH <= 0f) return null
-                val bmpW = t.width.toFloat()
-                val bmpH = t.height.toFloat()
-                val scale = minOf(ivW / bmpW, ivH / bmpH)
-                val offsetX = (ivW - bmpW * scale) / 2f
-                val offsetY = (ivH - bmpH * scale) / 2f
-                val px = (ivX - offsetX) / scale
-                val py = (ivY - offsetY) / scale
-                if (px < 0f || py < 0f || px > bmpW || py > bmpH) return null
-                val origScaleX = f.width.toFloat() / bmpW
-                val origScaleY = f.height.toFloat() / bmpH
-                return android.graphics.PointF(px * origScaleX, py * origScaleY)
-            }
-
-            // 🔥 v29 fix: redraw가 etRows/etCols를 참조할 수 있도록
-            var etRowsRef: android.widget.EditText? = null
-            var etColsRef: android.widget.EditText? = null
-
-            // 선택 영역 + 격자 그리기
-            fun redraw() {
-                val t = thumb ?: return
-                val f = fullBmp ?: return
-                val mutable = t.copy(Bitmap.Config.ARGB_8888, true)
-                val canvas = Canvas(mutable)
-
-                val sx = t.width.toFloat() / f.width.toFloat()
-                val sy = t.height.toFloat() / f.height.toFloat()
-                val tlx = tlFull.x * sx
-                val tly = tlFull.y * sy
-                val brx = brFull.x * sx
-                val bry = brFull.y * sy
-
-                // 사각형
-                val rectPaint = Paint().apply {
-                    color = Color.parseColor("#00FF88")
-                    style = Paint.Style.STROKE
-                    strokeWidth = 3f
-                }
-                canvas.drawRect(tlx, tly, brx, bry, rectPaint)
-
-                // 격자선
-                val rVal = etRowsRef?.text?.toString()?.toIntOrNull() ?: rows
-                val cVal = etColsRef?.text?.toString()?.toIntOrNull() ?: cols
-                if (rVal in 3..20 && cVal in 3..20) {
-                    val gridPaint = Paint().apply {
-                        color = Color.parseColor("#AAFFFF00")
-                        style = Paint.Style.STROKE
-                        strokeWidth = 1f
-                    }
-                    for (i in 0..cVal) {
-                        val x = tlx + (brx - tlx) * i / cVal
-                        canvas.drawLine(x, tly, x, bry, gridPaint)
-                    }
-                    for (j in 0..rVal) {
-                        val y = tly + (bry - tly) * j / rVal
-                        canvas.drawLine(tlx, y, brx, y, gridPaint)
-                    }
+                // 2. Null 체크
+                if (thumb == null || fullBmp == null || thumb.isRecycled || fullBmp.isRecycled) {
+                    Toast.makeText(ctx, "⚠️ 캡처 준비 중. 3초 후 다시 시도", Toast.LENGTH_LONG).show()
+                    AppLogger.d("⚠️ 라벨: 캡처 null (thumb=$thumb, full=$fullBmp)")
+                    return@post
                 }
 
-                // 모서리 점
-                val dotPaint = Paint().apply {
-                    color = Color.RED
-                    style = Paint.Style.FILL
-                }
-                canvas.drawCircle(tlx, tly, 8f, dotPaint)
-                canvas.drawCircle(brx, bry, 8f, dotPaint)
-
-                iv.setImageBitmap(mutable)
-            }
-
-            // 터치 리스너: 1번째=좌상, 2번째=우하, 3번째=리셋
-            iv.setOnTouchListener { _, ev ->
-                if (ev.action == MotionEvent.ACTION_DOWN) {
-                    val orig = ivToOriginal(ev.x, ev.y)
-                    if (orig != null) {
-                        if (!firstTouchDone) {
-                            tlFull = orig
-                            firstTouchDone = true
-                        } else {
-                            brFull = orig
-                            firstTouchDone = false
+                // 3. 안전한 bitmap copy
+                val workingBitmap: Bitmap
+                try {
+                    workingBitmap = thumb.copy(Bitmap.Config.ARGB_8888, true)
+                        ?: run {
+                            Toast.makeText(ctx, "⚠️ 이미지 복사 실패", Toast.LENGTH_SHORT).show()
+                            return@post
                         }
-                        redraw()
+                } catch (e: Exception) {
+                    AppLogger.e("라벨: bitmap 복사 실패", e)
+                    Toast.makeText(ctx, "⚠️ 이미지 준비 실패", Toast.LENGTH_SHORT).show()
+                    return@post
+                }
+
+                // 4. 컨테이너
+                val container = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setBackgroundColor(Color.parseColor("#FA1E1E1E"))
+                    setPadding(20, 20, 20, 20)
+                }
+
+                TextView(ctx).apply {
+                    text = "📸 이미지 터치: 좌상 → 우하"
+                    setTextColor(Color.YELLOW)
+                    textSize = 13f
+                    setPadding(0, 0, 0, 8)
+                }.also { container.addView(it) }
+
+                // 미리보기
+                val iv = ImageView(ctx).apply {
+                    adjustViewBounds = true
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 550
+                    )
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setBackgroundColor(Color.parseColor("#111111"))
+                }
+                container.addView(iv)
+                iv.setImageBitmap(workingBitmap)
+
+                // 좌표 상태
+                var tlFull = android.graphics.PointF(ptTL.x, ptTL.y)
+                var brFull = android.graphics.PointF(ptBR.x, ptBR.y)
+                var firstTouchDone = false
+
+                // redraw 전용 참조
+                var etRowsRef: android.widget.EditText? = null
+                var etColsRef: android.widget.EditText? = null
+
+                // 안전한 redraw
+                val redraw: () -> Unit = {
+                    try {
+                        if (workingBitmap.isRecycled) return@let
+                        val mutable = try {
+                            workingBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                        } catch (e: Exception) { null }
+                        if (mutable == null) return@let
+
+                        val canvas = Canvas(mutable)
+                        val sx = mutable.width.toFloat() / fullBmp.width.toFloat()
+                        val sy = mutable.height.toFloat() / fullBmp.height.toFloat()
+                        val tlx = tlFull.x * sx
+                        val tly = tlFull.y * sy
+                        val brx = brFull.x * sx
+                        val bry = brFull.y * sy
+
+                        val rectPaint = Paint().apply {
+                            color = Color.parseColor("#00FF88")
+                            style = Paint.Style.STROKE
+                            strokeWidth = 3f
+                        }
+                        canvas.drawRect(tlx, tly, brx, bry, rectPaint)
+
+                        val rVal = etRowsRef?.text?.toString()?.toIntOrNull() ?: rows
+                        val cVal = etColsRef?.text?.toString()?.toIntOrNull() ?: cols
+                        if (rVal in 3..20 && cVal in 3..20) {
+                            val gridPaint = Paint().apply {
+                                color = Color.parseColor("#AAFFFF00")
+                                style = Paint.Style.STROKE
+                                strokeWidth = 1f
+                            }
+                            for (i in 0..cVal) {
+                                val x = tlx + (brx - tlx) * i / cVal
+                                canvas.drawLine(x, tly, x, bry, gridPaint)
+                            }
+                            for (j in 0..rVal) {
+                                val y = tly + (bry - tly) * j / rVal
+                                canvas.drawLine(tlx, y, brx, y, gridPaint)
+                            }
+                        }
+
+                        val dotPaint = Paint().apply {
+                            color = Color.RED
+                            style = Paint.Style.FILL
+                        }
+                        canvas.drawCircle(tlx, tly, 8f, dotPaint)
+                        canvas.drawCircle(brx, bry, 8f, dotPaint)
+
+                        iv.setImageBitmap(mutable)
+                    } catch (e: Exception) {
+                        AppLogger.e("라벨 redraw 오류", e)
+                    }
+                }
+
+                // 안전한 좌표 변환
+                fun ivToOriginal(ivX: Float, ivY: Float): android.graphics.PointF? {
+                    return try {
+                        val ivW = iv.width.toFloat()
+                        val ivH = iv.height.toFloat()
+                        if (ivW <= 0f || ivH <= 0f) return null
+                        val bmpW = workingBitmap.width.toFloat()
+                        val bmpH = workingBitmap.height.toFloat()
+                        val scale = minOf(ivW / bmpW, ivH / bmpH)
+                        val offsetX = (ivW - bmpW * scale) / 2f
+                        val offsetY = (ivH - bmpH * scale) / 2f
+                        val px = (ivX - offsetX) / scale
+                        val py = (ivY - offsetY) / scale
+                        if (px < 0f || py < 0f || px > bmpW || py > bmpH) return null
+                        val origScaleX = fullBmp.width.toFloat() / bmpW
+                        val origScaleY = fullBmp.height.toFloat() / bmpH
+                        android.graphics.PointF(px * origScaleX, py * origScaleY)
+                    } catch (e: Exception) { null }
+                }
+
+                iv.setOnTouchListener { _, ev ->
+                    if (ev.action == MotionEvent.ACTION_DOWN) {
+                        val orig = ivToOriginal(ev.x, ev.y)
+                        if (orig != null) {
+                            if (!firstTouchDone) {
+                                tlFull = orig
+                                firstTouchDone = true
+                            } else {
+                                brFull = orig
+                                firstTouchDone = false
+                            }
+                            redraw()
+                        }
                     }
                     true
-                } else false
-            }
+                }
 
-            // 값 입력
-            val inputRow = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 12, 0, 12)
-            }
-            TextView(ctx).apply {
-                text = "행:"
-                setTextColor(Color.WHITE); textSize = 15f; setPadding(0, 0, 10, 0)
-            }.also { inputRow.addView(it) }
-            val etRows = android.widget.EditText(ctx).apply {
-                inputType = android.text.InputType.TYPE_CLASS_NUMBER
-                setText(rows.toString()); setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#333333"))
-                textSize = 16f; setPadding(20, 15, 20, 15)
-                layoutParams = LinearLayout.LayoutParams(120, LinearLayout.LayoutParams.WRAP_CONTENT)
-                addTextChangedListener(object : android.text.TextWatcher {
+                // 값 입력
+                val inputRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 12, 0, 12)
+                }
+                TextView(ctx).apply {
+                    text = "행:"
+                    setTextColor(Color.WHITE); textSize = 15f; setPadding(0, 0, 10, 0)
+                }.also { inputRow.addView(it) }
+
+                val etRows = android.widget.EditText(ctx).apply {
+                    inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                    setText(rows.toString()); setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.parseColor("#333333"))
+                    textSize = 16f; setPadding(20, 15, 20, 15)
+                    layoutParams = LinearLayout.LayoutParams(120, LinearLayout.LayoutParams.WRAP_CONTENT)
+                }
+                etRowsRef = etRows
+                inputRow.addView(etRows)
+
+                TextView(ctx).apply {
+                    text = "  ×  "; setTextColor(Color.WHITE); textSize = 15f
+                }.also { inputRow.addView(it) }
+                TextView(ctx).apply {
+                    text = "열:"; setTextColor(Color.WHITE); textSize = 15f; setPadding(0, 0, 10, 0)
+                }.also { inputRow.addView(it) }
+
+                val etCols = android.widget.EditText(ctx).apply {
+                    inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                    setText(cols.toString()); setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.parseColor("#333333"))
+                    textSize = 16f; setPadding(20, 15, 20, 15)
+                    layoutParams = LinearLayout.LayoutParams(120, LinearLayout.LayoutParams.WRAP_CONTENT)
+                }
+                etColsRef = etCols
+                inputRow.addView(etCols)
+
+                container.addView(inputRow)
+
+                // TextWatcher로 redraw 연결
+                val watcher = object : android.text.TextWatcher {
                     override fun afterTextChanged(s: android.text.Editable?) { redraw() }
                     override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                     override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                })
-            }
-            etRowsRef = etRows
-            inputRow.addView(etRows)
-            TextView(ctx).apply {
-                text = "  ×  "; setTextColor(Color.WHITE); textSize = 15f
-            }.also { inputRow.addView(it) }
-            TextView(ctx).apply {
-                text = "열:"; setTextColor(Color.WHITE); textSize = 15f; setPadding(0, 0, 10, 0)
-            }.also { inputRow.addView(it) }
-            val etCols = android.widget.EditText(ctx).apply {
-                inputType = android.text.InputType.TYPE_CLASS_NUMBER
-                setText(cols.toString()); setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#333333"))
-                textSize = 16f; setPadding(20, 15, 20, 15)
-                layoutParams = LinearLayout.LayoutParams(120, LinearLayout.LayoutParams.WRAP_CONTENT)
-                addTextChangedListener(object : android.text.TextWatcher {
-                    override fun afterTextChanged(s: android.text.Editable?) { redraw() }
-                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                })
-            }
-            etColsRef = etCols
-            inputRow.addView(etCols)
-            container.addView(inputRow)
-
-            // 클래스 분포
-            val dist = com.example.helper.util.GridSeedDB.getClassDistribution(ctx)
-            TextView(ctx).apply {
-                text = if (dist.isEmpty()) "📊 데이터 없음" else "📊 " + dist.entries.joinToString(", ") { "${it.key}(${it.value})" }
-                setTextColor(Color.parseColor("#81C784")); textSize = 11f
-                setPadding(0, 0, 0, 8)
-            }.also { container.addView(it) }
-
-            // 버튼
-            var dlg: android.app.AlertDialog? = null
-            val btnRow = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-            }
-            Button(ctx).apply {
-                text = "✅ 저장"
-                setBackgroundColor(Color.parseColor("#4CAF50")); setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
-                setOnClickListener {
-                    val r = etRows.text.toString().toIntOrNull()
-                    val c = etCols.text.toString().toIntOrNull()
-                    if (r == null || c == null || r < 3 || r > 20 || c < 3 || c > 20) {
-                        Toast.makeText(ctx, "❌ 3~20 사이", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
-                    }
-                    rows = r; cols = c
-                    ptTL.set(tlFull.x, tlFull.y)
-                    ptTR.set(brFull.x, tlFull.y)
-                    ptBL.set(tlFull.x, brFull.y)
-                    ptBR.set(brFull.x, brFull.y)
-                    isAutoDetectEnabled = false
-
-                    val feat = currentFeature
-                    if (feat != null && feat.size == com.example.helper.util.GridFeature.DIM) {
-                        val posArr = floatArrayOf(ptTL.x, ptTL.y, ptTR.x, ptTR.y, ptBL.x, ptBL.y, ptBR.x, ptBR.y)
-                        val (removedCount, removedLabels) = com.example.helper.util.GridSeedDB.addManualCorrection(
-                            ctx, feat, rows, cols, currentBoardCrop, posArr
-                        )
-                        val dist2 = com.example.helper.util.GridSeedDB.getClassDistribution(ctx)
-                        AppLogger.d("🎓 라벨 저장: ${rows}x${cols} | TL=(${ptTL.x.toInt()},${ptTL.y.toInt()}) BR=(${ptBR.x.toInt()},${ptBR.y.toInt()}) | 오답삭제=${removedCount} | $dist2")
-                    }
-                    savePreferences()
-                    refreshControlUI()
-                    overlayView?.invalidate()
-                    Toast.makeText(ctx, "🎓 저장 완료: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
-                    hideLabelDialog()
                 }
-            }.also { btnRow.addView(it) }
-            Button(ctx).apply {
-                text = "🔄 리셋"
-                setBackgroundColor(Color.parseColor("#FF8C00")); setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
-                setOnClickListener {
-                    tlFull = android.graphics.PointF(0f, 0f)
-                    brFull = android.graphics.PointF(fullBmp?.width?.toFloat() ?: 1080f, fullBmp?.height?.toFloat() ?: 2340f)
-                    firstTouchDone = false
-                    redraw()
+                etRows.addTextChangedListener(watcher)
+                etCols.addTextChangedListener(watcher)
+
+                // 분포
+                val dist = com.example.helper.util.GridSeedDB.getClassDistribution(ctx)
+                TextView(ctx).apply {
+                    text = if (dist.isEmpty()) "📊 데이터 없음"
+                           else "📊 " + dist.entries.joinToString(", ") { "${it.key}(${it.value})" }
+                    setTextColor(Color.parseColor("#81C784")); textSize = 11f
+                    setPadding(0, 0, 0, 8)
+                }.also { container.addView(it) }
+
+                // 버튼
+                val btnRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
                 }
-            }.also { btnRow.addView(it) }
-            Button(ctx).apply {
-                text = "❌ 취소"
-                setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
-                setOnClickListener { hideLabelDialog() }
-            }.also { btnRow.addView(it) }
-            container.addView(btnRow)
 
-            // 🔥 v30: AlertDialog 대신 WindowManager로 직접 오버레이 추가
-            val wmParams = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                else
-                    WindowManager.LayoutParams.TYPE_PHONE,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.CENTER
-                x = 0; y = 0
-            }
+                Button(ctx).apply {
+                    text = "✅ 저장"
+                    setBackgroundColor(Color.parseColor("#4CAF50")); setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                    setOnClickListener {
+                        try {
+                            val r = etRows.text.toString().toIntOrNull()
+                            val c = etCols.text.toString().toIntOrNull()
+                            if (r == null || c == null || r < 3 || r > 20 || c < 3 || c > 20) {
+                                Toast.makeText(ctx, "❌ 3~20 사이", Toast.LENGTH_SHORT).show()
+                                return@setOnClickListener
+                            }
+                            rows = r; cols = c
+                            ptTL.set(tlFull.x, tlFull.y)
+                            ptTR.set(brFull.x, tlFull.y)
+                            ptBL.set(tlFull.x, brFull.y)
+                            ptBR.set(brFull.x, brFull.y)
+                            isAutoDetectEnabled = false
 
-            try {
+                            val feat = currentFeature
+                            if (feat != null && feat.size == com.example.helper.util.GridFeature.DIM) {
+                                val posArr = floatArrayOf(ptTL.x, ptTL.y, ptTR.x, ptTR.y, ptBL.x, ptBL.y, ptBR.x, ptBR.y)
+                                val (removedCount, removedLabels) = com.example.helper.util.GridSeedDB.addManualCorrection(
+                                    ctx, feat, rows, cols, currentBoardCrop, posArr
+                                )
+                                AppLogger.d("🎓 라벨: ${rows}x${cols} | TL=(${ptTL.x.toInt()},${ptTL.y.toInt()}) BR=(${ptBR.x.toInt()},${ptBR.y.toInt()}) | 삭제=${removedCount}")
+                            }
+                            savePreferences()
+                            refreshControlUI()
+                            overlayView?.invalidate()
+                            Toast.makeText(ctx, "🎓 저장: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
+                            hideLabelDialog()
+                        } catch (e: Exception) {
+                            AppLogger.e("라벨 저장 오류", e)
+                            Toast.makeText(ctx, "❌ 저장 오류: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }.also { btnRow.addView(it) }
+
+                Button(ctx).apply {
+                    text = "🔄 리셋"
+                    setBackgroundColor(Color.parseColor("#FF8C00")); setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                    setOnClickListener {
+                        tlFull = android.graphics.PointF(0f, 0f)
+                        brFull = android.graphics.PointF(fullBmp.width.toFloat(), fullBmp.height.toFloat())
+                        firstTouchDone = false
+                        redraw()
+                    }
+                }.also { btnRow.addView(it) }
+
+                Button(ctx).apply {
+                    text = "❌ 취소"
+                    setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                    setOnClickListener { hideLabelDialog() }
+                }.also { btnRow.addView(it) }
+                container.addView(btnRow)
+
+                // WindowManager에 추가
+                val wmParams = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    else
+                        WindowManager.LayoutParams.TYPE_PHONE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.CENTER
+                }
+
                 windowManager.addView(container, wmParams)
                 labelDialogView = container
-                // 그리기 초기화 (View가 붙은 후)
-                mainHandler.postDelayed({ redraw() }, 150)
-            } catch (e: Exception) {
-                AppLogger.e("라벨 다이얼로그 표시 실패", e)
-                Toast.makeText(ctx, "❌ 화면 표시 실패: ${e.message}", Toast.LENGTH_LONG).show()
-            }
+                AppLogger.d("📸 라벨 다이얼로그 열림")
 
-            // dlg 변수를 container로 대체
-            dlg = null
+                mainHandler.postDelayed({ redraw() }, 200)
+
+            } catch (e: Exception) {
+                AppLogger.e("라벨 다이얼로그 오류", e)
+                Toast.makeText(applicationContext, "❌ 오류: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
+
+
 
 
 
