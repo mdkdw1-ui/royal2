@@ -1185,6 +1185,42 @@ class SolverService : Service() {
             }
         }.also { view.addView(it) }
 
+        // 🔥 v31: 시드 초기화
+        Button(context).apply {
+            text = "🗑️ 학습 시드 초기화 (🧠${com.example.helper.util.GridSeedDB.size(context)})"
+            setBackgroundColor(Color.parseColor("#B71C1C"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                android.app.AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
+                    .setTitle("시드 초기화")
+                    .setMessage("모든 학습 데이터(🧠 ${com.example.helper.util.GridSeedDB.size(context)}개)를 삭제하시겠습니까?")
+                    .setPositiveButton("삭제") { _, _ ->
+                        com.example.helper.util.GridSeedDB.clear(context)
+                        AppLogger.d("🗑️ 시드 초기화 완료")
+                        Toast.makeText(context, "🗑️ 초기화 완료", Toast.LENGTH_SHORT).show()
+                        refreshControlUI()
+                    }
+                    .setNegativeButton("취소", null)
+                    .show()
+            }
+        }.also { view.addView(it) }
+
+        // 🔥 v31: ML 데이터셋 내보내기
+        Button(context).apply {
+            text = "📤 ML 데이터셋 내보내기"
+            setBackgroundColor(Color.parseColor("#6A1B9A"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                val path = com.example.helper.util.GridSeedDB.exportDataset(context)
+                if (path != null) {
+                    Toast.makeText(context, "📤 저장: $path", Toast.LENGTH_LONG).show()
+                    AppLogger.d("📤 ML 데이터셋: $path")
+                } else {
+                    Toast.makeText(context, "❌ 내보낼 데이터 없음", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.also { view.addView(it) }
+
         Button(context).apply {
             text = "📋 로그 보기 (${AppLogger.getAll().size})"
             setBackgroundColor(Color.parseColor("#37474F"))
