@@ -13,6 +13,9 @@ import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.Log
 import com.example.helper.util.AppLogger
+import com.example.helper.util.GridFeature
+import com.example.helper.util.GridPredictor
+import com.example.helper.util.GridSeedDB
 import com.example.helper.util.LevelGridMemory
 import com.example.helper.util.UpdateChecker
 import android.view.*
@@ -40,6 +43,7 @@ class SolverService : Service() {
 
     private var isAutoDetectEnabled = true
     private var currentFingerprint: String = ""
+    private var currentFeature: FloatArray? = null
 
     private var isCompactMode = true
     private var isGridVisible = true
@@ -827,7 +831,7 @@ class SolverService : Service() {
 
         val statusText = if (isAutoScanEnabled) "🔄 자동 ON (1초)" else "⏸️ OFF"
         TextView(context).apply {
-            text = "$statusText | 발견: ${foundPositions.size}개 | 자동격자: ${if (isAutoDetectEnabled) "ON" else "OFF"}"
+            text = "$statusText | 발견: ${foundPositions.size}개 | 🧠 ${GridSeedDB.size(context)}개"
             setTextColor(if (isAutoScanEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
             textSize = 11f
             setPadding(0, 5, 0, 5)
@@ -1497,25 +1501,39 @@ class SolverService : Service() {
                 val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 bitmap.copyPixelsFromBuffer(buffer)
 
-                // 🔥 v17: 레벨별 격자 기억
+                // 🔥 v19: 자동검출 먼저 실행 → k-NN 예측이 있으면 우선 적용
                 currentFingerprint = LevelGridMemory.computeFingerprint(bitmap)
+                currentFeature = GridFeature.extract(bitmap, ptTL, ptTR, ptBL, ptBR)
 
+                // 1) 자동검출 (항상 실행, 참고용)
+                val beforeRows = rows
+                val beforeCols = cols
                 if (isAutoDetectEnabled) {
-                    val before = "${rows}x${cols}"
                     autoDetectBoard(bitmap)
-                    val after = "${rows}x${cols}"
-                    // 자동 검출 성공 시 메모리에 저장 (자동, manual=false)
-                    if (before != after || LevelGridMemory.find(applicationContext, currentFingerprint) == null) {
-                        LevelGridMemory.save(applicationContext, currentFingerprint, rows, cols, manual = false)
+                }
+                val autoRows = rows
+                val autoCols = cols
+                val autoChanged = (beforeRows != autoRows || beforeCols != autoCols)
+
+                // 2) k-NN 예측 (학습된 seed가 있으면 우선 적용)
+                val feat = currentFeature
+                var finalSource = if (isAutoDetectEnabled) "auto" else "manual-lock"
+                if (feat != null) {
+                    val prediction = GridPredictor.predict(applicationContext, feat)
+                    if (prediction != null && prediction.confidence >= 0.55f) {
+                        rows = prediction.rows
+                        cols = prediction.cols
+                        finalSource = "k-NN"
+                        AppLogger.d("🧠 k-NN: ${rows}x${cols} (신뢰도=${"%.2f".format(prediction.confidence)}, 시드=${prediction.seedCount}) | auto=${autoRows}x${autoCols}")
+                    } else {
+                        AppLogger.d("📷 auto: ${rows}x${cols} (시드=${GridSeedDB.size(applicationContext)}개)")
                     }
-                } else {
-                    // 수동 모드: 기억된 격자 우선 조회
-                    val remembered = LevelGridMemory.find(applicationContext, currentFingerprint)
-                    if (remembered != null) {
-                        rows = remembered.rows
-                        cols = remembered.cols
-                        AppLogger.d("📌 기억 격자 복원: ${rows}x${cols} (manual=${remembered.manual})")
-                    }
+                }
+
+                // 3) 자동검출 결과가 새로 얻어졌고 k-NN 미적용이면 seed 추가 (auto)
+                if (feat != null && autoChanged && finalSource == "auto") {
+                    GridSeedDB.add(applicationContext, feat, rows, cols, manual = false)
+                    AppLogger.d("🌱 auto seed: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
                 }
 
                 val positions = findOOXOO(bitmap)
@@ -1765,10 +1783,11 @@ class SolverService : Service() {
     }
 
     private fun savePreferences() {
-        // 🔥 v17: 현재 화면 fingerprint에 rows/cols 저장 (수동)
-        if (currentFingerprint.isNotEmpty() && !isAutoDetectEnabled) {
-            LevelGridMemory.save(applicationContext, currentFingerprint, rows, cols, manual = true)
-            AppLogger.d("💾 수동 격자 저장: ${rows}x${cols}")
+        // 🔥 v19: 수동 조정 → 현재 feature의 seed 저장 (manual=true, 높은 가중치)
+        val feat = currentFeature
+        if (feat != null && feat.size == GridFeature.DIM) {
+            GridSeedDB.add(applicationContext, feat, rows, cols, manual = true)
+            AppLogger.d("🧠 수동 seed 저장: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
         }
         val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
         prefs.edit().apply {
