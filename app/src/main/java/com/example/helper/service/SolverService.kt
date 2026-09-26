@@ -2145,6 +2145,10 @@ class SolverService : Service() {
                 return android.graphics.PointF(px * origScaleX, py * origScaleY)
             }
 
+            // 🔥 v29 fix: redraw가 etRows/etCols를 참조할 수 있도록
+            var etRowsRef: android.widget.EditText? = null
+            var etColsRef: android.widget.EditText? = null
+
             // 선택 영역 + 격자 그리기
             fun redraw() {
                 val t = thumb ?: return
@@ -2168,8 +2172,8 @@ class SolverService : Service() {
                 canvas.drawRect(tlx, tly, brx, bry, rectPaint)
 
                 // 격자선
-                val rVal = etRows.text.toString().toIntOrNull() ?: rows
-                val cVal = etCols.text.toString().toIntOrNull() ?: cols
+                val rVal = etRowsRef?.text?.toString()?.toIntOrNull() ?: rows
+                val cVal = etColsRef?.text?.toString()?.toIntOrNull() ?: cols
                 if (rVal in 3..20 && cVal in 3..20) {
                     val gridPaint = Paint().apply {
                         color = Color.parseColor("#AAFFFF00")
@@ -2237,6 +2241,7 @@ class SolverService : Service() {
                     override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                 })
             }
+            etRowsRef = etRows
             inputRow.addView(etRows)
             TextView(ctx).apply {
                 text = "  ×  "; setTextColor(Color.WHITE); textSize = 15f
@@ -2256,6 +2261,7 @@ class SolverService : Service() {
                     override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                 })
             }
+            etColsRef = etCols
             inputRow.addView(etCols)
             container.addView(inputRow)
 
