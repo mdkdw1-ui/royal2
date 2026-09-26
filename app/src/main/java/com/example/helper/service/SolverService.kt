@@ -1,6 +1,7 @@
 package com.example.helper.service
 
 import android.app.*
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -43,6 +44,9 @@ class SolverService : Service() {
 
     private var isAutoDetectEnabled = true
     private var currentFingerprint: String = ""
+    private var latestThumbnail: Bitmap? = null
+    private var currentBoardCrop: Bitmap? = null
+    private var latestFullBitmap: Bitmap? = null
     private var currentFeature: FloatArray? = null
 
     private var isCompactMode = true
@@ -831,7 +835,11 @@ class SolverService : Service() {
 
         val statusText = if (isAutoScanEnabled) "🔄 자동 ON (1초)" else "⏸️ OFF"
         TextView(context).apply {
-            text = "$statusText | 발견: ${foundPositions.size}개 | 🧠 ${GridSeedDB.size(context)}개"
+            run {
+                val seedCount = GridSeedDB.size(context)
+                val manualCount = GridSeedDB.loadAll(context).count { it.manual }
+                "$statusText | ${rows}x${cols} | 🧠 ${seedCount}개(👤${manualCount})"
+            }
             setTextColor(if (isAutoScanEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
             textSize = 11f
             setPadding(0, 5, 0, 5)
@@ -839,93 +847,177 @@ class SolverService : Service() {
 
         // 간이 모드
         if (isCompactMode) {
-            // 🔥 v16: 컴팩트 모드에 미니 행/열 조정
+            // 🔥 v20: 꾹 누르면 연속 + 프리셋
             val miniRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, 5, 0, 5)
             }
 
-            Button(context).apply {
-                text = "행-"
-                textSize = 11f
-                setPadding(8, 4, 8, 4)
-                setBackgroundColor(Color.DKGRAY)
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    if (rows > 5) {
-                        rows--
-                        isAutoDetectEnabled = false
-                        savePreferences()
-                        refreshControlUI()
+            fun makeBtn(label: String, onClick: () -> Unit, onRepeat: (() -> Unit)? = null): Button {
+                return Button(context).apply {
+                    text = label
+                    textSize = 12f
+                    setPadding(12, 6, 12, 6)
+                    setBackgroundColor(Color.DKGRAY)
+                    setTextColor(Color.WHITE)
+                    if (onRepeat != null) {
+                        setAutoRepeatListener(this) { onRepeat() }
+                    } else {
+                        setOnClickListener { onClick() }
                     }
                 }
-            }.also { miniRow.addView(it) }
+            }
 
-            TextView(context).apply {
+            // 행-
+            miniRow.addView(makeBtn("행-", onClick = {}, onRepeat = {
+                if (rows > 5) {
+                    rows--
+                    isAutoDetectEnabled = false
+                    savePreferences()
+                    refreshControlUI()
+                }
+            }))
+
+            // 현재 값 (탭하면 프리셋 표시)
+            val tvCurrent = TextView(context).apply {
                 text = "${rows}x${cols}"
                 setTextColor(Color.YELLOW)
-                textSize = 13f
+                textSize = 14f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(12, 0, 12, 0)
-            }.also { miniRow.addView(it) }
-
-            Button(context).apply {
-                text = "행+"
-                textSize = 11f
-                setPadding(8, 4, 8, 4)
-                setBackgroundColor(Color.DKGRAY)
-                setTextColor(Color.WHITE)
+                setPadding(14, 0, 14, 0)
                 setOnClickListener {
-                    if (rows < 15) {
-                        rows++
-                        isAutoDetectEnabled = false
-                        savePreferences()
-                        refreshControlUI()
-                    }
+                    // 🔥 프리셋 다이얼로그
+                    val presets = listOf(
+                        "8x8" to (8 to 8),
+                        "9x9" to (9 to 9),
+                        "10x9" to (10 to 9),
+                        "10x10" to (10 to 10),
+                        "11x9" to (11 to 9),
+                        "11x10" to (11 to 10),
+                        "11x11" to (11 to 11),
+                        "12x9" to (12 to 9),
+                        "12x10" to (12 to 10)
+                    )
+                    val names = presets.map { it.first }.toTypedArray()
+                    android.app.AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
+                        .setTitle("격자 크기 선택")
+                        .setItems(names) { _, which ->
+                            val (r, c) = presets[which].second
+                            rows = r
+                            cols = c
+                            isAutoDetectEnabled = false
+                            savePreferences()
+                            refreshControlUI()
+                            Toast.makeText(context, "🧠 저장: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
+                        }
+                        .show()
                 }
-            }.also { miniRow.addView(it) }
+            }
+            miniRow.addView(tvCurrent)
 
-            Button(context).apply {
-                text = "열-"
-                textSize = 11f
-                setPadding(8, 4, 8, 4)
-                setBackgroundColor(Color.DKGRAY)
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    if (cols > 5) {
-                        cols--
-                        isAutoDetectEnabled = false
-                        savePreferences()
-                        refreshControlUI()
-                    }
+            // 행+
+            miniRow.addView(makeBtn("행+", onClick = {}, onRepeat = {
+                if (rows < 15) {
+                    rows++
+                    isAutoDetectEnabled = false
+                    savePreferences()
+                    refreshControlUI()
                 }
-            }.also { miniRow.addView(it) }
+            }))
 
-            Button(context).apply {
-                text = "열+"
-                textSize = 11f
-                setPadding(8, 4, 8, 4)
-                setBackgroundColor(Color.DKGRAY)
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    if (cols < 15) {
-                        cols++
-                        isAutoDetectEnabled = false
-                        savePreferences()
-                        refreshControlUI()
-                    }
+            // 열-
+            miniRow.addView(makeBtn("열-", onClick = {}, onRepeat = {
+                if (cols > 5) {
+                    cols--
+                    isAutoDetectEnabled = false
+                    savePreferences()
+                    refreshControlUI()
                 }
-            }.also { miniRow.addView(it) }
+            }))
+
+            // 열+
+            miniRow.addView(makeBtn("열+", onClick = {}, onRepeat = {
+                if (cols < 15) {
+                    cols++
+                    isAutoDetectEnabled = false
+                    savePreferences()
+                    refreshControlUI()
+                }
+            }))
 
             view.addView(miniRow)
 
-            // 자동격자 상태 표시
+            // 🔥 v22: 정답 입력 (캡처 + 숫자)
+            Button(context).apply {
+                text = "📸 정답 입력 (캡처 보기)"
+                textSize = 12f
+                setPadding(12, 8, 12, 8)
+                setBackgroundColor(Color.parseColor("#0288D1"))
+                setTextColor(Color.WHITE)
+                setOnClickListener { showLabelingDialog() }
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                view.addView(it)
+            }
+
+            // 🔥 v21: 정답 확인 버튼 (자동 결과가 맞을 때)
+            Button(context).apply {
+                text = "✅ 정답이야 (${rows}x${cols})"
+                textSize = 12f
+                setPadding(12, 8, 12, 8)
+                setBackgroundColor(Color.parseColor("#4CAF50"))
+                setTextColor(Color.WHITE)
+                setOnClickListener { confirmCorrect() }
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                view.addView(it)
+            }
+
+            // 🔥 프리셋 빠른 버튼 (자주 쓰는 것)
+            val presetRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 3, 0, 3)
+            }
+
+            listOf(
+                "8x8" to (8 to 8),
+                "9x9" to (9 to 9),
+                "10x9" to (10 to 9),
+                "11x9" to (11 to 9)
+            ).forEach { (label, pair) ->
+                val isCurrent = (rows == pair.first && cols == pair.second)
+                presetRow.addView(Button(context).apply {
+                    text = label
+                    textSize = 10f
+                    setPadding(8, 4, 8, 4)
+                    setBackgroundColor(if (isCurrent) Color.parseColor("#4CAF50") else Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        rows = pair.first
+                        cols = pair.second
+                        isAutoDetectEnabled = false
+                        savePreferences()
+                        refreshControlUI()
+                        Toast.makeText(context, "🧠 저장: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
+                    }
+                })
+            }
+            view.addView(presetRow)
+
+            // 자동격자 상태
             TextView(context).apply {
-                text = if (isAutoDetectEnabled) "📐 자동격자 ON" else "📌 수동 고정 (자동 OFF)"
+                text = if (isAutoDetectEnabled) "📐 자동격자 ON" else "📌 수동 (자동 OFF)"
                 setTextColor(if (isAutoDetectEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
                 textSize = 10f
-                setPadding(0, 3, 0, 3)
+                setPadding(0, 2, 0, 2)
             }.also { view.addView(it) }
 
             Button(context).apply {
@@ -1501,6 +1593,33 @@ class SolverService : Service() {
                 val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 bitmap.copyPixelsFromBuffer(buffer)
 
+                // 🔥 v26: full bitmap freeze (라벨링용)
+                try { latestFullBitmap?.recycle(); latestFullBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false) } catch (e: Exception) { }
+
+                // 🔥 v22: 프리뷰용 썸네일 저장
+                try {
+                    latestThumbnail?.recycle()
+                    val tw = 500
+                    val th = (500f * bitmap.height / bitmap.width).toInt()
+                    latestThumbnail = Bitmap.createScaledBitmap(bitmap, tw, th, true)
+                } catch (e: Exception) { }
+
+                // 🔥 v23: ML 학습용 보드 크롭 (256x256)
+                try {
+                    currentBoardCrop?.recycle()
+                    val bx0 = ptTL.x.toInt().coerceIn(0, bitmap.width - 10)
+                    val by0 = ptTL.y.toInt().coerceIn(0, bitmap.height - 10)
+                    val bx1 = ptBR.x.toInt().coerceIn(bx0 + 10, bitmap.width)
+                    val by1 = ptBR.y.toInt().coerceIn(by0 + 10, bitmap.height)
+                    val bw = bx1 - bx0
+                    val bh = by1 - by0
+                    if (bw > 50 && bh > 50) {
+                        val cropRaw = Bitmap.createBitmap(bitmap, bx0, by0, bw, bh)
+                        currentBoardCrop = Bitmap.createScaledBitmap(cropRaw, 256, 256, true)
+                        cropRaw.recycle()
+                    }
+                } catch (e: Exception) { }
+
                 // 🔥 v19: 자동검출 먼저 실행 → k-NN 예측이 있으면 우선 적용
                 currentFingerprint = LevelGridMemory.computeFingerprint(bitmap)
                 currentFeature = GridFeature.extract(bitmap, ptTL, ptTR, ptBL, ptBR)
@@ -1532,7 +1651,7 @@ class SolverService : Service() {
 
                 // 3) 자동검출 결과가 새로 얻어졌고 k-NN 미적용이면 seed 추가 (auto)
                 if (feat != null && autoChanged && finalSource == "auto") {
-                    GridSeedDB.add(applicationContext, feat, rows, cols, manual = false)
+                    GridSeedDB.add(applicationContext, feat, rows, cols, manual = false, crop = currentBoardCrop)
                     AppLogger.d("🌱 auto seed: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
                 }
 
@@ -1783,11 +1902,18 @@ class SolverService : Service() {
     }
 
     private fun savePreferences() {
-        // 🔥 v19: 수동 조정 → 현재 feature의 seed 저장 (manual=true, 높은 가중치)
+        // 🔥 v25: 수동 정정 → 오답 삭제 + 정답만 저장
         val feat = currentFeature
         if (feat != null && feat.size == GridFeature.DIM) {
-            GridSeedDB.add(applicationContext, feat, rows, cols, manual = true)
-            AppLogger.d("🧠 수동 seed 저장: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
+            val posArr = floatArrayOf(ptTL.x, ptTL.y, ptTR.x, ptTR.y, ptBL.x, ptBL.y, ptBR.x, ptBR.y)
+            val (removedCount, removedLabels) = GridSeedDB.addManualCorrection(
+                applicationContext, feat, rows, cols, currentBoardCrop, posArr
+            )
+            if (removedCount > 0) {
+                AppLogger.d("🎓 정정 학습: ${rows}x${cols} | 삭제된 오답: ${removedLabels.joinToString(", ")} | 남은 시드: ${GridSeedDB.size(applicationContext)}개")
+            } else {
+                AppLogger.d("🎓 정답 학습: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
+            }
         }
         val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
         prefs.edit().apply {
@@ -1927,6 +2053,169 @@ class SolverService : Service() {
         }
     }
 
+    // 🔥 v22: 정답 입력 다이얼로그 (캡처 미리보기 + 숫자 입력)
+    private fun showLabelingDialog() {
+        mainHandler.post {
+            val ctx = applicationContext
+            val thumb = latestThumbnail
+
+            val container = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#FA1E1E1E"))
+                setPadding(30, 30, 30, 30)
+            }
+
+            // 미리보기
+            val tvPreview = TextView(ctx).apply {
+                text = "📸 현재 캡처 (격자 확인)"
+                setTextColor(Color.YELLOW)
+                textSize = 13f
+                setPadding(0, 0, 0, 10)
+            }
+            container.addView(tvPreview)
+
+            if (thumb != null) {
+                val iv = ImageView(ctx).apply {
+                    setImageBitmap(thumb)
+                    adjustViewBounds = true
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        600
+                    )
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                container.addView(iv)
+            } else {
+                val tvNo = TextView(ctx).apply {
+                    text = "(캡처 없음 - 5초 대기 후 다시 시도)"
+                    setTextColor(Color.LTGRAY)
+                    textSize = 11f
+                    setPadding(0, 20, 0, 20)
+                }
+                container.addView(tvNo)
+            }
+
+            // 입력 필드
+            val inputRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 20, 0, 20)
+            }
+
+            val tvRowLabel = TextView(ctx).apply {
+                text = "행:"
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                setPadding(0, 0, 10, 0)
+            }
+            inputRow.addView(tvRowLabel)
+
+            val etRows = android.widget.EditText(ctx).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setText(rows.toString())
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#333333"))
+                textSize = 16f
+                setPadding(20, 15, 20, 15)
+                layoutParams = LinearLayout.LayoutParams(120, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            inputRow.addView(etRows)
+
+            val tvX = TextView(ctx).apply {
+                text = "  ×  "
+                setTextColor(Color.WHITE)
+                textSize = 15f
+            }
+            inputRow.addView(tvX)
+
+            val tvColLabel = TextView(ctx).apply {
+                text = "열:"
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                setPadding(0, 0, 10, 0)
+            }
+            inputRow.addView(tvColLabel)
+
+            val etCols = android.widget.EditText(ctx).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setText(cols.toString())
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#333333"))
+                textSize = 16f
+                setPadding(20, 15, 20, 15)
+                layoutParams = LinearLayout.LayoutParams(120, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            inputRow.addView(etCols)
+
+            container.addView(inputRow)
+
+            // 버튼
+            val btnRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+
+            var dlg: android.app.AlertDialog? = null
+
+            val btnSave = Button(ctx).apply {
+                text = "✅ 정답 저장"
+                setBackgroundColor(Color.parseColor("#4CAF50"))
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2,0,2,0) }
+                setOnClickListener {
+                    val r = etRows.text.toString().toIntOrNull()
+                    val c = etCols.text.toString().toIntOrNull()
+                    if (r == null || c == null || r < 3 || r > 20 || c < 3 || c > 20) {
+                        Toast.makeText(ctx, "❌ 3~20 사이 숫자 입력", Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    rows = r
+                    cols = c
+                    isAutoDetectEnabled = false
+
+                    val feat = currentFeature
+                    if (feat != null && feat.size == com.example.helper.util.GridFeature.DIM) {
+                        com.example.helper.util.GridSeedDB.add(ctx, feat, rows, cols, manual = true)
+                        AppLogger.d("🎓 라벨 저장: ${rows}x${cols} (총 ${com.example.helper.util.GridSeedDB.size(ctx)}개)")
+                    } else {
+                        AppLogger.d("🎓 라벨 저장 (feature 없음): ${rows}x${cols}")
+                    }
+
+                    savePreferences()
+                    refreshControlUI()
+                    Toast.makeText(ctx, "🎓 학습 완료: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
+                    dlg?.dismiss()
+                }
+            }
+            btnRow.addView(btnSave)
+
+            val btnCancel = Button(ctx).apply {
+                text = "❌ 취소"
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2,0,2,0) }
+                setOnClickListener { dlg?.dismiss() }
+            }
+            btnRow.addView(btnCancel)
+
+            container.addView(btnRow)
+
+            dlg = android.app.AlertDialog.Builder(this@SolverService, android.R.style.Theme_Material_Dialog_Alert)
+                .setView(container)
+                .setCancelable(true)
+                .create()
+
+            // 오버레이 타입으로 표시 (다른 앱 위에)
+            dlg?.window?.setType(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else WindowManager.LayoutParams.TYPE_PHONE
+            )
+            dlg?.show()
+        }
+    }
+
+    // 🔥 v20: 꾹 누르면 연속
     override fun onDestroy() {
         stopCapture(); hideGimmickManager()
         synchronized(dynamicTemplates) {
