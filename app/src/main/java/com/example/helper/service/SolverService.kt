@@ -561,6 +561,25 @@ class SolverService : Service() {
     }
 
     // 🔥 꾹 누르면 연속 동작
+    // 🔥 v28: 정답 확인 (긍정 피드백 → 최강 seed)
+    private fun confirmCorrect() {
+        val feat = currentFeature
+        if (feat == null || feat.size != com.example.helper.util.GridFeature.DIM) {
+            Toast.makeText(applicationContext, "⚠️ 화면 캡처 대기 중", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val posArr = floatArrayOf(ptTL.x, ptTL.y, ptTR.x, ptTR.y, ptBL.x, ptBL.y, ptBR.x, ptBR.y)
+        val (removedCount, removedLabels) = com.example.helper.util.GridSeedDB.addManualCorrection(
+            applicationContext, feat, rows, cols, currentBoardCrop, posArr
+        )
+        if (removedCount > 0) {
+            AppLogger.d("✅ 정답 강화: ${rows}x${cols} | 오답 정리: ${removedLabels.joinToString(", ")}")
+        } else {
+            AppLogger.d("✅ 정답 확인: ${rows}x${cols} (총 ${com.example.helper.util.GridSeedDB.size(applicationContext)}개)")
+        }
+        Toast.makeText(applicationContext, "✅ 정답 저장: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
+    }
+
     private fun setAutoRepeatListener(view: View, action: () -> Unit) {
         val handler = Handler(Looper.getMainLooper())
         var runnable: Runnable? = null
