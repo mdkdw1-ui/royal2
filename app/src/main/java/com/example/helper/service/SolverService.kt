@@ -68,6 +68,7 @@ class SolverService : Service() {
     private var controlView: LinearLayout? = null
     private var gimmickManagerView: View? = null
     private var logDialogView: View? = null
+    private var labelDialogView: View? = null
     private var floatParams: WindowManager.LayoutParams? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -2088,6 +2089,16 @@ class SolverService : Service() {
         }
     }
 
+    // 🔥 v30: 라벨 다이얼로그 숨기기
+    private fun hideLabelDialog() {
+        mainHandler.post {
+            labelDialogView?.let {
+                try { windowManager.removeView(it) } catch (e: Exception) {}
+                labelDialogView = null
+            }
+        }
+    }
+
     // 🔥 v29: 정답 입력 다이얼로그 - 좌상/우하 터치 지정
     private fun showLabelingDialog() {
         mainHandler.post {
@@ -2310,7 +2321,7 @@ class SolverService : Service() {
                     refreshControlUI()
                     overlayView?.invalidate()
                     Toast.makeText(ctx, "🎓 저장 완료: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
-                    dlg?.dismiss()
+                    hideLabelDialog()
                 }
             }.also { btnRow.addView(it) }
             Button(ctx).apply {
@@ -2328,23 +2339,38 @@ class SolverService : Service() {
                 text = "❌ 취소"
                 setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
-                setOnClickListener { dlg?.dismiss() }
+                setOnClickListener { hideLabelDialog() }
             }.also { btnRow.addView(it) }
             container.addView(btnRow)
 
-            dlg = android.app.AlertDialog.Builder(this@SolverService, android.R.style.Theme_Material_Dialog_Alert)
-                .setView(container)
-                .setCancelable(true)
-                .create()
-            dlg?.window?.setType(
+            // 🔥 v30: AlertDialog 대신 WindowManager로 직접 오버레이 추가
+            val wmParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                else WindowManager.LayoutParams.TYPE_PHONE
-            )
-            dlg?.setOnShowListener {
-                mainHandler.postDelayed({ redraw() }, 100)
+                else
+                    WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.CENTER
+                x = 0; y = 0
             }
-            dlg?.show()
+
+            try {
+                windowManager.addView(container, wmParams)
+                labelDialogView = container
+                // 그리기 초기화 (View가 붙은 후)
+                mainHandler.postDelayed({ redraw() }, 150)
+            } catch (e: Exception) {
+                AppLogger.e("라벨 다이얼로그 표시 실패", e)
+                Toast.makeText(ctx, "❌ 화면 표시 실패: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+
+            // dlg 변수를 container로 대체
+            dlg = null
         }
     }
 
