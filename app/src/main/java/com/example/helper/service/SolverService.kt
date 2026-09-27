@@ -2201,13 +2201,13 @@ class SolverService : Service() {
                 var etColsRef: android.widget.EditText? = null
 
                 // 안전한 redraw
-                val redraw: () -> Unit = {
+                val redraw: () -> Unit = redraw@{
                     try {
-                        if (workingBitmap.isRecycled) return@let
+                        if (workingBitmap.isRecycled) return@redraw
                         val mutable = try {
                             workingBitmap.copy(Bitmap.Config.ARGB_8888, true)
                         } catch (e: Exception) { null }
-                        if (mutable == null) return@let
+                        if (mutable == null) return@redraw
 
                         val canvas = Canvas(mutable)
                         val sx = mutable.width.toFloat() / fullBmp.width.toFloat()
