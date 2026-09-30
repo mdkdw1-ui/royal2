@@ -44,6 +44,9 @@ class SolverService : Service() {
 
     private var isAutoDetectEnabled = true
     private var currentFingerprint: String = ""
+    private var lastLoggedRows = -1
+    private var lastLoggedCols = -1
+    private var lastLoggedSource = ""
     private var latestThumbnail: Bitmap? = null
     private var currentBoardCrop: Bitmap? = null
     private var latestFullBitmap: Bitmap? = null
@@ -659,7 +662,7 @@ class SolverService : Service() {
             }.apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#DD111111"))
-                setPadding(15, 12, 15, 12)
+                setPadding(6, 4, 6, 4)
             }
 
             refreshControlUI()
@@ -877,8 +880,8 @@ class SolverService : Service() {
             fun makeBtn(label: String, onClick: () -> Unit, onRepeat: (() -> Unit)? = null): Button {
                 return Button(context).apply {
                     text = label
-                    textSize = 12f
-                    setPadding(12, 6, 12, 6)
+                    textSize = 10f
+                    setPadding(6, 3, 6, 3)
                     setBackgroundColor(Color.DKGRAY)
                     setTextColor(Color.WHITE)
                     if (onRepeat != null) {
@@ -903,9 +906,9 @@ class SolverService : Service() {
             val tvCurrent = TextView(context).apply {
                 text = "${rows}x${cols}"
                 setTextColor(Color.YELLOW)
-                textSize = 14f
+                textSize = 11f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(14, 0, 14, 0)
+                setPadding(8, 0, 8, 0)
                 setOnClickListener {
                     // 🔥 프리셋 다이얼로그
                     val presets = listOf(
@@ -970,9 +973,9 @@ class SolverService : Service() {
 
             // 🔥 v22: 정답 입력 (캡처 + 숫자)
             Button(context).apply {
-                text = "📸 정답 입력 (캡처 보기)"
-                textSize = 12f
-                setPadding(12, 8, 12, 8)
+                text = "📸 정답 입력"
+                textSize = 10f
+                setPadding(8, 4, 8, 4)
                 setBackgroundColor(Color.parseColor("#0288D1"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { showLabelingDialog() }
@@ -986,9 +989,9 @@ class SolverService : Service() {
 
             // 🔥 v21: 정답 확인 버튼 (자동 결과가 맞을 때)
             Button(context).apply {
-                text = "✅ 정답이야 (${rows}x${cols})"
-                textSize = 12f
-                setPadding(12, 8, 12, 8)
+                text = "✅ 정답"
+                textSize = 10f
+                setPadding(8, 4, 8, 4)
                 setBackgroundColor(Color.parseColor("#4CAF50"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { confirmCorrect() }
@@ -1000,7 +1003,8 @@ class SolverService : Service() {
                 view.addView(it)
             }
 
-            // 🔥 프리셋 빠른 버튼 (자주 쓰는 것)
+            // 🔥 v34: 프리셋 컴팩트 모드에서 숨김
+            if (false) {
             val presetRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -1031,6 +1035,7 @@ class SolverService : Service() {
                 })
             }
             view.addView(presetRow)
+            }
 
             // 자동격자 상태
             TextView(context).apply {
@@ -1041,7 +1046,9 @@ class SolverService : Service() {
             }.also { view.addView(it) }
 
             Button(context).apply {
-                text = "❌ 종료"
+                text = "❌"
+                textSize = 10f
+                setPadding(4, 2, 4, 2)
                 setBackgroundColor(Color.RED)
                 setTextColor(Color.WHITE)
                 setOnClickListener { stopSelf() }
@@ -1715,7 +1722,10 @@ class SolverService : Service() {
                         }
                         AppLogger.d("🧠 k-NN: ${rows}x${cols} (신뢰도=${"%.2f".format(prediction.confidence)}, 시드=${prediction.seedCount}) | auto=${autoRows}x${autoCols}")
                     } else {
-                        AppLogger.d("📷 auto: ${rows}x${cols} (시드=${GridSeedDB.size(applicationContext)}개)")
+                        if (rows != lastLoggedRows || cols != lastLoggedCols || finalSource != "auto") {
+                            AppLogger.d("📷 auto: ${rows}x${cols} (시드=${GridSeedDB.size(applicationContext)}개)")
+                            lastLoggedRows = rows; lastLoggedCols = cols; lastLoggedSource = "auto"
+                        }
                     }
                 }
 
