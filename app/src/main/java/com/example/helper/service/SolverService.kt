@@ -47,6 +47,7 @@ class SolverService : Service() {
     private var lastLoggedRows = -1
     private var lastLoggedCols = -1
     private var lastLoggedSource = ""
+    private var lastSeedLogTime = 0L
     private var latestThumbnail: Bitmap? = null
     private var currentBoardCrop: Bitmap? = null
     private var latestFullBitmap: Bitmap? = null
@@ -1718,9 +1719,15 @@ class SolverService : Service() {
                             mainHandler.post {
                                 try { overlayView?.invalidate() } catch (e: Exception) {}
                             }
-                            AppLogger.d("📍 위치 복원: TL=(${pos[0].toInt()},${pos[1].toInt()}) BR=(${pos[6].toInt()},${pos[7].toInt()})")
                         }
-                        AppLogger.d("🧠 k-NN: ${rows}x${cols} (신뢰도=${"%.2f".format(prediction.confidence)}, 시드=${prediction.seedCount}) | auto=${autoRows}x${autoCols}")
+                        // 🔥 v35: 로그 필터 (값 바뀔 때만)
+                        if (rows != lastLoggedRows || cols != lastLoggedCols || finalSource != lastLoggedSource) {
+                            val posStr = if (pos != null && pos.size == 8) " +📍" else ""
+                            AppLogger.d("🧠 k-NN: ${rows}x${cols} (신뢰도=${"%.2f".format(prediction.confidence)}, 시드=${prediction.seedCount})$posStr | auto=${autoRows}x${autoCols}")
+                            lastLoggedRows = rows
+                            lastLoggedCols = cols
+                            lastLoggedSource = "k-NN"
+                        }
                     } else {
                         if (rows != lastLoggedRows || cols != lastLoggedCols || finalSource != "auto") {
                             AppLogger.d("📷 auto: ${rows}x${cols} (시드=${GridSeedDB.size(applicationContext)}개)")
@@ -1732,7 +1739,12 @@ class SolverService : Service() {
                 // 3) 자동검출 결과가 새로 얻어졌고 k-NN 미적용이면 seed 추가 (auto)
                 if (feat != null && autoChanged && finalSource == "auto") {
                     GridSeedDB.add(applicationContext, feat, rows, cols, manual = false, crop = currentBoardCrop)
-                    AppLogger.d("🌱 auto seed: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
+                    // 🔥 v35: seed 로그도 필터 (5초에 한 번만)
+                    val now = System.currentTimeMillis()
+                    if (now - lastSeedLogTime > 5000) {
+                        AppLogger.d("🌱 auto seed: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
+                        lastSeedLogTime = now
+                    }
                 }
 
                 val positions = findOOXOO(bitmap)
