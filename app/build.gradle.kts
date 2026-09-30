@@ -11,18 +11,20 @@ android {
         applicationId = "com.example.helper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1031
-        versionName = "1.031"
+        versionCode = 1032
+        versionName = "1.032"
     }
 
     signingConfigs {
         create("release") {
-            val ksPath = System.getenv("KEYSTORE_PATH")
-            if (ksPath != null) {
-                storeFile = file(ksPath)
-                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("KEY_ALIAS") ?: ""
-                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            // 🔥 하드코딩 (개인용)
+            val ksPath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/release.keystore"
+            val ksFile = file(ksPath)
+            if (ksFile.exists()) {
+                storeFile = ksFile
+                storePassword = "ooxoo123"
+                keyAlias = "ooxoo"
+                keyPassword = "ooxoo123"
             }
         }
     }

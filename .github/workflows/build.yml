@@ -29,11 +29,6 @@ jobs:
       with:
         gradle-version: 8.2
 
-    - name: Decode Keystore
-      run: |
-        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ${{ github.workspace }}/release.keystore
-        ls -la ${{ github.workspace }}/release.keystore
-
     - name: Read version
       id: ver
       run: |
@@ -41,12 +36,7 @@ jobs:
         echo "version=$VER" >> $GITHUB_OUTPUT
         echo "📦 Building version: $VER"
 
-    - name: Build Debug APK (signed)
-      env:
-        KEYSTORE_PATH: ${{ github.workspace }}/release.keystore
-        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    - name: Build Debug APK
       run: gradle assembleDebug --no-daemon
 
     - name: Rename APK
@@ -78,6 +68,3 @@ jobs:
         make_latest: true
         body: |
           **OOXOO 헬퍼 v${{ steps.ver.outputs.version }}**
-          
-          - 자동 빌드: ${{ github.event.head_commit.message }}
-          - 커밋: ${{ github.sha }}
