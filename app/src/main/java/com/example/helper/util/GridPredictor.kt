@@ -18,9 +18,8 @@ object GridPredictor {
 
     fun predict(context: Context, feature: FloatArray): Prediction? {
         val allSeeds = GridSeedDB.loadAll(context)
-        // 🔥 v34: manual seed가 있으면 manual만 사용 (안정성 ↑)
-        val manualSeeds = allSeeds.filter { it.manual }
-        val seeds = if (manualSeeds.isNotEmpty()) manualSeeds else allSeeds
+        // 🔥 v41: manual만 사용 (auto seed는 완전 무시)
+        val seeds = allSeeds.filter { it.manual }
         if (seeds.size < MIN_SEEDS) return null
 
         val distances = seeds.map { seed -> seed to GridFeature.distance(seed.feature, feature) }

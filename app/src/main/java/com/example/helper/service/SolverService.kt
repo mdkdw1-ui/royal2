@@ -885,7 +885,7 @@ class SolverService : Service() {
             // Row 1: 크기 조정 (한 줄)
             val sizeRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
             }
 
             fun tinyBtn(label: String, action: () -> Unit): Button {
@@ -895,25 +895,25 @@ class SolverService : Service() {
                     setPadding(2, 2, 2, 2)
                     setBackgroundColor(Color.parseColor("#333333"))
                     setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1f)
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(28), dpToPx(28))
                     setOnClickListener { action() }
                 }
             }
 
             sizeRow.addView(tinyBtn("◀") { if (rows > 3) { rows--; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
             sizeRow.addView(TextView(context).apply {
-                text = "행$rows"
-                setTextColor(Color.YELLOW); textSize = 9f
+                text = "$rows"
+                setTextColor(Color.YELLOW); textSize = 10f
                 gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1.2f)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(22), dpToPx(30))
             })
             sizeRow.addView(tinyBtn("▶") { if (rows < 20) { rows++; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
             sizeRow.addView(tinyBtn("◀") { if (cols > 3) { cols--; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
             sizeRow.addView(TextView(context).apply {
-                text = "열$cols"
-                setTextColor(Color.YELLOW); textSize = 9f
+                text = "$cols"
+                setTextColor(Color.CYAN); textSize = 10f
                 gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1.2f)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(22), dpToPx(30))
             })
             sizeRow.addView(tinyBtn("▶") { if (cols < 20) { cols++; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
             view.addView(sizeRow)
@@ -921,7 +921,7 @@ class SolverService : Service() {
             // Row 2: 액션 (입력/정답/종료)
             val actionRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
             }
 
             fun actionBtn(label: String, color: Int, action: () -> Unit): Button {
@@ -931,7 +931,7 @@ class SolverService : Service() {
                     setPadding(2, 2, 2, 2)
                     setBackgroundColor(color)
                     setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(0, dpToPx(32), 1f).apply { setMargins(1, 0, 1, 0) }
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30)).apply { setMargins(2, 0, 2, 0) }
                     setOnClickListener { action() }
                 }
             }
@@ -1659,15 +1659,8 @@ class SolverService : Service() {
 
                 // 3) 자동검출 결과가 새로 얻어졌고 k-NN 미적용이면 seed 추가 (auto)
                 // 🔥 v38: auto seed는 보정/수동 모드 아닐 때만
-                if (feat != null && autoChanged && finalSource == "auto" && !isCalibrationMode && isAutoDetectEnabled) {
-                    GridSeedDB.add(applicationContext, feat, rows, cols, manual = false, crop = currentBoardCrop)
-                    // 🔥 v35: seed 로그도 필터 (5초에 한 번만)
-                    val now = System.currentTimeMillis()
-                    if (now - lastSeedLogTime > 5000) {
-                        AppLogger.d("🌱 auto seed: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
-                        lastSeedLogTime = now
-                    }
-                }
+                // 🔥 v41: auto seed 저장 안 함 (manual만 신뢰)
+                // auto가 k-NN 오염시켜서 10x9↔11x9 뒤바뀌는 문제 해결
 
                 val positions = findOOXOO(bitmap)
 
