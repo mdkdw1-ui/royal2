@@ -47,6 +47,7 @@ class SolverService : Service() {
     private var lastLoggedRows = -1
     private var lastLoggedCols = -1
     private var lastLoggedSource = ""
+    private var lastFingerprintForGameChange = ""
     private var lastSeedLogTime = 0L
     private var latestThumbnail: Bitmap? = null
     private var currentBoardCrop: Bitmap? = null
@@ -660,7 +661,7 @@ class SolverService : Service() {
             }.apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#DD111111"))
-                setPadding(2, 1, 2, 1)
+                setPadding(1, 0, 1, 0)
             }
 
             refreshControlUI()
@@ -878,12 +879,13 @@ class SolverService : Service() {
             // 🔥 v40: 초콤팩트 - 2행 (크기조정 + 액션)
             // Row 1: [◀] [행] [▶] [◀] [열] [▶]
             // Row 2: [📸] [✅] [⚙️] [❌]
-            view.setPadding(2, 1, 2, 1)
+            view.setPadding(1, 0, 1, 0)
 
             // Row 1: 크기 조정 (한 줄)
             val sizeRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, 0)
             }
 
             fun tinyBtn(label: String, action: () -> Unit): Button {
@@ -893,7 +895,7 @@ class SolverService : Service() {
                     setPadding(2, 2, 2, 2)
                     setBackgroundColor(Color.parseColor("#333333"))
                     setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(dpToPx(28), dpToPx(28))
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(26))
                     setOnClickListener { action() }
                 }
             }
@@ -920,6 +922,7 @@ class SolverService : Service() {
             val actionRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, 0)
             }
 
             fun actionBtn(label: String, color: Int, action: () -> Unit): Button {
@@ -929,20 +932,28 @@ class SolverService : Service() {
                     setPadding(2, 2, 2, 2)
                     setBackgroundColor(color)
                     setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30)).apply { setMargins(2, 0, 2, 0) }
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(36), dpToPx(26)).apply { setMargins(1, 0, 1, 0) }
                     setOnClickListener { action() }
                 }
             }
 
-            actionRow.addView(actionBtn("📸", Color.parseColor("#0288D1")) { showLabelingDialog() })
-            actionRow.addView(actionBtn("✅", Color.parseColor("#4CAF50")) { confirmCorrect() })
-            actionRow.addView(actionBtn("⚙️", Color.parseColor("#555555")) {
+            actionRow.addView(actionBtn("입력", Color.parseColor("#0288D1")) { showLabelingDialog() })
+            actionRow.addView(actionBtn("확정", Color.parseColor("#4CAF50")) { confirmCorrect() })
+            actionRow.addView(actionBtn(if (isAutoDetectEnabled) "자동" else "수동", Color.parseColor("#555555")) {
                 isAutoDetectEnabled = !isAutoDetectEnabled
                 savePreferences()
                 refreshControlUI()
                 Toast.makeText(context, if (isAutoDetectEnabled) "자동격자 ON" else "자동격자 OFF", Toast.LENGTH_SHORT).show()
             })
-            actionRow.addView(actionBtn("❌", Color.RED) { stopSelf() })
+            actionRow.addView(actionBtn("새판", Color.parseColor("#FF6F00")) {
+                // 새 판 시작: auto 재개
+                isAutoDetectEnabled = true
+                savePreferences()
+                refreshControlUI()
+                AppLogger.d("NEW_GAME: 새 판 시작 (auto 재개)")
+                Toast.makeText(context, "새 판 시작 (자동 검출 재개)", Toast.LENGTH_SHORT).show()
+            })
+            actionRow.addView(actionBtn("종료", Color.RED) { stopSelf() })
             view.addView(actionRow)
 
             floatParams?.let { params -> try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {} }
@@ -1593,6 +1604,23 @@ class SolverService : Service() {
                 // 🔥 v19: 자동검출 먼저 실행 → k-NN 예측이 있으면 우선 적용
                 currentFingerprint = LevelGridMemory.computeFingerprint(bitmap)
                 currentFeature = GridFeature.extract(bitmap, ptTL, ptTR, ptBL, ptBR)
+
+                // 🔥 v44: 판 바뀜 자동 감지 (fingerprint 급변 시 auto 재개)
+                if (lastFingerprintForGameChange.isNotEmpty() && currentFingerprint.isNotEmpty()) {
+                    var diff = 0
+                    val len = minOf(lastFingerprintForGameChange.length, currentFingerprint.length)
+                    for (i in 0 until len) {
+                        if (lastFingerprintForGameChange[i] != currentFingerprint[i]) diff++
+                    }
+                    // 급변 (30% 이상) + 현재 수동 모드 → 자동 재개
+                    if (diff > len * 0.3 && !isAutoDetectEnabled && !isCalibrationMode) {
+                        AppLogger.d("NEW_GAME_AUTO: 판 바뀜 감지 (diff=$diff/$len) → auto 재개")
+                        isAutoDetectEnabled = true
+                        savePreferences()
+                        mainHandler.post { refreshControlUI() }
+                    }
+                }
+                lastFingerprintForGameChange = currentFingerprint
 
                 // 🔥 v36: 보정 모드 or 수동 모드에서는 auto/k-NN 완전 스킵
                 if (isCalibrationMode || !isAutoDetectEnabled) {
