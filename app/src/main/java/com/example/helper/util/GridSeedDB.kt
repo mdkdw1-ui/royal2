@@ -74,7 +74,7 @@ object GridSeedDB {
 
         // 🔥 v42: 0.08 → 0.03 (매우 가까운 화면만 삭제)
         val conflicting = list.filter {
-            GridFeature.distance(it.feature, feature) < 0.03f &&
+            GridFeature.distance(it.feature, feature) < 0.01f &&
             (it.rows != correctRows || it.cols != correctCols)
         }
         val removedLabels = conflicting.map { "${it.rows}x${it.cols}(${if (it.manual) "수동" else "자동"})" }

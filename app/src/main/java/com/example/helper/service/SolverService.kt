@@ -1856,7 +1856,7 @@ class SolverService : Service() {
 
                 val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, realSize, realSize)
 
-                saveGimmickBitmap(cellBitmap)
+                saveGimmickBitmap(cellBitmap.copy(Bitmap.Config.ARGB_8888, false))
                 cellBitmap.recycle()
                 fullBitmap.recycle()
 
