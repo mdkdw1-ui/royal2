@@ -978,37 +978,43 @@ class SolverService : Service() {
 
             view.addView(miniRow)
 
-            // 🔥 v22: 정답 입력 (캡처 + 숫자)
+            // 🔥 v22: 정답 입력 (캡처 + 숫자)// 🔥 v39: 액션 버튼 (가로 1행)
+            val actionRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 3, 0, 3)
+            }
+
             Button(context).apply {
-                text = "📸"
-                textSize = 8f
-                setPadding(3, 1, 3, 1)
+                text = "📸 입력"
+                textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                setPadding(4, 6, 4, 6)
                 setBackgroundColor(Color.parseColor("#0288D1"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { showLabelingDialog() }
-            }.also {
-                it.layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                )
-                view.addView(it)
-            }
+            }.also { actionRow.addView(it) }
 
-            // 🔥 v21: 정답 확인 버튼 (자동 결과가 맞을 때)
             Button(context).apply {
-                text = "✅"
-                textSize = 8f
-                setPadding(3, 1, 3, 1)
+                text = "✅ 정답"
+                textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
+                setPadding(4, 6, 4, 6)
                 setBackgroundColor(Color.parseColor("#4CAF50"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { confirmCorrect() }
-            }.also {
-                it.layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                )
-                view.addView(it)
-            }
+            }.also { actionRow.addView(it) }
+
+            Button(context).apply {
+                text = "❌ 종료"
+                textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.9f).apply { setMargins(2, 0, 2, 0) }
+                setPadding(4, 6, 4, 6)
+                setBackgroundColor(Color.RED)
+                setTextColor(Color.WHITE)
+                setOnClickListener { stopSelf() }
+            }.also { actionRow.addView(it) }
+            view.addView(actionRow)
 
             // 🔥 v34: 프리셋 컴팩트 모드에서 숨김
             if (false) {
@@ -1045,17 +1051,6 @@ class SolverService : Service() {
             }
 
             // 🔥 v38: 자동격자 상태 제거 (컴팩트)
-
-
-
-            Button(context).apply {
-                text = "❌"
-                textSize = 8f
-                setPadding(2, 1, 2, 1)
-                setBackgroundColor(Color.RED)
-                setTextColor(Color.WHITE)
-                setOnClickListener { stopSelf() }
-            }.also { view.addView(it) }
             floatParams?.let { params -> try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {} }
             return
         }
