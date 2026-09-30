@@ -877,180 +877,76 @@ class SolverService : Service() {
 
         // 간이 모드
         if (isCompactMode) {
-            // 🔥 v20: 꾹 누르면 연속 + 프리셋
-            val miniRow = LinearLayout(context).apply {
+            // 🔥 v40: 초콤팩트 - 2행 (크기조정 + 액션)
+            // Row 1: [◀] [행] [▶] [◀] [열] [▶]  <- 6 버튼
+            // Row 2: [📸] [✅] [❌]
+            setPadding(2, 1, 2, 1)
+
+            // Row 1: 크기 조정 (한 줄)
+            val sizeRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 5, 0, 5)
             }
 
-            fun makeBtn(label: String, onClick: () -> Unit, onRepeat: (() -> Unit)? = null): Button {
+            fun tinyBtn(label: String, action: () -> Unit): Button {
                 return Button(context).apply {
                     text = label
-                    textSize = 8f
-                    setPadding(3, 1, 3, 1)
-                    setBackgroundColor(Color.DKGRAY)
+                    textSize = 10f
+                    setPadding(2, 2, 2, 2)
+                    setBackgroundColor(Color.parseColor("#333333"))
                     setTextColor(Color.WHITE)
-                    if (onRepeat != null) {
-                        setAutoRepeatListener(this) { onRepeat() }
-                    } else {
-                        setOnClickListener { onClick() }
-                    }
+                    layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1f)
+                    setOnClickListener { action() }
                 }
             }
 
-            // 행-
-            miniRow.addView(makeBtn("행-", onClick = {}, onRepeat = {
-                if (rows > 5) {
-                    rows--
-                    isAutoDetectEnabled = false
-                    savePreferences()
-                    refreshControlUI()
-                }
-            }))
+            sizeRow.addView(tinyBtn("◀") { if (rows > 3) { rows--; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
+            sizeRow.addView(TextView(context).apply {
+                text = "행$rows"
+                setTextColor(Color.YELLOW); textSize = 9f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1.2f)
+            })
+            sizeRow.addView(tinyBtn("▶") { if (rows < 20) { rows++; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
+            sizeRow.addView(tinyBtn("◀") { if (cols > 3) { cols--; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
+            sizeRow.addView(TextView(context).apply {
+                text = "열$cols"
+                setTextColor(Color.YELLOW); textSize = 9f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1.2f)
+            })
+            sizeRow.addView(tinyBtn("▶") { if (cols < 20) { cols++; isAutoDetectEnabled = false; savePreferences(); refreshControlUI() } })
+            view.addView(sizeRow)
 
-            // 현재 값 (탭하면 프리셋 표시)
-            val tvCurrent = TextView(context).apply {
-                text = "${rows}x${cols}"
-                setTextColor(Color.YELLOW)
-                textSize = 9f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(3, 0, 3, 0)
-                setOnClickListener {
-                    // 🔥 프리셋 다이얼로그
-                    val presets = listOf(
-                        "8x8" to (8 to 8),
-                        "9x9" to (9 to 9),
-                        "10x9" to (10 to 9),
-                        "10x10" to (10 to 10),
-                        "11x9" to (11 to 9),
-                        "11x10" to (11 to 10),
-                        "11x11" to (11 to 11),
-                        "12x9" to (12 to 9),
-                        "12x10" to (12 to 10)
-                    )
-                    val names = presets.map { it.first }.toTypedArray()
-                    android.app.AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
-                        .setTitle("격자 크기 선택")
-                        .setItems(names) { _, which ->
-                            val (r, c) = presets[which].second
-                            rows = r
-                            cols = c
-                            isAutoDetectEnabled = false
-                            savePreferences()
-                            refreshControlUI()
-                            Toast.makeText(context, "🧠 저장: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
-                        }
-                        .show()
-                }
-            }
-            miniRow.addView(tvCurrent)
-
-            // 행+
-            miniRow.addView(makeBtn("행+", onClick = {}, onRepeat = {
-                if (rows < 15) {
-                    rows++
-                    isAutoDetectEnabled = false
-                    savePreferences()
-                    refreshControlUI()
-                }
-            }))
-
-            // 열-
-            miniRow.addView(makeBtn("열-", onClick = {}, onRepeat = {
-                if (cols > 5) {
-                    cols--
-                    isAutoDetectEnabled = false
-                    savePreferences()
-                    refreshControlUI()
-                }
-            }))
-
-            // 열+
-            miniRow.addView(makeBtn("열+", onClick = {}, onRepeat = {
-                if (cols < 15) {
-                    cols++
-                    isAutoDetectEnabled = false
-                    savePreferences()
-                    refreshControlUI()
-                }
-            }))
-
-            view.addView(miniRow)
-
-            // 🔥 v22: 정답 입력 (캡처 + 숫자)// 🔥 v39: 액션 버튼 (가로 1행)
+            // Row 2: 액션 (입력/정답/종료)
             val actionRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 3, 0, 3)
             }
 
-            Button(context).apply {
-                text = "📸 입력"
-                textSize = 11f
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
-                setPadding(4, 6, 4, 6)
-                setBackgroundColor(Color.parseColor("#0288D1"))
-                setTextColor(Color.WHITE)
-                setOnClickListener { showLabelingDialog() }
-            }.also { actionRow.addView(it) }
-
-            Button(context).apply {
-                text = "✅ 정답"
-                textSize = 11f
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(2, 0, 2, 0) }
-                setPadding(4, 6, 4, 6)
-                setBackgroundColor(Color.parseColor("#4CAF50"))
-                setTextColor(Color.WHITE)
-                setOnClickListener { confirmCorrect() }
-            }.also { actionRow.addView(it) }
-
-            Button(context).apply {
-                text = "❌ 종료"
-                textSize = 11f
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.9f).apply { setMargins(2, 0, 2, 0) }
-                setPadding(4, 6, 4, 6)
-                setBackgroundColor(Color.RED)
-                setTextColor(Color.WHITE)
-                setOnClickListener { stopSelf() }
-            }.also { actionRow.addView(it) }
-            view.addView(actionRow)
-
-            // 🔥 v34: 프리셋 컴팩트 모드에서 숨김
-            if (false) {
-            val presetRow = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 3, 0, 3)
-            }
-
-            listOf(
-                "8x8" to (8 to 8),
-                "9x9" to (9 to 9),
-                "10x9" to (10 to 9),
-                "11x9" to (11 to 9)
-            ).forEach { (label, pair) ->
-                val isCurrent = (rows == pair.first && cols == pair.second)
-                presetRow.addView(Button(context).apply {
+            fun actionBtn(label: String, color: Int, action: () -> Unit): Button {
+                return Button(context).apply {
                     text = label
                     textSize = 10f
-                    setPadding(8, 4, 8, 4)
-                    setBackgroundColor(if (isCurrent) Color.parseColor("#4CAF50") else Color.parseColor("#555555"))
+                    setPadding(2, 2, 2, 2)
+                    setBackgroundColor(color)
                     setTextColor(Color.WHITE)
-                    setOnClickListener {
-                        rows = pair.first
-                        cols = pair.second
-                        isAutoDetectEnabled = false
-                        savePreferences()
-                        refreshControlUI()
-                        Toast.makeText(context, "🧠 저장: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
-                    }
-                })
-            }
-            view.addView(presetRow)
+                    layoutParams = LinearLayout.LayoutParams(0, dpToPx(32), 1f).apply { setMargins(1, 0, 1, 0) }
+                    setOnClickListener { action() }
+                }
             }
 
-            // 🔥 v38: 자동격자 상태 제거 (컴팩트)
+            actionRow.addView(actionBtn("📸", Color.parseColor("#0288D1")) { showLabelingDialog() })
+            actionRow.addView(actionBtn("✅", Color.parseColor("#4CAF50")) { confirmCorrect() })
+            actionRow.addView(actionBtn("⚙️", Color.parseColor("#555555")) {
+                isAutoDetectEnabled = !isAutoDetectEnabled
+                savePreferences()
+                refreshControlUI()
+                Toast.makeText(context, if (isAutoDetectEnabled) "자동격자 ON" else "자동격자 OFF", Toast.LENGTH_SHORT).show()
+            })
+            actionRow.addView(actionBtn("❌", Color.RED) { stopSelf() })
+            view.addView(actionRow)
+
             floatParams?.let { params -> try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {} }
             return
         }
