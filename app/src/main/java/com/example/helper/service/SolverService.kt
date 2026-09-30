@@ -878,9 +878,9 @@ class SolverService : Service() {
         // 간이 모드
         if (isCompactMode) {
             // 🔥 v40: 초콤팩트 - 2행 (크기조정 + 액션)
-            // Row 1: [◀] [행] [▶] [◀] [열] [▶]  <- 6 버튼
-            // Row 2: [📸] [✅] [❌]
-            setPadding(2, 1, 2, 1)
+            // Row 1: [◀] [행] [▶] [◀] [열] [▶]
+            // Row 2: [📸] [✅] [⚙️] [❌]
+            view.setPadding(2, 1, 2, 1)
 
             // Row 1: 크기 조정 (한 줄)
             val sizeRow = LinearLayout(context).apply {
