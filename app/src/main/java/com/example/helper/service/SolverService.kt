@@ -189,49 +189,46 @@ class SolverService : Service() {
         } catch (e: Exception) { AppLogger.e("템플릿 로드 실패", e) }
     }
 
+    // 🔥 v42: 기믹 저장 (UI 스레드 안전)
     private fun saveGimmickBitmap(bitmap: Bitmap) {
-        try {
-            val dir = getExternalFilesDir("gimmicks")
-            if (dir != null && !dir.exists()) dir.mkdirs()
-
-            val TEMPLATE_SIZE = 64
-            val resizedBitmap = Bitmap.createScaledBitmap(bitmap, TEMPLATE_SIZE, TEMPLATE_SIZE, true)
-
-            val file = File(dir, "gimmick_${System.currentTimeMillis()}.png")
-            FileOutputStream(file).use { out ->
-                resizedBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        backgroundHandler?.post {
+            try {
+                val dir = getExternalFilesDir("gimmicks")
+                if (dir != null && !dir.exists()) dir.mkdirs()
+                val resizedBitmap = Bitmap.createScaledBitmap(bitmap, 64, 64, true)
+                val file = File(dir, "gimmick_" + System.currentTimeMillis() + ".png")
+                FileOutputStream(file).use { out ->
+                    resizedBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+                val newMat = Mat()
+                Utils.bitmapToMat(resizedBitmap, newMat)
+                Imgproc.cvtColor(newMat, newMat, Imgproc.COLOR_RGBA2GRAY)
+                synchronized(dynamicTemplates) {
+                    dynamicTemplates.add(newMat)
+                    dynamicTemplateFiles.add(file)
+                    templateSizes.add(Pair(newMat.width(), newMat.height()))
+                }
+                resizedBitmap.recycle()
+                mainHandler.post {
+                    Toast.makeText(applicationContext, "OK gimmick " + dynamicTemplates.size, Toast.LENGTH_SHORT).show()
+                    refreshControlUI()
+                }
+            } catch (e: Exception) {
+                AppLogger.e("gimmick save fail", e)
+            } finally {
+                mainHandler.post {
+                    isImageGrabberMode = false
+                    isGrabberProcessing = false
+                    overlayView?.let {
+                        try {
+                            val params = it.layoutParams as WindowManager.LayoutParams
+                            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            windowManager.updateViewLayout(it, params)
+                        } catch (ex: Exception) {}
+                    }
+                    refreshControlUI()
+                }
             }
-
-            val newMat = Mat()
-            Utils.bitmapToMat(resizedBitmap, newMat)
-            Imgproc.cvtColor(newMat, newMat, Imgproc.COLOR_RGBA2GRAY)
-
-            synchronized(dynamicTemplates) {
-                dynamicTemplates.add(newMat)
-                dynamicTemplateFiles.add(file)
-                templateSizes.add(Pair(newMat.width(), newMat.height()))
-            }
-
-            resizedBitmap.recycle()
-
-            mainHandler.post {
-                Toast.makeText(applicationContext, "✅ 기믹 저장 완료! (${dynamicTemplates.size}개)", Toast.LENGTH_SHORT).show()
-                refreshControlUI()
-            }
-        } catch (e: Exception) {
-            AppLogger.e("기믹 저장 실패", e)
-            mainHandler.post {
-                Toast.makeText(applicationContext, "❌ 기믹 저장 실패: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        } finally {
-            isImageGrabberMode = false
-            isGrabberProcessing = false
-            overlayView?.let {
-                val params = it.layoutParams as WindowManager.LayoutParams
-                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                windowManager.updateViewLayout(it, params)
-            }
-            refreshControlUI()
         }
     }
 
@@ -775,10 +772,11 @@ class SolverService : Service() {
                         p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                         windowManager.updateViewLayout(it, p)
                     }
-                    // 🔥 v36: 보정 완료 시 수동 고정
+                    // 🔥 v42: 보정 완료 시 무조건 수동 고정
                     isAutoDetectEnabled = false
+                    isScanning = false
                     savePreferences()
-                    AppLogger.d("💾 보정 완료 → 수동 고정: ${rows}x${cols}")
+                    AppLogger.d("💾 보정 완료 → 수동 고정: ${rows}x${cols} (auto OFF)")
                     Toast.makeText(context, "💾 보정 완료 (수동 고정)", Toast.LENGTH_SHORT).show()
                     refreshControlUI()
                     overlayView?.invalidate()
