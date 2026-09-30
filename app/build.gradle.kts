@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.helper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1034
-        versionName = "1.034"
+        versionCode = 1035
+        versionName = "1.035"
     }
 
     signingConfigs {
@@ -31,17 +31,11 @@ android {
 
     buildTypes {
         debug {
-            val ksPath = System.getenv("KEYSTORE_PATH")
-            if (ksPath != null) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
         }
         release {
             isMinifyEnabled = false
-            val ksPath = System.getenv("KEYSTORE_PATH")
-            if (ksPath != null) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
