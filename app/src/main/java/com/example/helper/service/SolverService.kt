@@ -663,7 +663,7 @@ class SolverService : Service() {
             }.apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#DD111111"))
-                setPadding(3, 2, 3, 2)
+                setPadding(2, 1, 2, 1)
             }
 
             refreshControlUI()
@@ -842,9 +842,9 @@ class SolverService : Service() {
             setPadding(0, 0, 0, 0)
         }
         TextView(context).apply {
-            text = if (isCompactMode) "🔍" else "🎯 OOXOO 자동 감지기"
+            text = if (isCompactMode) "" else "🎯 OOXOO 자동 감지기"
             setTextColor(Color.WHITE)
-            textSize = if (isCompactMode) 10f else 14f
+            textSize = if (isCompactMode) 8f else 14f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, 0)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -852,8 +852,8 @@ class SolverService : Service() {
 
         Button(context).apply {
             text = if (isCompactMode) "▼" else "▲"
-            textSize = 9f
-            setPadding(4, 2, 4, 2)
+            textSize = 8f
+            setPadding(3, 1, 3, 1)
             setBackgroundColor(Color.parseColor("#444444"))
             setTextColor(Color.WHITE)
             setOnClickListener {
@@ -887,8 +887,8 @@ class SolverService : Service() {
             fun makeBtn(label: String, onClick: () -> Unit, onRepeat: (() -> Unit)? = null): Button {
                 return Button(context).apply {
                     text = label
-                    textSize = 9f
-                    setPadding(4, 2, 4, 2)
+                    textSize = 8f
+                    setPadding(3, 1, 3, 1)
                     setBackgroundColor(Color.DKGRAY)
                     setTextColor(Color.WHITE)
                     if (onRepeat != null) {
@@ -913,9 +913,9 @@ class SolverService : Service() {
             val tvCurrent = TextView(context).apply {
                 text = "${rows}x${cols}"
                 setTextColor(Color.YELLOW)
-                textSize = 10f
+                textSize = 9f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(4, 0, 4, 0)
+                setPadding(3, 0, 3, 0)
                 setOnClickListener {
                     // 🔥 프리셋 다이얼로그
                     val presets = listOf(
@@ -980,9 +980,9 @@ class SolverService : Service() {
 
             // 🔥 v22: 정답 입력 (캡처 + 숫자)
             Button(context).apply {
-                text = "📸 입력"
-                textSize = 9f
-                setPadding(4, 2, 4, 2)
+                text = "📸"
+                textSize = 8f
+                setPadding(3, 1, 3, 1)
                 setBackgroundColor(Color.parseColor("#0288D1"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { showLabelingDialog() }
@@ -996,9 +996,9 @@ class SolverService : Service() {
 
             // 🔥 v21: 정답 확인 버튼 (자동 결과가 맞을 때)
             Button(context).apply {
-                text = "✅ 정답"
-                textSize = 9f
-                setPadding(4, 2, 4, 2)
+                text = "✅"
+                textSize = 8f
+                setPadding(3, 1, 3, 1)
                 setBackgroundColor(Color.parseColor("#4CAF50"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { confirmCorrect() }
@@ -1044,18 +1044,14 @@ class SolverService : Service() {
             view.addView(presetRow)
             }
 
-            // 자동격자 상태
-            TextView(context).apply {
-                text = if (isAutoDetectEnabled) "📐자동" else "📌수동"
-                setTextColor(if (isAutoDetectEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
-                textSize = 8f
-                setPadding(0, 1, 0, 1)
-            }.also { view.addView(it) }
+            // 🔥 v38: 자동격자 상태 제거 (컴팩트)
+
+
 
             Button(context).apply {
                 text = "❌"
-                textSize = 9f
-                setPadding(3, 1, 3, 1)
+                textSize = 8f
+                setPadding(2, 1, 2, 1)
                 setBackgroundColor(Color.RED)
                 setTextColor(Color.WHITE)
                 setOnClickListener { stopSelf() }
@@ -1641,9 +1637,23 @@ class SolverService : Service() {
 
     // 🔥 스캔 실행
     private fun performScan() {
+        // 🔥 v38: 보정 모드/수동 모드면 아예 진입 X
+        if (isCalibrationMode || !isAutoDetectEnabled) {
+            mainHandler.post {
+                val positions = foundPositions
+                overlayView?.updatePositions(positions)
+                refreshControlUI()
+            }
+            return
+        }
         if (isScanning) return
         isScanning = true
         backgroundHandler?.post {
+            // 🔥 v38: 스레드 내 재확인 (레이스 컨디션 방지)
+            if (isCalibrationMode || !isAutoDetectEnabled) {
+                mainHandler.post { isScanning = false }
+                return@post
+            }
             val reader = imageReader ?: return@post
             var image = reader.acquireLatestImage()
             if (image == null) {
@@ -1757,7 +1767,8 @@ class SolverService : Service() {
                 }
 
                 // 3) 자동검출 결과가 새로 얻어졌고 k-NN 미적용이면 seed 추가 (auto)
-                if (feat != null && autoChanged && finalSource == "auto") {
+                // 🔥 v38: auto seed는 보정/수동 모드 아닐 때만
+                if (feat != null && autoChanged && finalSource == "auto" && !isCalibrationMode && isAutoDetectEnabled) {
                     GridSeedDB.add(applicationContext, feat, rows, cols, manual = false, crop = currentBoardCrop)
                     // 🔥 v35: seed 로그도 필터 (5초에 한 번만)
                     val now = System.currentTimeMillis()
