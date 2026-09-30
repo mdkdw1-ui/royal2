@@ -663,7 +663,7 @@ class SolverService : Service() {
             }.apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#DD111111"))
-                setPadding(6, 4, 6, 4)
+                setPadding(3, 2, 3, 2)
             }
 
             refreshControlUI()
@@ -775,8 +775,11 @@ class SolverService : Service() {
                         p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                         windowManager.updateViewLayout(it, p)
                     }
+                    // 🔥 v36: 보정 완료 시 수동 고정
+                    isAutoDetectEnabled = false
                     savePreferences()
-                    Toast.makeText(context, "💾 격자 위치 저장 완료!", Toast.LENGTH_SHORT).show()
+                    AppLogger.d("💾 보정 완료 → 수동 고정: ${rows}x${cols}")
+                    Toast.makeText(context, "💾 보정 완료 (수동 고정)", Toast.LENGTH_SHORT).show()
                     refreshControlUI()
                     overlayView?.invalidate()
                 }
@@ -836,18 +839,21 @@ class SolverService : Service() {
         val topRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, 0)
         }
         TextView(context).apply {
-            text = if (isCompactMode) "🔍 OOXOO" else "🎯 OOXOO 자동 감지기"
+            text = if (isCompactMode) "🔍" else "🎯 OOXOO 자동 감지기"
             setTextColor(Color.WHITE)
-            textSize = if (isCompactMode) 13f else 14f
+            textSize = if (isCompactMode) 10f else 14f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, 0)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }.also { topRow.addView(it) }
 
         Button(context).apply {
-            text = if (isCompactMode) "▼ 확장" else "▲ 접기"
-            textSize = 11f
+            text = if (isCompactMode) "▼" else "▲"
+            textSize = 9f
+            setPadding(4, 2, 4, 2)
             setBackgroundColor(Color.parseColor("#444444"))
             setTextColor(Color.WHITE)
             setOnClickListener {
@@ -881,8 +887,8 @@ class SolverService : Service() {
             fun makeBtn(label: String, onClick: () -> Unit, onRepeat: (() -> Unit)? = null): Button {
                 return Button(context).apply {
                     text = label
-                    textSize = 10f
-                    setPadding(6, 3, 6, 3)
+                    textSize = 9f
+                    setPadding(4, 2, 4, 2)
                     setBackgroundColor(Color.DKGRAY)
                     setTextColor(Color.WHITE)
                     if (onRepeat != null) {
@@ -907,9 +913,9 @@ class SolverService : Service() {
             val tvCurrent = TextView(context).apply {
                 text = "${rows}x${cols}"
                 setTextColor(Color.YELLOW)
-                textSize = 11f
+                textSize = 10f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(8, 0, 8, 0)
+                setPadding(4, 0, 4, 0)
                 setOnClickListener {
                     // 🔥 프리셋 다이얼로그
                     val presets = listOf(
@@ -974,9 +980,9 @@ class SolverService : Service() {
 
             // 🔥 v22: 정답 입력 (캡처 + 숫자)
             Button(context).apply {
-                text = "📸 정답 입력"
-                textSize = 10f
-                setPadding(8, 4, 8, 4)
+                text = "📸 입력"
+                textSize = 9f
+                setPadding(4, 2, 4, 2)
                 setBackgroundColor(Color.parseColor("#0288D1"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { showLabelingDialog() }
@@ -991,8 +997,8 @@ class SolverService : Service() {
             // 🔥 v21: 정답 확인 버튼 (자동 결과가 맞을 때)
             Button(context).apply {
                 text = "✅ 정답"
-                textSize = 10f
-                setPadding(8, 4, 8, 4)
+                textSize = 9f
+                setPadding(4, 2, 4, 2)
                 setBackgroundColor(Color.parseColor("#4CAF50"))
                 setTextColor(Color.WHITE)
                 setOnClickListener { confirmCorrect() }
@@ -1040,16 +1046,16 @@ class SolverService : Service() {
 
             // 자동격자 상태
             TextView(context).apply {
-                text = if (isAutoDetectEnabled) "📐 자동격자 ON" else "📌 수동 (자동 OFF)"
+                text = if (isAutoDetectEnabled) "📐자동" else "📌수동"
                 setTextColor(if (isAutoDetectEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
-                textSize = 10f
-                setPadding(0, 2, 0, 2)
+                textSize = 8f
+                setPadding(0, 1, 0, 1)
             }.also { view.addView(it) }
 
             Button(context).apply {
                 text = "❌"
-                textSize = 10f
-                setPadding(4, 2, 4, 2)
+                textSize = 9f
+                setPadding(3, 1, 3, 1)
                 setBackgroundColor(Color.RED)
                 setTextColor(Color.WHITE)
                 setOnClickListener { stopSelf() }
@@ -1689,6 +1695,20 @@ class SolverService : Service() {
                 currentFingerprint = LevelGridMemory.computeFingerprint(bitmap)
                 currentFeature = GridFeature.extract(bitmap, ptTL, ptTR, ptBL, ptBR)
 
+                // 🔥 v36: 보정 모드 or 수동 모드에서는 auto/k-NN 완전 스킵
+                if (isCalibrationMode || !isAutoDetectEnabled) {
+                    AppLogger.d("⏸️ 수동/보정 모드 - auto/k-NN 스킵 (${rows}x${cols})")
+                    val positions = findOOXOO(bitmap)
+                    mainHandler.post {
+                        foundPositions.clear(); foundPositions.addAll(positions)
+                        overlayView?.updatePositions(positions)
+                        refreshControlUI()
+                        isScanning = false
+                    }
+                    bitmap.recycle()
+                    return@post
+                }
+
                 // 1) 자동검출 (항상 실행, 참고용)
                 val beforeRows = rows
                 val beforeCols = cols
@@ -1704,7 +1724,7 @@ class SolverService : Service() {
                 var finalSource = if (isAutoDetectEnabled) "auto" else "manual-lock"
                 if (feat != null) {
                     val prediction = GridPredictor.predict(applicationContext, feat)
-                    if (prediction != null && prediction.confidence >= 0.55f) {
+                    if (prediction != null && prediction.confidence >= 0.75f) {  // 🔥 v36: 0.75 (안정성)
                         rows = prediction.rows
                         cols = prediction.cols
                         finalSource = "k-NN"
