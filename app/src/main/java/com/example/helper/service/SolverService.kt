@@ -2125,41 +2125,58 @@ class SolverService : Service() {
                 var thumb = latestThumbnail
                 var fullBmp = latestFullBitmap
 
-                // v48: null이면 즉시 캡처
+                // v50: 백그라운드에서 캡처 (main 블로킹 방지)
                 if (thumb == null || fullBmp == null || thumb.isRecycled || fullBmp.isRecycled) {
-                    AppLogger.d("라벨: 즉시 캡처 시도")
-                    val reader = imageReader
-                    if (reader != null) {
-                        var image = reader.acquireLatestImage()
-                        if (image == null) {
-                            try { Thread.sleep(100) } catch (e: Exception) {}
-                            image = reader.acquireNextImage()
-                        }
-                        if (image != null) {
-                            try {
-                                val metrics = resources.displayMetrics
-                                val planes = image.planes
-                                val buffer = planes[0].buffer
-                                val pixelStride = planes[0].pixelStride
-                                val rowStride = planes[0].rowStride
-                                val w = metrics.widthPixels
-                                val h = metrics.heightPixels
-                                val rowPadding = rowStride - pixelStride * w
-                                val bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
-                                bmp.copyPixelsFromBuffer(buffer)
-                                val tw = 500
-                                val th2 = (500f * bmp.height / bmp.width).toInt()
-                                thumb = Bitmap.createScaledBitmap(bmp, tw, th2, true)
-                                fullBmp = bmp
-                                latestThumbnail = thumb
-                                latestFullBitmap = fullBmp
-                                AppLogger.d("라벨: 캡처 성공 (${bmp.width}x${bmp.height})")
-                            } catch (e: Exception) {
-                                AppLogger.e("라벨 캡처 오류", e)
-                            } finally {
-                                try { image.close() } catch (e: Exception) {}
+                    AppLogger.d("라벨: 캡처 시도 (background)")
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    var captured: Bitmap? = null
+                    backgroundHandler?.post {
+                        try {
+                            val reader = imageReader
+                            if (reader != null) {
+                                var image = reader.acquireLatestImage()
+                                if (image == null) {
+                                    try { Thread.sleep(150) } catch (e: Exception) {}
+                                    image = reader.acquireLatestImage()
+                                }
+                                if (image != null) {
+                                    try {
+                                        val metrics = resources.displayMetrics
+                                        val planes = image.planes
+                                        val buffer = planes[0].buffer
+                                        val pixelStride = planes[0].pixelStride
+                                        val rowStride = planes[0].rowStride
+                                        val w = metrics.widthPixels
+                                        val h = metrics.heightPixels
+                                        val rowPadding = rowStride - pixelStride * w
+                                        val bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                                        bmp.copyPixelsFromBuffer(buffer)
+                                        captured = bmp
+                                        AppLogger.d("라벨: 캡처 성공 (${bmp.width}x${bmp.height})")
+                                    } catch (e: Exception) {
+                                        AppLogger.e("라벨 캡처 오류", e)
+                                    } finally {
+                                        try { image.close() } catch (e: Exception) {}
+                                    }
+                                } else {
+                                    AppLogger.d("라벨: acquireLatestImage null")
+                                }
+                            } else {
+                                AppLogger.d("라벨: imageReader null")
                             }
+                        } finally {
+                            latch.countDown()
                         }
+                    }
+                    try { latch.await(2, java.util.concurrent.TimeUnit.SECONDS) } catch (e: Exception) {}
+                    val cap = captured
+                    if (cap != null) {
+                        fullBmp = cap
+                        val tw = 500
+                        val th2 = (500f * cap.height / cap.width).toInt()
+                        thumb = Bitmap.createScaledBitmap(cap, tw, th2, true)
+                        latestThumbnail = thumb
+                        latestFullBitmap = fullBmp
                     }
                 }
 
