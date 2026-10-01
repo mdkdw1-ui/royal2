@@ -2366,9 +2366,13 @@ class SolverService : Service() {
                         val py = (ivY - offsetY) / scale
                         if (px < 0f || py < 0f || px > dW || py > dH) return null
 
-                        // fullBmp = drawable 원본이므로 그대로
-                        AppLogger.d("ivToOrig: iv=(${ivX.toInt()},${ivY.toInt()}) v=${vW.toInt()}x${vH.toInt()} d=${dW.toInt()}x${dH.toInt()} scale=${"%.3f".format(scale)} offset=(${offsetX.toInt()},${offsetY.toInt()}) → (${px.toInt()},${py.toInt()})")
-                        android.graphics.PointF(px, py)
+                        // v67: fullBmp 좌표로 스케일 변환 (drawable이 500x974, fullBmp가 1088x2120)
+                        val fullScaleX = fullBmp.width.toFloat() / dW
+                        val fullScaleY = fullBmp.height.toFloat() / dH
+                        val finalX = px * fullScaleX
+                        val finalY = py * fullScaleY
+                        AppLogger.d("ivToOrig: iv=(${ivX.toInt()},${ivY.toInt()}) → drawable=(${px.toInt()},${py.toInt()}) → full=(${finalX.toInt()},${finalY.toInt()})")
+                        android.graphics.PointF(finalX, finalY)
                     } catch (e: Exception) {
                         AppLogger.e("ivToOrig err", e)
                         null
@@ -2480,6 +2484,144 @@ class SolverService : Service() {
                     setBackgroundColor(Color.parseColor("#222222"))
                 }
                 container.addView(coordText)
+
+                // v67: 미세 조정 UI (좌상 방향키 + 우하 방향키)
+                val adjustRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                }
+
+                // 좌상 방향키
+                val tlBox = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                }
+                TextView(ctx).apply {
+                    text = "🔴 좌상"
+                    setTextColor(Color.WHITE)
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                }.also { tlBox.addView(it) }
+                val tlUpRow = LinearLayout(ctx).apply { gravity = Gravity.CENTER }
+                Button(ctx).apply {
+                    text = "▲"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        tlFull.y -= 5f
+                        if (tlFull.y < 0) tlFull.y = 0f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { tlUpRow.addView(it) }
+                tlBox.addView(tlUpRow)
+                val tlMidRow = LinearLayout(ctx).apply { gravity = Gravity.CENTER }
+                Button(ctx).apply {
+                    text = "◀"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        tlFull.x -= 5f
+                        if (tlFull.x < 0) tlFull.x = 0f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { tlMidRow.addView(it) }
+                Button(ctx).apply {
+                    text = "▶"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        tlFull.x += 5f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { tlMidRow.addView(it) }
+                tlBox.addView(tlMidRow)
+                val tlDownRow = LinearLayout(ctx).apply { gravity = Gravity.CENTER }
+                Button(ctx).apply {
+                    text = "▼"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        tlFull.y += 5f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { tlDownRow.addView(it) }
+                tlBox.addView(tlDownRow)
+                adjustRow.addView(tlBox)
+
+                View(ctx).apply { layoutParams = LinearLayout.LayoutParams(40, 10) }.also { adjustRow.addView(it) }
+
+                // 우하 방향키
+                val brBox = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                }
+                TextView(ctx).apply {
+                    text = "🟢 우하"
+                    setTextColor(Color.WHITE)
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                }.also { brBox.addView(it) }
+                val brUpRow = LinearLayout(ctx).apply { gravity = Gravity.CENTER }
+                Button(ctx).apply {
+                    text = "▲"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        brFull.y -= 5f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { brUpRow.addView(it) }
+                brBox.addView(brUpRow)
+                val brMidRow = LinearLayout(ctx).apply { gravity = Gravity.CENTER }
+                Button(ctx).apply {
+                    text = "◀"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        brFull.x -= 5f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { brMidRow.addView(it) }
+                Button(ctx).apply {
+                    text = "▶"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        brFull.x += 5f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { brMidRow.addView(it) }
+                brBox.addView(brMidRow)
+                val brDownRow = LinearLayout(ctx).apply { gravity = Gravity.CENTER }
+                Button(ctx).apply {
+                    text = "▼"; textSize = 10f
+                    setPadding(4, 2, 4, 2)
+                    setBackgroundColor(Color.parseColor("#555555"))
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        brFull.y += 5f
+                        redraw()
+                        coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    }
+                }.also { brDownRow.addView(it) }
+                brBox.addView(brDownRow)
+                adjustRow.addView(brBox)
+
+                container.addView(adjustRow)
 
                 // 분포
                 val dist = com.example.helper.util.GridSeedDB.getClassDistribution(ctx)
