@@ -2473,10 +2473,22 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            ptTL.set(tlFull.x, tlFull.y)
-                            ptTR.set(brFull.x, tlFull.y)
-                            ptBL.set(tlFull.x, brFull.y)
-                            ptBR.set(brFull.x, brFull.y)
+                            // v58: workingBitmap → fullBmp 좌표로 재변환
+                            val wbW = workingBitmap.width.toFloat()
+                            val wbH = workingBitmap.height.toFloat()
+                            val fW = fullBmp.width.toFloat()
+                            val fH = fullBmp.height.toFloat()
+                            val scaleX = fW / wbW
+                            val scaleY = fH / wbH
+                            val realTLx = tlFull.x * scaleX
+                            val realTLy = tlFull.y * scaleY
+                            val realBRx = brFull.x * scaleX
+                            val realBRy = brFull.y * scaleY
+                            AppLogger.d("라벨 좌표 변환: wb=${wbW.toInt()}x${wbH.toInt()} → full=${fW.toInt()}x${fH.toInt()} | scale=$scaleX")
+                            ptTL.set(realTLx, realTLy)
+                            ptTR.set(realBRx, realTLy)
+                            ptBL.set(realTLx, realBRy)
+                            ptBR.set(realBRx, realBRy)
                             isAutoDetectEnabled = false
 
                             val feat = currentFeature
