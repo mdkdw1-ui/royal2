@@ -2245,6 +2245,8 @@ class SolverService : Service() {
                 var brFull = android.graphics.PointF(ptBR.x, ptBR.y)
                 // v64: 탭 카운트로 순서 확정
                 var tapCount = 0
+                // v66: coordText를 미리 선언 (onTouchEvent에서 접근)
+                lateinit var coordText: android.widget.TextView
 
                 // redraw 전용 참조
                 var etRowsRef: android.widget.EditText? = null
@@ -2469,7 +2471,7 @@ class SolverService : Service() {
                 etCols.addTextChangedListener(watcher)
 
                 // v65: 좌상/우하 좌표 표시
-                val coordText = TextView(ctx).apply {
+                coordText = TextView(ctx).apply {
                     text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
                     setTextColor(Color.WHITE)
                     textSize = 12f
@@ -2561,7 +2563,6 @@ class SolverService : Service() {
                     setOnClickListener {
                         tlFull = android.graphics.PointF(0f, 0f)
                         brFull = android.graphics.PointF(fullBmp.width.toFloat(), fullBmp.height.toFloat())
-                        firstTouchDone = false
                         redraw()
                     }
                 }.also { btnRow.addView(it) }
