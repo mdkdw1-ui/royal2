@@ -2210,6 +2210,7 @@ class SolverService : Service() {
                 // 4. 컨테이너
                 val container = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
                     setBackgroundColor(Color.parseColor("#FA1E1E1E"))
                     setPadding(20, 20, 20, 20)
                     layoutParams = android.view.ViewGroup.LayoutParams(900, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -2226,12 +2227,12 @@ class SolverService : Service() {
 
                 // 미리보기
                 val iv = ImageView(ctx).apply {
+                    // v61: adjustViewBounds로 이미지 비율 유지
                     adjustViewBounds = true
-                    // v57: 라벨 다이얼로그 이미지 크기 확대 (화면 높이 절반)
                     val dm = resources.displayMetrics
                     val halfH = (dm.heightPixels * 0.5f).toInt()
                     layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, halfH
+                        LinearLayout.LayoutParams.WRAP_CONTENT, halfH
                     )
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     setBackgroundColor(Color.parseColor("#111111"))
