@@ -2344,42 +2344,21 @@ class SolverService : Service() {
                 iv.setOnTouchListener { _, ev ->
                     val ivX = ev.x
                     val ivY = ev.y
-                    // iv 좌표 → 썸네일 좌표로 변환 (모서리 근접 감지용)
-                    val t = thumb ?: return@setOnTouchListener true
-                    val ivW = iv.width.toFloat()
-                    val ivH = iv.height.toFloat()
-                    if (ivW <= 0f || ivH <= 0f) return@setOnTouchListener true
-                    val bmpW = t.width.toFloat()
-                    val bmpH = t.height.toFloat()
-                    val scale = minOf(ivW / bmpW, ivH / bmpH)
-                    val offsetX = (ivW - bmpW * scale) / 2f
-                    val offsetY = (ivH - bmpH * scale) / 2f
-
-                    // 현재 TL/BR의 iv 좌표
-                    val f = fullBmp ?: return@setOnTouchListener true
-                    val sx = bmpW / f.width.toFloat()
-                    val sy = bmpH / f.height.toFloat()
-                    val tlIvX = offsetX + tlFull.x * sx * scale
-                    val tlIvY = offsetY + tlFull.y * sy * scale
-                    val brIvX = offsetX + brFull.x * sx * scale
-                    val brIvY = offsetY + brFull.y * sy * scale
-
-                    val dTL = Math.hypot((ivX - tlIvX).toDouble(), (ivY - tlIvY).toDouble()).toFloat()
-                    val dBR = Math.hypot((ivX - brIvX).toDouble(), (ivY - brIvY).toDouble()).toFloat()
 
                     when (ev.action) {
                         MotionEvent.ACTION_DOWN -> {
-                            if (dTL < hitRadius) {
-                                draggingCorner = 1
-                            } else if (dBR < hitRadius) {
-                                draggingCorner = 2
-                            } else {
-                                draggingCorner = if (dTL < dBR) 1 else 2
-                            }
+                            // v62: 첫 탭 = 좌상, 두 번째 탭 = 우하 (근접 감지 X)
                             val orig = ivToOriginal(ivX, ivY)
-                            AppLogger.d("탭 감지: iv=(${ivX.toInt()},${ivY.toInt()}) ivW=${iv.width} ivH=${iv.height} bmpW=${workingBitmap.width} bmpH=${workingBitmap.height} → orig=(${orig?.x?.toInt()},${orig?.y?.toInt()}) corner=$draggingCorner")
                             if (orig != null) {
-                                if (draggingCorner == 1) tlFull = orig else brFull = orig
+                                if (!firstTouchDone) {
+                                    tlFull = orig
+                                    firstTouchDone = true
+                                    AppLogger.d("좌상 지정: (${orig.x.toInt()},${orig.y.toInt()})")
+                                } else {
+                                    brFull = orig
+                                    firstTouchDone = false
+                                    AppLogger.d("우하 지정: (${orig.x.toInt()},${orig.y.toInt()})")
+                                }
                                 redraw()
                             }
                             true
@@ -2387,13 +2366,14 @@ class SolverService : Service() {
                         MotionEvent.ACTION_MOVE -> {
                             val orig = ivToOriginal(ivX, ivY)
                             if (orig != null) {
-                                if (draggingCorner == 1) tlFull = orig else brFull = orig
+                                // 드래그 중이면 마지막 선택한 것 이동
+                                if (!firstTouchDone) {
+                                    brFull = orig
+                                } else {
+                                    tlFull = orig
+                                }
                                 redraw()
                             }
-                            true
-                        }
-                        MotionEvent.ACTION_UP -> {
-                            draggingCorner = 0
                             true
                         }
                         else -> false
