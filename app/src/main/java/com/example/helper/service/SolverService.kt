@@ -1618,16 +1618,16 @@ class SolverService : Service() {
                 currentFingerprint = LevelGridMemory.computeFingerprint(bitmap)
                 currentFeature = GridFeature.extract(bitmap, ptTL, ptTR, ptBL, ptBR)
 
-                // 🔥 v44: 판 바뀜 자동 감지 (fingerprint 급변 시 auto 재개)
-                if (lastFingerprintForGameChange.isNotEmpty() && currentFingerprint.isNotEmpty()) {
+                // 🔥 v55: 자동 판바뀜 감지 - manual seed가 있으면 스킵
+                val hasManualSeed = GridSeedDB.loadAll(applicationContext).any { it.manual }
+                if (!hasManualSeed && lastFingerprintForGameChange.isNotEmpty() && currentFingerprint.isNotEmpty()) {
                     var diff = 0
                     val len = minOf(lastFingerprintForGameChange.length, currentFingerprint.length)
                     for (i in 0 until len) {
                         if (lastFingerprintForGameChange[i] != currentFingerprint[i]) diff++
                     }
-                    // 급변 (30% 이상) + 현재 수동 모드 → 자동 재개
                     if (diff > len * 0.3 && !isAutoDetectEnabled && !isCalibrationMode) {
-                        AppLogger.d("NEW_GAME_AUTO: 판 바뀜 감지 (diff=$diff/$len) → auto 재개")
+                        AppLogger.d("NEW_GAME_AUTO: 판 바뀜 (diff=$diff/$len) → auto 재개")
                         isAutoDetectEnabled = true
                         savePreferences()
                         mainHandler.post { refreshControlUI() }
