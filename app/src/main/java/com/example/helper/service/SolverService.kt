@@ -2651,27 +2651,18 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            // v58: workingBitmap → fullBmp 좌표로 재변환
-                            val wbW = workingBitmap.width.toFloat()
-                            val wbH = workingBitmap.height.toFloat()
-                            val fW = fullBmp.width.toFloat()
-                            val fH = fullBmp.height.toFloat()
-                            val scaleX = fW / wbW
-                            val scaleY = fH / wbH
-                            val realTLx = tlFull.x * scaleX
-                            val realTLy = tlFull.y * scaleY
-                            val realBRx = brFull.x * scaleX
-                            val realBRy = brFull.y * scaleY
-                            // v63: 좌표 검증 로그
-                            AppLogger.d("저장 전 확인: tlFull=(${tlFull.x.toInt()},${tlFull.y.toInt()}) brFull=(${brFull.x.toInt()},${brFull.y.toInt()})")
-                            AppLogger.d("저장 후 좌표: ptTL=(${realTLx.toInt()},${realTLy.toInt()}) ptBR=(${realBRx.toInt()},${realBRy.toInt()})")
+                            // v68: ivToOriginal에서 이미 full 좌표로 변환됨 → 그대로 사용
+                            val realTLx = tlFull.x
+                            val realTLy = tlFull.y
+                            val realBRx = brFull.x
+                            val realBRy = brFull.y
+                            AppLogger.d("저장 전 확인: tlFull=(${realTLx.toInt()},${realTLy.toInt()}) brFull=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
                             ptTR.set(realBRx, realTLy)
                             ptBL.set(realTLx, realBRy)
                             ptBR.set(realBRx, realBRy)
                             isAutoDetectEnabled = false
-                            // v63: 저장 후 ptTL 확인
-                            AppLogger.d("ptTL 확인: (${ptTL.x.toInt()},${ptTL.y.toInt()}) ptBR=(${ptBR.x.toInt()},${ptBR.y.toInt()})")
+                            AppLogger.d("ptTL 저장: (${ptTL.x.toInt()},${ptTL.y.toInt()}) ptBR=(${ptBR.x.toInt()},${ptBR.y.toInt()})")
 
                             val feat = currentFeature
                             if (feat != null && feat.size == com.example.helper.util.GridFeature.DIM) {
