@@ -2304,22 +2304,37 @@ class SolverService : Service() {
                 // 안전한 좌표 변환
                 fun ivToOriginal(ivX: Float, ivY: Float): android.graphics.PointF? {
                     return try {
-                        // v54: ImageView 실제 패딩 고려
+                        // v56: ImageView의 실제 drawable 영역 정확 계산
+                        val drawable = iv.drawable ?: return null
+                        val bmpW = drawable.intrinsicWidth.toFloat()
+                        val bmpH = drawable.intrinsicHeight.toFloat()
+                        if (bmpW <= 0f || bmpH <= 0f) return null
+
                         val padL = iv.paddingLeft.toFloat()
                         val padT = iv.paddingTop.toFloat()
-                        val ivW = (iv.width - iv.paddingLeft - iv.paddingRight).toFloat()
-                        val ivH = (iv.height - iv.paddingTop - iv.paddingBottom).toFloat()
-                        if (ivW <= 0f || ivH <= 0f) return null
-                        val bmpW = workingBitmap.width.toFloat()
-                        val bmpH = workingBitmap.height.toFloat()
-                        val scale = minOf(ivW / bmpW, ivH / bmpH)
-                        val offsetX = padL + (ivW - bmpW * scale) / 2f
-                        val offsetY = padT + (ivH - bmpH * scale) / 2f
+                        val padR = iv.paddingRight.toFloat()
+                        val padB = iv.paddingBottom.toFloat()
+                        val availW = iv.width - padL - padR
+                        val availH = iv.height - padT - padB
+                        if (availW <= 0f || availH <= 0f) return null
+
+                        // FIT_CENTER 스케일 계산
+                        val scale = minOf(availW / bmpW, availH / bmpH)
+                        val dispW = bmpW * scale
+                        val dispH = bmpH * scale
+                        val offsetX = padL + (availW - dispW) / 2f
+                        val offsetY = padT + (availH - dispH) / 2f
+
+                        // iv 좌표 → drawable 픽셀 좌표
                         val px = (ivX - offsetX) / scale
                         val py = (ivY - offsetY) / scale
                         if (px < 0f || py < 0f || px > bmpW || py > bmpH) return null
-                        val origScaleX = fullBmp.width.toFloat() / bmpW
-                        val origScaleY = fullBmp.height.toFloat() / bmpH
+
+                        // drawable 좌표 → 원본 fullBmp 좌표
+                        val fW = fullBmp.width.toFloat()
+                        val fH = fullBmp.height.toFloat()
+                        val origScaleX = fW / bmpW
+                        val origScaleY = fH / bmpH
                         android.graphics.PointF(px * origScaleX, py * origScaleY)
                     } catch (e: Exception) { null }
                 }
