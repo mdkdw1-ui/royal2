@@ -779,6 +779,8 @@ class SolverService : Service() {
                     // 🔥 v42: 보정 완료 시 무조건 수동 고정
                     isAutoDetectEnabled = false
                     isScanning = false
+                    // v51: 사용자 명시적 액션 → seed 저장
+                    saveSeedExplicitly()
                     savePreferences()
                     AppLogger.d("💾 보정 완료 → 수동 고정: ${rows}x${cols} (auto OFF)")
                     Toast.makeText(context, "💾 보정 완료 (수동 고정)", Toast.LENGTH_SHORT).show()
@@ -1951,8 +1953,8 @@ class SolverService : Service() {
         mediaProjection?.stop(); mediaProjection = null
     }
 
-    private fun savePreferences() {
-        // 🔥 v25: 수동 정정 → 오답 삭제 + 정답만 저장
+    // 🔥 v51: seed 학습은 별도 함수 (사용자 명시적 액션 시에만)
+    private fun saveSeedExplicitly() {
         val feat = currentFeature
         if (feat != null && feat.size == GridFeature.DIM) {
             val posArr = floatArrayOf(ptTL.x, ptTL.y, ptTR.x, ptTR.y, ptBL.x, ptBL.y, ptBR.x, ptBR.y)
@@ -1965,6 +1967,10 @@ class SolverService : Service() {
                 AppLogger.d("🎓 정답 학습: ${rows}x${cols} (총 ${GridSeedDB.size(applicationContext)}개)")
             }
         }
+    }
+
+    private fun savePreferences() {
+        // v51: seed 학습 제거, UI 상태만 저장
         val prefs = getSharedPreferences("OOXOO_Auto", Context.MODE_PRIVATE)
         prefs.edit().apply {
             putInt("rows", rows); putInt("cols", cols)
