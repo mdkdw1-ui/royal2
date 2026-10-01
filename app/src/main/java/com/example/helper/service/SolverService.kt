@@ -2180,11 +2180,10 @@ class SolverService : Service() {
                     val cap = captured
                     if (cap != null) {
                         fullBmp = cap
-                        val tw = 500
-                        val th2 = (500f * cap.height / cap.width).toInt()
-                        thumb = Bitmap.createScaledBitmap(cap, tw, th2, true)
-                        latestThumbnail = thumb
-                        latestFullBitmap = fullBmp
+                        // v57: 썸네일 대신 원본 그대로 (좌표 정확도)
+                        thumb = cap
+                        latestThumbnail = cap
+                        latestFullBitmap = cap
                     }
                 }
 
@@ -2228,8 +2227,11 @@ class SolverService : Service() {
                 // 미리보기
                 val iv = ImageView(ctx).apply {
                     adjustViewBounds = true
+                    // v57: 라벨 다이얼로그 이미지 크기 확대 (화면 높이 절반)
+                    val dm = resources.displayMetrics
+                    val halfH = (dm.heightPixels * 0.5f).toInt()
                     layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, 550
+                        LinearLayout.LayoutParams.MATCH_PARENT, halfH
                     )
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     setBackgroundColor(Color.parseColor("#111111"))
@@ -2304,38 +2306,30 @@ class SolverService : Service() {
                 // 안전한 좌표 변환
                 fun ivToOriginal(ivX: Float, ivY: Float): android.graphics.PointF? {
                     return try {
-                        // v56: ImageView의 실제 drawable 영역 정확 계산
-                        val drawable = iv.drawable ?: return null
-                        val bmpW = drawable.intrinsicWidth.toFloat()
-                        val bmpH = drawable.intrinsicHeight.toFloat()
+                        // v57: thumb = fullBmp와 동일 → 단순 스케일 계산
+                        val bmpW = workingBitmap.width.toFloat()
+                        val bmpH = workingBitmap.height.toFloat()
                         if (bmpW <= 0f || bmpH <= 0f) return null
 
                         val padL = iv.paddingLeft.toFloat()
                         val padT = iv.paddingTop.toFloat()
-                        val padR = iv.paddingRight.toFloat()
-                        val padB = iv.paddingBottom.toFloat()
-                        val availW = iv.width - padL - padR
-                        val availH = iv.height - padT - padB
+                        val availW = (iv.width - iv.paddingLeft - iv.paddingRight).toFloat()
+                        val availH = (iv.height - iv.paddingTop - iv.paddingBottom).toFloat()
                         if (availW <= 0f || availH <= 0f) return null
 
-                        // FIT_CENTER 스케일 계산
+                        // FIT_CENTER
                         val scale = minOf(availW / bmpW, availH / bmpH)
                         val dispW = bmpW * scale
                         val dispH = bmpH * scale
                         val offsetX = padL + (availW - dispW) / 2f
                         val offsetY = padT + (availH - dispH) / 2f
 
-                        // iv 좌표 → drawable 픽셀 좌표
                         val px = (ivX - offsetX) / scale
                         val py = (ivY - offsetY) / scale
                         if (px < 0f || py < 0f || px > bmpW || py > bmpH) return null
 
-                        // drawable 좌표 → 원본 fullBmp 좌표
-                        val fW = fullBmp.width.toFloat()
-                        val fH = fullBmp.height.toFloat()
-                        val origScaleX = fW / bmpW
-                        val origScaleY = fH / bmpH
-                        android.graphics.PointF(px * origScaleX, py * origScaleY)
+                        // workingBitmap == fullBmp이므로 변환 불필요
+                        android.graphics.PointF(px, py)
                     } catch (e: Exception) { null }
                 }
 
