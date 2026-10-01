@@ -625,7 +625,7 @@ class SolverService : Service() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = 30; y = 100
+                x = 5; y = 5
             }
 
             controlView = object : LinearLayout(context) {
@@ -2090,19 +2090,20 @@ class SolverService : Service() {
 
     // 🔥 v30: 라벨 다이얼로그 숨기기
     private fun hideLabelDialog() {
-        mainHandler.post {
+        // v47: 동기 실행
+        try {
             labelDialogView?.let {
                 try { windowManager.removeView(it) } catch (e: Exception) {}
-                labelDialogView = null
             }
-        }
+        } catch (e: Exception) {}
+        labelDialogView = null
     }
 
     // 🔥 v32: 정답 입력 다이얼로그 (완전 방어적)
     private fun showLabelingDialog() {
         mainHandler.post {
             try {
-                // 1. 이전 다이얼로그 정리 (leftover 방지)
+                // 이전 다이얼로그 정리 (leftover 방지)
                 hideLabelDialog()
 
                 val ctx = applicationContext
@@ -2135,6 +2136,9 @@ class SolverService : Service() {
                     orientation = LinearLayout.VERTICAL
                     setBackgroundColor(Color.parseColor("#FA1E1E1E"))
                     setPadding(20, 20, 20, 20)
+                    layoutParams = android.view.ViewGroup.LayoutParams(900, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+                    minimumWidth = 900
+                    minimumHeight = 800
                 }
 
                 TextView(ctx).apply {
@@ -2382,17 +2386,18 @@ class SolverService : Service() {
 
                 // WindowManager에 추가
                 val wmParams = WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                     else
                         WindowManager.LayoutParams.TYPE_PHONE,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                     PixelFormat.TRANSLUCENT
                 ).apply {
-                    gravity = Gravity.CENTER
+                    gravity = Gravity.TOP or Gravity.START
+                    x = 0
+                    y = 100
                 }
 
                 windowManager.addView(container, wmParams)
