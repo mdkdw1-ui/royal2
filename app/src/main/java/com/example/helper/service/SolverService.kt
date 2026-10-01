@@ -1418,12 +1418,14 @@ class SolverService : Service() {
             }
 
             val boardW = boardRight - boardLeft
-            AppLogger.d("보드(proj): ${boardW}x${boardH} @ (${boardLeft},${boardTop})")
+            AppLogger.d("보드(proj): ${boardW}x${boardH} @ (${boardLeft},${boardTop}) [확장+${(boardW*0.03).toInt()}px]")
 
-            ptTL.set(boardLeft.toFloat(), boardTop.toFloat())
-            ptTR.set(boardRight.toFloat(), boardTop.toFloat())
-            ptBL.set(boardLeft.toFloat(), boardBottom.toFloat())
-            ptBR.set(boardRight.toFloat(), boardBottom.toFloat())
+            // 🔥 v45: 격자 좌우로 살짝 확장 (안쪽 잡힘 해결)
+            val expandW = (boardW * 0.03f).toInt()  // 좌우 3%씩
+            ptTL.set((boardLeft - expandW).toFloat().coerceAtLeast(0f), boardTop.toFloat())
+            ptTR.set((boardRight + expandW).toFloat(), boardTop.toFloat())
+            ptBL.set((boardLeft - expandW).toFloat().coerceAtLeast(0f), boardBottom.toFloat())
+            ptBR.set((boardRight + expandW).toFloat(), boardBottom.toFloat())
 
             // 🔥🔥 v12: Royal Match 타일 특성 반영 (세로가 ~10% 김)
             // rowsRaw가 10.0~12.5면 11로 스냅 (Royal Match 11행 압도적)
