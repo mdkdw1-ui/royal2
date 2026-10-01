@@ -2243,7 +2243,8 @@ class SolverService : Service() {
                 // 좌표 상태
                 var tlFull = android.graphics.PointF(ptTL.x, ptTL.y)
                 var brFull = android.graphics.PointF(ptBR.x, ptBR.y)
-                var firstTouchDone = false
+                // v64: 탭 카운트로 순서 확정
+                var tapCount = 0
 
                 // redraw 전용 참조
                 var etRowsRef: android.widget.EditText? = null
@@ -2266,6 +2267,7 @@ class SolverService : Service() {
                         val brx = brFull.x * sx
                         val bry = brFull.y * sy
 
+                        // v65: 좌상=빨강, 우하=초록 사각형
                         val rectPaint = Paint().apply {
                             color = Color.parseColor("#00FF88")
                             style = Paint.Style.STROKE
@@ -2291,12 +2293,46 @@ class SolverService : Service() {
                             }
                         }
 
-                        val dotPaint = Paint().apply {
+                        // v65: 좌상=빨강 큰 점, 우하=초록 큰 점
+                        val tlPaint = Paint().apply {
                             color = Color.RED
                             style = Paint.Style.FILL
                         }
-                        canvas.drawCircle(tlx, tly, 8f, dotPaint)
-                        canvas.drawCircle(brx, bry, 8f, dotPaint)
+                        val tlStroke = Paint().apply {
+                            color = Color.WHITE
+                            style = Paint.Style.STROKE
+                            strokeWidth = 3f
+                        }
+                        canvas.drawCircle(tlx, tly, 22f, tlPaint)
+                        canvas.drawCircle(tlx, tly, 22f, tlStroke)
+                        // "좌" 라벨
+                        val tlText = Paint().apply {
+                            color = Color.WHITE
+                            textSize = 24f
+                            textAlign = Paint.Align.CENTER
+                            isFakeBoldText = true
+                        }
+                        canvas.drawText("좌", tlx, tly + 8f, tlText)
+
+                        val brPaint = Paint().apply {
+                            color = Color.GREEN
+                            style = Paint.Style.FILL
+                        }
+                        val brStroke = Paint().apply {
+                            color = Color.WHITE
+                            style = Paint.Style.STROKE
+                            strokeWidth = 3f
+                        }
+                        canvas.drawCircle(brx, bry, 22f, brPaint)
+                        canvas.drawCircle(brx, bry, 22f, brStroke)
+                        // "우" 라벨
+                        val brText = Paint().apply {
+                            color = Color.WHITE
+                            textSize = 24f
+                            textAlign = Paint.Align.CENTER
+                            isFakeBoldText = true
+                        }
+                        canvas.drawText("우", brx, bry + 8f, brText)
 
                         iv.setImageBitmap(mutable)
                     } catch (e: Exception) {
@@ -2347,30 +2383,33 @@ class SolverService : Service() {
 
                     when (ev.action) {
                         MotionEvent.ACTION_DOWN -> {
-                            // v62: 첫 탭 = 좌상, 두 번째 탭 = 우하 (근접 감지 X)
                             val orig = ivToOriginal(ivX, ivY)
                             if (orig != null) {
-                                if (!firstTouchDone) {
+                                // v64: tapCount 0 or 2 → 좌상 / 1 → 우하
+                                if (tapCount % 2 == 0) {
                                     tlFull = orig
-                                    firstTouchDone = true
                                     AppLogger.d("좌상 지정: (${orig.x.toInt()},${orig.y.toInt()})")
                                 } else {
                                     brFull = orig
-                                    firstTouchDone = false
                                     AppLogger.d("우하 지정: (${orig.x.toInt()},${orig.y.toInt()})")
                                 }
+                                tapCount++
                                 redraw()
+                                // v65: 좌표 텍스트 갱신
+                                mainHandler.post {
+                                    coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                                }
                             }
                             true
                         }
                         MotionEvent.ACTION_MOVE -> {
+                            // 드래그는 손 안 뗀 상태 → 이전 탭한 곳 조정
                             val orig = ivToOriginal(ivX, ivY)
                             if (orig != null) {
-                                // 드래그 중이면 마지막 선택한 것 이동
-                                if (!firstTouchDone) {
-                                    brFull = orig
-                                } else {
+                                if (tapCount % 2 == 1) {
                                     tlFull = orig
+                                } else {
+                                    brFull = orig
                                 }
                                 redraw()
                             }
@@ -2428,6 +2467,17 @@ class SolverService : Service() {
                 }
                 etRows.addTextChangedListener(watcher)
                 etCols.addTextChangedListener(watcher)
+
+                // v65: 좌상/우하 좌표 표시
+                val coordText = TextView(ctx).apply {
+                    text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
+                    setTextColor(Color.WHITE)
+                    textSize = 12f
+                    setPadding(0, 8, 0, 8)
+                    gravity = Gravity.CENTER
+                    setBackgroundColor(Color.parseColor("#222222"))
+                }
+                container.addView(coordText)
 
                 // 분포
                 val dist = com.example.helper.util.GridSeedDB.getClassDistribution(ctx)
