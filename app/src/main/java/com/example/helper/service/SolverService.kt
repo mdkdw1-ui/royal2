@@ -1719,6 +1719,14 @@ class SolverService : Service() {
     private fun findOOXOO(bitmap: Bitmap): List<Pair<Int, Int>> {
         val width = bitmap.width; val height = bitmap.height
         val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        // v54: rows/cols 유효성 검사
+        val safeRows = rows.coerceIn(3, 20)
+        val safeCols = cols.coerceIn(3, 20)
+        if (safeRows != rows || safeCols != cols) {
+            AppLogger.d("findOOXOO: rows/cols 조정 ${rows}x${cols} → ${safeRows}x${safeCols}")
+            rows = safeRows
+            cols = safeCols
+        }
         val colorGrid = Array(rows) { IntArray(cols) }
 
         for (r in 0 until rows) for (c in 0 until cols) {
@@ -2296,14 +2304,17 @@ class SolverService : Service() {
                 // 안전한 좌표 변환
                 fun ivToOriginal(ivX: Float, ivY: Float): android.graphics.PointF? {
                     return try {
-                        val ivW = iv.width.toFloat()
-                        val ivH = iv.height.toFloat()
+                        // v54: ImageView 실제 패딩 고려
+                        val padL = iv.paddingLeft.toFloat()
+                        val padT = iv.paddingTop.toFloat()
+                        val ivW = (iv.width - iv.paddingLeft - iv.paddingRight).toFloat()
+                        val ivH = (iv.height - iv.paddingTop - iv.paddingBottom).toFloat()
                         if (ivW <= 0f || ivH <= 0f) return null
                         val bmpW = workingBitmap.width.toFloat()
                         val bmpH = workingBitmap.height.toFloat()
                         val scale = minOf(ivW / bmpW, ivH / bmpH)
-                        val offsetX = (ivW - bmpW * scale) / 2f
-                        val offsetY = (ivH - bmpH * scale) / 2f
+                        val offsetX = padL + (ivW - bmpW * scale) / 2f
+                        val offsetY = padT + (ivH - bmpH * scale) / 2f
                         val px = (ivX - offsetX) / scale
                         val py = (ivY - offsetY) / scale
                         if (px < 0f || py < 0f || px > bmpW || py > bmpH) return null
@@ -2470,6 +2481,8 @@ class SolverService : Service() {
                             // v52: 저장 시 자동 OFF (k-NN이 덮어쓰지 않도록)
                             isAutoDetectEnabled = false
                             isCalibrationMode = false
+                            // v54: 진행 중 스캔 강제 종료 (인덱스 크래시 방지)
+                            isScanning = false
                             savePreferences()
                             refreshControlUI()
                             overlayView?.invalidate()
