@@ -632,6 +632,9 @@ class SolverService : Service() {
                 private var initialX = 0; private var initialY = 0
                 private var initialTouchX = 0f; private var initialTouchY = 0f
                 private val touchSlop = 15f
+                override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+                    super.onLayout(changed, l, t, r, b)
+                }
 
                 override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
                     when (ev.action) {
@@ -661,7 +664,7 @@ class SolverService : Service() {
             }.apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#DD111111"))
-                setPadding(1, 0, 1, 0)
+                setPadding(0, 0, 0, 0)
             }
 
             refreshControlUI()
@@ -839,6 +842,10 @@ class SolverService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dpToPx(18)  // v48: 높이 축소
+            )
         }
         TextView(context).apply {
             text = if (isCompactMode) "" else "🎯 OOXOO 자동 감지기"
@@ -851,8 +858,8 @@ class SolverService : Service() {
 
         Button(context).apply {
             text = if (isCompactMode) "▼" else "▲"
-            textSize = 8f
-            setPadding(3, 1, 3, 1)
+            textSize = 7f
+            setPadding(2, 0, 2, 0)
             setBackgroundColor(Color.parseColor("#444444"))
             setTextColor(Color.WHITE)
             setOnClickListener {
@@ -879,13 +886,17 @@ class SolverService : Service() {
             // 🔥 v40: 초콤팩트 - 2행 (크기조정 + 액션)
             // Row 1: [◀] [행] [▶] [◀] [열] [▶]
             // Row 2: [📸] [✅] [⚙️] [❌]
-            view.setPadding(1, 0, 1, 0)
+            view.setPadding(0, 0, 0, 0)
 
             // Row 1: 크기 조정 (한 줄)
             val sizeRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    dpToPx(24)  // v48: 높이 축소
+                )
             }
 
             fun tinyBtn(label: String, action: () -> Unit): Button {
@@ -923,6 +934,10 @@ class SolverService : Service() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    dpToPx(24)  // v48: 높이 축소
+                )
             }
 
             fun actionBtn(label: String, color: Int, action: () -> Unit): Button {
@@ -2107,13 +2122,50 @@ class SolverService : Service() {
                 hideLabelDialog()
 
                 val ctx = applicationContext
-                val thumb = latestThumbnail
-                val fullBmp = latestFullBitmap
+                var thumb = latestThumbnail
+                var fullBmp = latestFullBitmap
 
-                // 2. Null 체크
+                // v48: null이면 즉시 캡처
                 if (thumb == null || fullBmp == null || thumb.isRecycled || fullBmp.isRecycled) {
-                    Toast.makeText(ctx, "⚠️ 캡처 준비 중. 3초 후 다시 시도", Toast.LENGTH_LONG).show()
-                    AppLogger.d("⚠️ 라벨: 캡처 null (thumb=$thumb, full=$fullBmp)")
+                    AppLogger.d("라벨: 즉시 캡처 시도")
+                    val reader = imageReader
+                    if (reader != null) {
+                        var image = reader.acquireLatestImage()
+                        if (image == null) {
+                            try { Thread.sleep(100) } catch (e: Exception) {}
+                            image = reader.acquireNextImage()
+                        }
+                        if (image != null) {
+                            try {
+                                val metrics = resources.displayMetrics
+                                val planes = image.planes
+                                val buffer = planes[0].buffer
+                                val pixelStride = planes[0].pixelStride
+                                val rowStride = planes[0].rowStride
+                                val w = metrics.widthPixels
+                                val h = metrics.heightPixels
+                                val rowPadding = rowStride - pixelStride * w
+                                val bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                                bmp.copyPixelsFromBuffer(buffer)
+                                val tw = 500
+                                val th2 = (500f * bmp.height / bmp.width).toInt()
+                                thumb = Bitmap.createScaledBitmap(bmp, tw, th2, true)
+                                fullBmp = bmp
+                                latestThumbnail = thumb
+                                latestFullBitmap = fullBmp
+                                AppLogger.d("라벨: 캡처 성공 (${bmp.width}x${bmp.height})")
+                            } catch (e: Exception) {
+                                AppLogger.e("라벨 캡처 오류", e)
+                            } finally {
+                                try { image.close() } catch (e: Exception) {}
+                            }
+                        }
+                    }
+                }
+
+                if (thumb == null || fullBmp == null || thumb.isRecycled || fullBmp.isRecycled) {
+                    Toast.makeText(ctx, "⚠️ 캡처 실패. 다시 시도", Toast.LENGTH_SHORT).show()
+                    AppLogger.d("라벨: 캡처 최종 실패")
                     return@post
                 }
 
