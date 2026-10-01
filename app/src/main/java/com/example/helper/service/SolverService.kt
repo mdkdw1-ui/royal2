@@ -2473,6 +2473,9 @@ class SolverService : Service() {
                                 )
                                 AppLogger.d("🎓 라벨: ${rows}x${cols} | TL=(${ptTL.x.toInt()},${ptTL.y.toInt()}) BR=(${ptBR.x.toInt()},${ptBR.y.toInt()}) | 삭제=${removedCount}")
                             }
+                            // v52: 저장 시 자동 OFF (k-NN이 덮어쓰지 않도록)
+                            isAutoDetectEnabled = false
+                            isCalibrationMode = false
                             savePreferences()
                             refreshControlUI()
                             overlayView?.invalidate()
