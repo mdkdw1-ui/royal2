@@ -2306,31 +2306,34 @@ class SolverService : Service() {
                 // 안전한 좌표 변환
                 fun ivToOriginal(ivX: Float, ivY: Float): android.graphics.PointF? {
                     return try {
-                        // v57: thumb = fullBmp와 동일 → 단순 스케일 계산
-                        val bmpW = workingBitmap.width.toFloat()
-                        val bmpH = workingBitmap.height.toFloat()
-                        if (bmpW <= 0f || bmpH <= 0f) return null
+                        val drawable = iv.drawable
+                        if (drawable == null) {
+                            AppLogger.d("ivToOrig: drawable null")
+                            return null
+                        }
+                        val dW = drawable.intrinsicWidth.toFloat()
+                        val dH = drawable.intrinsicHeight.toFloat()
+                        val vW = iv.width.toFloat()
+                        val vH = iv.height.toFloat()
+                        if (dW <= 0f || dH <= 0f || vW <= 0f || vH <= 0f) return null
 
-                        val padL = iv.paddingLeft.toFloat()
-                        val padT = iv.paddingTop.toFloat()
-                        val availW = (iv.width - iv.paddingLeft - iv.paddingRight).toFloat()
-                        val availH = (iv.height - iv.paddingTop - iv.paddingBottom).toFloat()
-                        if (availW <= 0f || availH <= 0f) return null
-
-                        // FIT_CENTER
-                        val scale = minOf(availW / bmpW, availH / bmpH)
-                        val dispW = bmpW * scale
-                        val dispH = bmpH * scale
-                        val offsetX = padL + (availW - dispW) / 2f
-                        val offsetY = padT + (availH - dispH) / 2f
+                        val scale = minOf(vW / dW, vH / dH)
+                        val dispW = dW * scale
+                        val dispH = dH * scale
+                        val offsetX = (vW - dispW) / 2f
+                        val offsetY = (vH - dispH) / 2f
 
                         val px = (ivX - offsetX) / scale
                         val py = (ivY - offsetY) / scale
-                        if (px < 0f || py < 0f || px > bmpW || py > bmpH) return null
+                        if (px < 0f || py < 0f || px > dW || py > dH) return null
 
-                        // workingBitmap == fullBmp이므로 변환 불필요
+                        // fullBmp = drawable 원본이므로 그대로
+                        AppLogger.d("ivToOrig: iv=(${ivX.toInt()},${ivY.toInt()}) v=${vW.toInt()}x${vH.toInt()} d=${dW.toInt()}x${dH.toInt()} scale=${"%.3f".format(scale)} offset=(${offsetX.toInt()},${offsetY.toInt()}) → (${px.toInt()},${py.toInt()})")
                         android.graphics.PointF(px, py)
-                    } catch (e: Exception) { null }
+                    } catch (e: Exception) {
+                        AppLogger.e("ivToOrig err", e)
+                        null
+                    }
                 }
 
                 // v49: 드래그 + 근접 감지
