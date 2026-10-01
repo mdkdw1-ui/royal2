@@ -1118,17 +1118,11 @@ class SolverService : Service() {
             setBackgroundColor(Color.parseColor("#B71C1C"))
             setTextColor(Color.WHITE)
             setOnClickListener {
-                android.app.AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
-                    .setTitle("시드 초기화")
-                    .setMessage("모든 학습 데이터(🧠 ${com.example.helper.util.GridSeedDB.size(context)}개)를 삭제하시겠습니까?")
-                    .setPositiveButton("삭제") { _, _ ->
-                        com.example.helper.util.GridSeedDB.clear(context)
-                        AppLogger.d("🗑️ 시드 초기화 완료")
-                        Toast.makeText(context, "🗑️ 초기화 완료", Toast.LENGTH_SHORT).show()
-                        refreshControlUI()
-                    }
-                    .setNegativeButton("취소", null)
-                    .show()
+                // v53: AlertDialog 제거 → 즉시 삭제 (Service context 크래시 회피)
+                com.example.helper.util.GridSeedDB.clear(context)
+                AppLogger.d("🗑️ 시드 초기화 완료")
+                Toast.makeText(context, "🗑️ 시드 초기화 완료", Toast.LENGTH_SHORT).show()
+                refreshControlUI()
             }
         }.also { view.addView(it) }
 
