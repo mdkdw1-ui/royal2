@@ -2370,10 +2370,10 @@ class SolverService : Service() {
                             } else if (dBR < hitRadius) {
                                 draggingCorner = 2
                             } else {
-                                // 가까운 쪽으로
                                 draggingCorner = if (dTL < dBR) 1 else 2
                             }
                             val orig = ivToOriginal(ivX, ivY)
+                            AppLogger.d("탭 감지: iv=(${ivX.toInt()},${ivY.toInt()}) ivW=${iv.width} ivH=${iv.height} bmpW=${workingBitmap.width} bmpH=${workingBitmap.height} → orig=(${orig?.x?.toInt()},${orig?.y?.toInt()}) corner=$draggingCorner")
                             if (orig != null) {
                                 if (draggingCorner == 1) tlFull = orig else brFull = orig
                                 redraw()
