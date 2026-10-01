@@ -1669,15 +1669,17 @@ class SolverService : Service() {
                         cols = prediction.cols
                         finalSource = "k-NN"
 
-                        // 🔥 v31: 위치도 복원 (UI는 main 스레드에서)
-                        val pos = prediction.position
-                        if (pos != null && pos.size == 8) {
-                            ptTL.set(pos[0], pos[1])
-                            ptTR.set(pos[2], pos[3])
-                            ptBL.set(pos[4], pos[5])
-                            ptBR.set(pos[6], pos[7])
-                            mainHandler.post {
-                                try { overlayView?.invalidate() } catch (e: Exception) {}
+                        // 🔥 v69: 수동 모드(auto OFF)면 위치 복원 스킵 (사용자 저장 위치 유지)
+                        if (isAutoDetectEnabled) {
+                            val pos = prediction.position
+                            if (pos != null && pos.size == 8) {
+                                ptTL.set(pos[0], pos[1])
+                                ptTR.set(pos[2], pos[3])
+                                ptBL.set(pos[4], pos[5])
+                                ptBR.set(pos[6], pos[7])
+                                mainHandler.post {
+                                    try { overlayView?.invalidate() } catch (e: Exception) {}
+                                }
                             }
                         }
                         // 🔥 v35: 로그 필터 (값 바뀔 때만)
