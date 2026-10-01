@@ -2468,12 +2468,16 @@ class SolverService : Service() {
                             val realTLy = tlFull.y * scaleY
                             val realBRx = brFull.x * scaleX
                             val realBRy = brFull.y * scaleY
-                            AppLogger.d("라벨 좌표 변환: wb=${wbW.toInt()}x${wbH.toInt()} → full=${fW.toInt()}x${fH.toInt()} | scale=$scaleX")
+                            // v63: 좌표 검증 로그
+                            AppLogger.d("저장 전 확인: tlFull=(${tlFull.x.toInt()},${tlFull.y.toInt()}) brFull=(${brFull.x.toInt()},${brFull.y.toInt()})")
+                            AppLogger.d("저장 후 좌표: ptTL=(${realTLx.toInt()},${realTLy.toInt()}) ptBR=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
                             ptTR.set(realBRx, realTLy)
                             ptBL.set(realTLx, realBRy)
                             ptBR.set(realBRx, realBRy)
                             isAutoDetectEnabled = false
+                            // v63: 저장 후 ptTL 확인
+                            AppLogger.d("ptTL 확인: (${ptTL.x.toInt()},${ptTL.y.toInt()}) ptBR=(${ptBR.x.toInt()},${ptBR.y.toInt()})")
 
                             val feat = currentFeature
                             if (feat != null && feat.size == com.example.helper.util.GridFeature.DIM) {
