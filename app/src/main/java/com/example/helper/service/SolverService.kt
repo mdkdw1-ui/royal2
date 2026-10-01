@@ -2296,21 +2296,67 @@ class SolverService : Service() {
                     } catch (e: Exception) { null }
                 }
 
+                // v49: 드래그 + 근접 감지
+                var draggingCorner = 0  // 0=없음, 1=TL, 2=BR
+                val hitRadius = 120f  // 확대 반경
+
                 iv.setOnTouchListener { _, ev ->
-                    if (ev.action == MotionEvent.ACTION_DOWN) {
-                        val orig = ivToOriginal(ev.x, ev.y)
-                        if (orig != null) {
-                            if (!firstTouchDone) {
-                                tlFull = orig
-                                firstTouchDone = true
+                    val ivX = ev.x
+                    val ivY = ev.y
+                    // iv 좌표 → 썸네일 좌표로 변환 (모서리 근접 감지용)
+                    val t = thumb ?: return@setOnTouchListener true
+                    val ivW = iv.width.toFloat()
+                    val ivH = iv.height.toFloat()
+                    if (ivW <= 0f || ivH <= 0f) return@setOnTouchListener true
+                    val bmpW = t.width.toFloat()
+                    val bmpH = t.height.toFloat()
+                    val scale = minOf(ivW / bmpW, ivH / bmpH)
+                    val offsetX = (ivW - bmpW * scale) / 2f
+                    val offsetY = (ivH - bmpH * scale) / 2f
+
+                    // 현재 TL/BR의 iv 좌표
+                    val f = fullBmp ?: return@setOnTouchListener true
+                    val sx = bmpW / f.width.toFloat()
+                    val sy = bmpH / f.height.toFloat()
+                    val tlIvX = offsetX + tlFull.x * sx * scale
+                    val tlIvY = offsetY + tlFull.y * sy * scale
+                    val brIvX = offsetX + brFull.x * sx * scale
+                    val brIvY = offsetY + brFull.y * sy * scale
+
+                    val dTL = Math.hypot((ivX - tlIvX).toDouble(), (ivY - tlIvY).toDouble()).toFloat()
+                    val dBR = Math.hypot((ivX - brIvX).toDouble(), (ivY - brIvY).toDouble()).toFloat()
+
+                    when (ev.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            if (dTL < hitRadius) {
+                                draggingCorner = 1
+                            } else if (dBR < hitRadius) {
+                                draggingCorner = 2
                             } else {
-                                brFull = orig
-                                firstTouchDone = false
+                                // 가까운 쪽으로
+                                draggingCorner = if (dTL < dBR) 1 else 2
                             }
-                            redraw()
+                            val orig = ivToOriginal(ivX, ivY)
+                            if (orig != null) {
+                                if (draggingCorner == 1) tlFull = orig else brFull = orig
+                                redraw()
+                            }
+                            true
                         }
+                        MotionEvent.ACTION_MOVE -> {
+                            val orig = ivToOriginal(ivX, ivY)
+                            if (orig != null) {
+                                if (draggingCorner == 1) tlFull = orig else brFull = orig
+                                redraw()
+                            }
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            draggingCorner = 0
+                            true
+                        }
+                        else -> false
                     }
-                    true
                 }
 
                 // 값 입력
