@@ -2651,15 +2651,18 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            // v74: 좌우 2.5% + 상하 4% 확장 (실제 게임판 경계 포함)
+                            // v75: 좌우 4.2% 확장 + 상단 1% 확장, 하단 5.3% 확장
                             val w0 = brFull.x - tlFull.x
                             val h0 = brFull.y - tlFull.y
-                            val expandW = w0 * 0.025f   // 좌우 2.5%
-                            val expandH = h0 * 0.04f    // 상하 4%
-                            val realTLx = (tlFull.x - expandW).coerceAtLeast(0f)
-                            val realTLy = (tlFull.y - expandH).coerceAtLeast(0f)
-                            val realBRx = (brFull.x + expandW).coerceAtMost(fullBmp.width.toFloat())
-                            val realBRy = (brFull.y + expandH).coerceAtMost(fullBmp.height.toFloat())
+                            val expandLeft = w0 * 0.042f     // 좌측 확장 (25px/950)
+                            val expandRight = w0 * 0.042f    // 우측 확장 (11px 추가됨)
+                            val expandTop = h0 * 0.01f       // 상단 살짝만 (49px 축소)
+                            val expandBottom = h0 * 0.053f   // 하단 확장 유지
+                            val realTLx = (tlFull.x - expandLeft).coerceAtLeast(0f)
+                            val realTLy = (tlFull.y - expandTop).coerceAtLeast(0f)
+                            val realBRx = (brFull.x + expandRight).coerceAtMost(fullBmp.width.toFloat())
+                            val realBRy = (brFull.y + expandBottom).coerceAtMost(fullBmp.height.toFloat())
+                            AppLogger.d("v75 확장: L=${expandLeft.toInt()} R=${expandRight.toInt()} T=${expandTop.toInt()} B=${expandBottom.toInt()}")
                             AppLogger.d("저장 전 확인: tlFull=(${realTLx.toInt()},${realTLy.toInt()}) brFull=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
                             ptTR.set(realBRx, realTLy)
