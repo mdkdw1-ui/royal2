@@ -2144,6 +2144,18 @@ class SolverService : Service() {
     private fun showLabelingDialog() {
         mainHandler.post {
             try {
+                // v85: 유사 판 학습된 오프셋 있으면 ptTL/ptBR 미리 조정
+                val curFeat = currentFeature
+                if (curFeat != null && curFeat.size == GridFeature.DIM) {
+                    val learnedOffset = GridCalibrationDB.findOffset(applicationContext, curFeat)
+                    if (learnedOffset[0] != 0f || learnedOffset[1] != 0f || learnedOffset[2] != 0f || learnedOffset[3] != 0f) {
+                        ptTL.set(ptTL.x + learnedOffset[0], ptTL.y + learnedOffset[1])
+                        ptTR.set(ptTR.x + learnedOffset[2], ptTR.y + learnedOffset[1])
+                        ptBL.set(ptBL.x + learnedOffset[0], ptBL.y + learnedOffset[3])
+                        ptBR.set(ptBR.x + learnedOffset[2], ptBR.y + learnedOffset[3])
+                        AppLogger.d("📚 라벨 열 때 학습 오프셋 미리 적용")
+                    }
+                }
                 // 이전 다이얼로그 정리 (leftover 방지)
                 hideLabelDialog()
 
@@ -2674,22 +2686,23 @@ class SolverService : Service() {
                             lastLabelInTLy = tlFull.y
                             lastLabelInBRx = brFull.x
                             lastLabelInBRy = brFull.y
-                            // v81: v80 확장 완전 제거, 오프셋만 적용
-                            val offset = GridCalibrationDB.getAverageOffset(applicationContext)
-                            // 오프셋이 0이면(초기) 기본 확장 1% 적용
-                            val useDefault = (offset[0] == 0f && offset[1] == 0f && offset[2] == 0f && offset[3] == 0f)
-                            val w0 = brFull.x - tlFull.x
-                            val h0 = brFull.y - tlFull.y
-                            val baseExpandW = if (useDefault) w0 * 0.04f else 0f
-                            val baseExpandH = if (useDefault) h0 * 0.03f else 0f
-                            val realTLx = (tlFull.x - baseExpandW + offset[0]).coerceAtLeast(0f)
-                            val realTLy = (tlFull.y - baseExpandH + offset[1]).coerceAtLeast(0f)
-                            val realBRx = (brFull.x + baseExpandW + offset[2]).coerceAtMost(fullBmp.width.toFloat())
-                            val realBRy = (brFull.y + baseExpandH + offset[3]).coerceAtMost(fullBmp.height.toFloat())
-                            if (!useDefault) {
-                                AppLogger.d("📚 오프셋 적용 (기본확장 제거): ΔTL=(${offset[0].toInt()},${offset[1].toInt()}) ΔBR=(${offset[2].toInt()},${offset[3].toInt()})")
-                            } else {
-                                AppLogger.d("기본 확장 (학습 전): L=${baseExpandW.toInt()} R=${baseExpandW.toInt()} T=${baseExpandH.toInt()} B=${baseExpandH.toInt()}")
+                            // v85: 사용자 탭 그대로 + 학습된 오프셋 함께 저장
+                            val realTLx = tlFull.x.coerceAtLeast(0f)
+                            val realTLy = tlFull.y.coerceAtLeast(0f)
+                            val realBRx = brFull.x.coerceAtMost(fullBmp.width.toFloat())
+                            val realBRy = brFull.y.coerceAtMost(fullBmp.height.toFloat())
+                            AppLogger.d("v85 저장: 사용자 탭 그대로 → tl=(${realTLx.toInt()},${realTLy.toInt()}) br=(${realBRx.toInt()},${realBRy.toInt()})")
+                            // v85: fingerprint+오프셋 학습 (자동검출 vs 사용자탭 차이)
+                            val learnFeat = GridFeature.extract(fullBmp, ptTL, ptTR, ptBL, ptBR)
+                            if (learnFeat != null && learnFeat.size == GridFeature.DIM) {
+                                // 자동 검출 결과 대신, 저장 시점의 ptTL/ptBR과 사용자 탭 차이 기록
+                                GridCalibrationDB.addWithFeature(
+                                    ctx, learnFeat,
+                                    autoTLx = tlFull.x, autoTLy = tlFull.y,
+                                    autoBRx = brFull.x, autoBRy = brFull.y,
+                                    manualTLx = realTLx, manualTLy = realTLy,
+                                    manualBRx = realBRx, manualBRy = realBRy
+                                )
                             }
                             AppLogger.d("저장 전 확인: tlFull=(${realTLx.toInt()},${realTLy.toInt()}) brFull=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
