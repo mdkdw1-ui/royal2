@@ -2246,9 +2246,9 @@ class SolverService : Service() {
                     // v61: adjustViewBounds로 이미지 비율 유지
                     adjustViewBounds = true
                     val dm = resources.displayMetrics
-                    val halfH = (dm.heightPixels * 0.5f).toInt()
+                    val biggerH = (dm.heightPixels * 0.75f).toInt()
                     layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT, halfH
+                        LinearLayout.LayoutParams.WRAP_CONTENT, biggerH
                     )
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     setBackgroundColor(Color.parseColor("#111111"))
@@ -2666,12 +2666,16 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            // v85: 사용자 탭 그대로 + 학습된 오프셋 함께 저장
-                            val realTLx = tlFull.x.coerceAtLeast(0f)
-                            val realTLy = tlFull.y.coerceAtLeast(0f)
-                            val realBRx = brFull.x.coerceAtMost(fullBmp.width.toFloat())
-                            val realBRy = brFull.y.coerceAtMost(fullBmp.height.toFloat())
-                            AppLogger.d("v85 저장: 사용자 탭 그대로 → tl=(${realTLx.toInt()},${realTLy.toInt()}) br=(${realBRx.toInt()},${realBRy.toInt()})")
+                            // v89: 사용자 탭 + 자동 확장 (게임판 경계 여유)
+                            val w0 = brFull.x - tlFull.x
+                            val h0 = brFull.y - tlFull.y
+                            val expandW = w0 * 0.025f  // 좌우 2.5%
+                            val expandH = h0 * 0.02f   // 상하 2%
+                            val realTLx = (tlFull.x - expandW).coerceAtLeast(0f)
+                            val realTLy = (tlFull.y - expandH).coerceAtLeast(0f)
+                            val realBRx = (brFull.x + expandW).coerceAtMost(fullBmp.width.toFloat())
+                            val realBRy = (brFull.y + expandH).coerceAtMost(fullBmp.height.toFloat())
+                            AppLogger.d("v89 저장: 탭(${tlFull.x.toInt()},${tlFull.y.toInt()})~(${brFull.x.toInt()},${brFull.y.toInt()}) + 확장(L=${expandW.toInt()} R=${expandW.toInt()} T=${expandH.toInt()} B=${expandH.toInt()}) → (${realTLx.toInt()},${realTLy.toInt()})~(${realBRx.toInt()},${realBRy.toInt()})")
                             // v85: fingerprint+오프셋 학습 (자동검출 vs 사용자탭 차이)
                             val learnFeat = GridFeature.extract(fullBmp, ptTL, ptTR, ptBL, ptBR)
                             if (learnFeat != null && learnFeat.size == GridFeature.DIM) {
