@@ -2246,9 +2246,10 @@ class SolverService : Service() {
                     // v61: adjustViewBounds로 이미지 비율 유지
                     adjustViewBounds = true
                     val dm = resources.displayMetrics
-                    val biggerH = (dm.heightPixels * 0.75f).toInt()
+                    // v90: 이미지 크기 45% (버튼까지 화면에 들어오게)
+                    val imageH = (dm.heightPixels * 0.45f).toInt()
                     layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT, biggerH
+                        LinearLayout.LayoutParams.WRAP_CONTENT, imageH
                     )
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     setBackgroundColor(Color.parseColor("#111111"))
@@ -2741,9 +2742,23 @@ class SolverService : Service() {
                 container.addView(btnRow)
 
                 // WindowManager에 추가
+                // v90: 다이얼로그 height를 화면 90%로 제한 (버튼 항상 보이게)
+                val dm = resources.displayMetrics
+                val maxH = (dm.heightPixels * 0.9f).toInt()
+
+                // ScrollView로 감싸기
+                val scrollWrapper = ScrollView(ctx).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        maxH
+                    )
+                    isFillViewport = true
+                    addView(container)
+                }
+
                 val wmParams = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    maxH,
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                     else
@@ -2756,8 +2771,8 @@ class SolverService : Service() {
                     y = 100
                 }
 
-                windowManager.addView(container, wmParams)
-                labelDialogView = container
+                windowManager.addView(scrollWrapper, wmParams)
+                labelDialogView = scrollWrapper
                 AppLogger.d("📸 라벨 다이얼로그 열림")
 
                 mainHandler.postDelayed({ redraw() }, 200)
