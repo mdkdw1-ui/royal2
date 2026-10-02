@@ -2674,13 +2674,13 @@ class SolverService : Service() {
                             lastLabelInTLy = tlFull.y
                             lastLabelInBRx = brFull.x
                             lastLabelInBRy = brFull.y
-                            // v75: 좌우 4.2% 확장 + 상단 1% 확장, 하단 5.3% 확장
+                            // v80: 고정 확장 최소화 (오프셋이 주 역할)
                             val w0 = brFull.x - tlFull.x
                             val h0 = brFull.y - tlFull.y
-                            val expandLeft = w0 * 0.042f
-                            val expandRight = w0 * 0.042f
-                            val expandTop = h0 * 0.01f
-                            val expandBottom = h0 * 0.053f
+                            val expandLeft = w0 * 0.01f      // 1%만 (기본 확장)
+                            val expandRight = w0 * 0.01f
+                            val expandTop = h0 * 0.005f
+                            val expandBottom = h0 * 0.015f
                             // v79: 학습된 오프셋 자동 적용
                             val offset = GridCalibrationDB.getAverageOffset(applicationContext)
                             val realTLx = (tlFull.x - expandLeft + offset[0]).coerceAtLeast(0f)
