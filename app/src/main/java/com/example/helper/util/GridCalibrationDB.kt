@@ -9,7 +9,7 @@ object GridCalibrationDB {
     private const val PREFS = "grid_calibration_db"
     private const val KEY = "records"
     private const val MAX_RECORDS = 100
-    private const val MATCH_THRESHOLD = 0.15f  // feature 유사도
+    private const val MATCH_THRESHOLD = 0.30f  // v91: 완화  // feature 유사도
 
     data class Record(
         val feature: FloatArray,   // v85: fingerprint 대신 feature
@@ -64,14 +64,21 @@ object GridCalibrationDB {
     /** v85: 현재 feature와 가장 유사한 학습된 오프셋 반환 */
     fun findOffset(context: Context, feature: FloatArray): FloatArray {
         val list = loadAll(context)
-        if (list.isEmpty()) return floatArrayOf(0f, 0f, 0f, 0f)
+        AppLogger.d("🔍 findOffset: DB=${list.size}개")
+        if (list.isEmpty()) {
+            AppLogger.d("🔍 findOffset: DB 비어있음")
+            return floatArrayOf(0f, 0f, 0f, 0f)
+        }
 
-        val best = list.map { it to GridFeature.distance(it.feature, feature) }
-            .filter { it.second < MATCH_THRESHOLD }
-            .minByOrNull { it.second } ?: return floatArrayOf(0f, 0f, 0f, 0f)
+        val distances = list.map { it to GridFeature.distance(it.feature, feature) }
+        val best = distances.minByOrNull { it.second }
+        if (best == null || best.second >= MATCH_THRESHOLD) {
+            AppLogger.d("🔍 findOffset: 매칭 실패 (최소거리=${"%.2f".format(best?.second ?: 999f)}, 임계값=${MATCH_THRESHOLD})")
+            return floatArrayOf(0f, 0f, 0f, 0f)
+        }
 
         val r = best.first
-        AppLogger.d("📚 유사 판 감지 (거리=${"%.2f".format(best.second)}): ΔTL=(${r.deltaTLx.toInt()},${r.deltaTLy.toInt()})")
+        AppLogger.d("📚 유사 판 감지 (거리=${"%.2f".format(best.second)}): ΔTL=(${r.deltaTLx.toInt()},${r.deltaTLy.toInt()}) ΔBR=(${r.deltaBRx.toInt()},${r.deltaBRy.toInt()})")
         return floatArrayOf(r.deltaTLx, r.deltaTLy, r.deltaBRx, r.deltaBRy)
     }
 

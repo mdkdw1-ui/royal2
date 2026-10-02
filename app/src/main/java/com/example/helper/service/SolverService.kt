@@ -2129,10 +2129,12 @@ class SolverService : Service() {
     private fun showLabelingDialog() {
         mainHandler.post {
             try {
-                // v85: 유사 판 학습된 오프셋 있으면 ptTL/ptBR 미리 조정
+                // v91: 유사 판 학습된 오프셋 있으면 ptTL/ptBR 미리 조정
                 val curFeat = currentFeature
+                AppLogger.d("📸 라벨 다이얼로그: curFeat=${curFeat?.size ?: "null"}")
                 if (curFeat != null && curFeat.size == GridFeature.DIM) {
                     val learnedOffset = GridCalibrationDB.findOffset(applicationContext, curFeat)
+                    AppLogger.d("📸 findOffset 결과: (${learnedOffset[0]},${learnedOffset[1]},${learnedOffset[2]},${learnedOffset[3]})")
                     if (learnedOffset[0] != 0f || learnedOffset[1] != 0f || learnedOffset[2] != 0f || learnedOffset[3] != 0f) {
                         ptTL.set(ptTL.x + learnedOffset[0], ptTL.y + learnedOffset[1])
                         ptTR.set(ptTR.x + learnedOffset[2], ptTR.y + learnedOffset[1])
@@ -2140,6 +2142,8 @@ class SolverService : Service() {
                         ptBR.set(ptBR.x + learnedOffset[2], ptBR.y + learnedOffset[3])
                         AppLogger.d("📚 라벨 열 때 학습 오프셋 미리 적용")
                     }
+                } else {
+                    AppLogger.d("📸 curFeat null 또는 크기 오류")
                 }
                 // 이전 다이얼로그 정리 (leftover 방지)
                 hideLabelDialog()
