@@ -2130,8 +2130,9 @@ class SolverService : Service() {
                 hideLabelDialog()
 
                 val ctx = applicationContext
-                var thumb = latestThumbnail
+                // v72: 썸네일 대신 fullBmp 사용 (500px → 1088px)
                 var fullBmp = latestFullBitmap
+                var thumb = fullBmp  // workingBitmap과 fullBmp 동일
 
                 // v50: 백그라운드에서 캡처 (main 블로킹 방지)
                 if (thumb == null || fullBmp == null || thumb.isRecycled || fullBmp.isRecycled) {
@@ -2650,10 +2651,11 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            // v68: ivToOriginal에서 이미 full 좌표로 변환됨 → 그대로 사용
-                            val realTLx = tlFull.x
+                            // v73: 좌우 살짝 확장 (게임판 테두리 포함)
+                            val expandW = ((brFull.x - tlFull.x) * 0.02f)  // 2% 확장
+                            val realTLx = (tlFull.x - expandW).coerceAtLeast(0f)
                             val realTLy = tlFull.y
-                            val realBRx = brFull.x
+                            val realBRx = brFull.x + expandW
                             val realBRy = brFull.y
                             AppLogger.d("저장 전 확인: tlFull=(${realTLx.toInt()},${realTLy.toInt()}) brFull=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
