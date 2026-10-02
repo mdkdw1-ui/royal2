@@ -2651,12 +2651,15 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            // v73: 좌우 살짝 확장 (게임판 테두리 포함)
-                            val expandW = ((brFull.x - tlFull.x) * 0.02f)  // 2% 확장
+                            // v74: 좌우 2.5% + 상하 4% 확장 (실제 게임판 경계 포함)
+                            val w0 = brFull.x - tlFull.x
+                            val h0 = brFull.y - tlFull.y
+                            val expandW = w0 * 0.025f   // 좌우 2.5%
+                            val expandH = h0 * 0.04f    // 상하 4%
                             val realTLx = (tlFull.x - expandW).coerceAtLeast(0f)
-                            val realTLy = tlFull.y
-                            val realBRx = brFull.x + expandW
-                            val realBRy = brFull.y
+                            val realTLy = (tlFull.y - expandH).coerceAtLeast(0f)
+                            val realBRx = (brFull.x + expandW).coerceAtMost(fullBmp.width.toFloat())
+                            val realBRy = (brFull.y + expandH).coerceAtMost(fullBmp.height.toFloat())
                             AppLogger.d("저장 전 확인: tlFull=(${realTLx.toInt()},${realTLy.toInt()}) brFull=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
                             ptTR.set(realBRx, realTLy)
