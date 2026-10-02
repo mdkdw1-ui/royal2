@@ -2674,22 +2674,22 @@ class SolverService : Service() {
                             lastLabelInTLy = tlFull.y
                             lastLabelInBRx = brFull.x
                             lastLabelInBRy = brFull.y
-                            // v80: 고정 확장 최소화 (오프셋이 주 역할)
+                            // v81: v80 확장 완전 제거, 오프셋만 적용
+                            val offset = GridCalibrationDB.getAverageOffset(applicationContext)
+                            // 오프셋이 0이면(초기) 기본 확장 1% 적용
+                            val useDefault = (offset[0] == 0f && offset[1] == 0f && offset[2] == 0f && offset[3] == 0f)
                             val w0 = brFull.x - tlFull.x
                             val h0 = brFull.y - tlFull.y
-                            val expandLeft = w0 * 0.01f      // 1%만 (기본 확장)
-                            val expandRight = w0 * 0.01f
-                            val expandTop = h0 * 0.005f
-                            val expandBottom = h0 * 0.015f
-                            // v79: 학습된 오프셋 자동 적용
-                            val offset = GridCalibrationDB.getAverageOffset(applicationContext)
-                            val realTLx = (tlFull.x - expandLeft + offset[0]).coerceAtLeast(0f)
-                            val realTLy = (tlFull.y - expandTop + offset[1]).coerceAtLeast(0f)
-                            val realBRx = (brFull.x + expandRight + offset[2]).coerceAtMost(fullBmp.width.toFloat())
-                            val realBRy = (brFull.y + expandBottom + offset[3]).coerceAtMost(fullBmp.height.toFloat())
-                            AppLogger.d("v75 확장: L=${expandLeft.toInt()} R=${expandRight.toInt()} T=${expandTop.toInt()} B=${expandBottom.toInt()}")
-                            if (offset[0] != 0f || offset[1] != 0f || offset[2] != 0f || offset[3] != 0f) {
-                                AppLogger.d("📚 자동 오프셋 적용: ΔTL=(${offset[0].toInt()},${offset[1].toInt()}) ΔBR=(${offset[2].toInt()},${offset[3].toInt()})")
+                            val baseExpandW = if (useDefault) w0 * 0.04f else 0f
+                            val baseExpandH = if (useDefault) h0 * 0.03f else 0f
+                            val realTLx = (tlFull.x - baseExpandW + offset[0]).coerceAtLeast(0f)
+                            val realTLy = (tlFull.y - baseExpandH + offset[1]).coerceAtLeast(0f)
+                            val realBRx = (brFull.x + baseExpandW + offset[2]).coerceAtMost(fullBmp.width.toFloat())
+                            val realBRy = (brFull.y + baseExpandH + offset[3]).coerceAtMost(fullBmp.height.toFloat())
+                            if (!useDefault) {
+                                AppLogger.d("📚 오프셋 적용 (기본확장 제거): ΔTL=(${offset[0].toInt()},${offset[1].toInt()}) ΔBR=(${offset[2].toInt()},${offset[3].toInt()})")
+                            } else {
+                                AppLogger.d("기본 확장 (학습 전): L=${baseExpandW.toInt()} R=${baseExpandW.toInt()} T=${baseExpandH.toInt()} B=${baseExpandH.toInt()}")
                             }
                             AppLogger.d("저장 전 확인: tlFull=(${realTLx.toInt()},${realTLy.toInt()}) brFull=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
