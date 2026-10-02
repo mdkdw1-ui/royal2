@@ -16,6 +16,7 @@ import android.util.Log
 import com.example.helper.util.AppLogger
 import com.example.helper.util.GridFeature
 import com.example.helper.util.GridCalibrationDB
+import com.example.helper.util.GridSizeDB
 import com.example.helper.util.GridPredictor
 import com.example.helper.util.GridSeedDB
 import com.example.helper.util.LevelGridMemory
@@ -2129,21 +2130,18 @@ class SolverService : Service() {
     private fun showLabelingDialog() {
         mainHandler.post {
             try {
-                // v91: 유사 판 학습된 오프셋 있으면 ptTL/ptBR 미리 조정
-                val curFeat = currentFeature
-                AppLogger.d("📸 라벨 다이얼로그: curFeat=${curFeat?.size ?: "null"}")
-                if (curFeat != null && curFeat.size == GridFeature.DIM) {
-                    val learnedOffset = GridCalibrationDB.findOffset(applicationContext, curFeat)
-                    AppLogger.d("📸 findOffset 결과: (${learnedOffset[0]},${learnedOffset[1]},${learnedOffset[2]},${learnedOffset[3]})")
-                    if (learnedOffset[0] != 0f || learnedOffset[1] != 0f || learnedOffset[2] != 0f || learnedOffset[3] != 0f) {
-                        ptTL.set(ptTL.x + learnedOffset[0], ptTL.y + learnedOffset[1])
-                        ptTR.set(ptTR.x + learnedOffset[2], ptTR.y + learnedOffset[1])
-                        ptBL.set(ptBL.x + learnedOffset[0], ptBL.y + learnedOffset[3])
-                        ptBR.set(ptBR.x + learnedOffset[2], ptBR.y + learnedOffset[3])
-                        AppLogger.d("📚 라벨 열 때 학습 오프셋 미리 적용")
-                    }
+                // v94: 판 크기별 평균 좌표 자동 적용 (오버레이 갱신 포함)
+                val sizeRec = GridSizeDB.find(applicationContext, rows, cols)
+                if (sizeRec != null) {
+                    ptTL.set(sizeRec.avgTLx, sizeRec.avgTLy)
+                    ptTR.set(sizeRec.avgBRx, sizeRec.avgTLy)
+                    ptBL.set(sizeRec.avgTLx, sizeRec.avgBRy)
+                    ptBR.set(sizeRec.avgBRx, sizeRec.avgBRy)
+                    AppLogger.d("📏 ${rows}x${cols} 평균 좌표 자동 적용 (${sizeRec.count}개) → 오버레이 갱신")
+                    // v94: 오버레이 즉시 갱신 (게임판 격자도 반영)
+                    mainHandler.post { overlayView?.invalidate() }
                 } else {
-                    AppLogger.d("📸 curFeat null 또는 크기 오류")
+                    AppLogger.d("📏 ${rows}x${cols} 평균 없음 - 자동 검출값 사용")
                 }
                 // 이전 다이얼로그 정리 (leftover 방지)
                 hideLabelDialog()
@@ -2671,16 +2669,18 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            // v89: 사용자 탭 + 자동 확장 (게임판 경계 여유)
+                            // v93: 판 크기별 좌표 학습 (자동 확장 유지)
                             val w0 = brFull.x - tlFull.x
                             val h0 = brFull.y - tlFull.y
-                            val expandW = w0 * 0.025f  // 좌우 2.5%
-                            val expandH = h0 * 0.02f   // 상하 2%
+                            val expandW = w0 * 0.025f
+                            val expandH = h0 * 0.02f
                             val realTLx = (tlFull.x - expandW).coerceAtLeast(0f)
                             val realTLy = (tlFull.y - expandH).coerceAtLeast(0f)
                             val realBRx = (brFull.x + expandW).coerceAtMost(fullBmp.width.toFloat())
                             val realBRy = (brFull.y + expandH).coerceAtMost(fullBmp.height.toFloat())
-                            AppLogger.d("v89 저장: 탭(${tlFull.x.toInt()},${tlFull.y.toInt()})~(${brFull.x.toInt()},${brFull.y.toInt()}) + 확장(L=${expandW.toInt()} R=${expandW.toInt()} T=${expandH.toInt()} B=${expandH.toInt()}) → (${realTLx.toInt()},${realTLy.toInt()})~(${realBRx.toInt()},${realBRy.toInt()})")
+                            // v93: 크기별 좌표 저장 (평균)
+                            GridSizeDB.addOrUpdate(ctx, rows, cols, realTLx, realTLy, realBRx, realBRy)
+                            AppLogger.d("v93 저장: ${rows}x${cols} → (${realTLx.toInt()},${realTLy.toInt()})~(${realBRx.toInt()},${realBRy.toInt()})")
                             // v85: fingerprint+오프셋 학습 (자동검출 vs 사용자탭 차이)
                             val learnFeat = GridFeature.extract(fullBmp, ptTL, ptTR, ptBL, ptBR)
                             if (learnFeat != null && learnFeat.size == GridFeature.DIM) {
