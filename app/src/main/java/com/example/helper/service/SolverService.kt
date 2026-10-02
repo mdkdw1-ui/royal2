@@ -2248,8 +2248,8 @@ class SolverService : Service() {
                     // v61: adjustViewBounds로 이미지 비율 유지
                     adjustViewBounds = true
                     val dm = resources.displayMetrics
-                    // v90: 이미지 크기 45% (버튼까지 화면에 들어오게)
-                    val imageH = (dm.heightPixels * 0.45f).toInt()
+                    // v96: 이미지 크기 60% (더 크게, 정확한 탭)
+                    val imageH = (dm.heightPixels * 0.60f).toInt()
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT, imageH
                     )
@@ -2419,6 +2419,14 @@ class SolverService : Service() {
                                 }
                                 tapCount++
                                 redraw()
+                                // v96b: 탭 좌표를 게임판 오버레이에 실시간 미리보기
+                                mainHandler.post {
+                                    ptTL.set(tlFull.x, tlFull.y)
+                                    ptTR.set(brFull.x, tlFull.y)
+                                    ptBL.set(tlFull.x, brFull.y)
+                                    ptBR.set(brFull.x, brFull.y)
+                                    overlayView?.invalidate()
+                                }
                                 // v65: 좌표 텍스트 갱신
                                 mainHandler.post {
                                     coordText.text = "🔴 좌상: (${tlFull.x.toInt()},${tlFull.y.toInt()})  🟢 우하: (${brFull.x.toInt()},${brFull.y.toInt()})"
@@ -2760,9 +2768,10 @@ class SolverService : Service() {
                     addView(container)
                 }
 
+                // v96: 라벨 다이얼로그 전체화면 (이미지 크게 + 게임판 가림 최소)
                 val wmParams = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
-                    maxH,
+                    WindowManager.LayoutParams.MATCH_PARENT,
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                     else
@@ -2771,8 +2780,6 @@ class SolverService : Service() {
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.START
-                    x = 0
-                    y = 100
                 }
 
                 windowManager.addView(scrollWrapper, wmParams)
