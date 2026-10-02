@@ -15,6 +15,7 @@ import android.os.*
 import android.util.Log
 import com.example.helper.util.AppLogger
 import com.example.helper.util.GridFeature
+import com.example.helper.util.GridCalibrationDB
 import com.example.helper.util.GridPredictor
 import com.example.helper.util.GridSeedDB
 import com.example.helper.util.LevelGridMemory
@@ -44,6 +45,11 @@ class SolverService : Service() {
 
     private var isAutoDetectEnabled = true
     private var currentFingerprint: String = ""
+    // v78: 라벨 입력 시 좌표 임시 저장
+    private var lastLabelInTLx = 0f
+    private var lastLabelInTLy = 0f
+    private var lastLabelInBRx = 0f
+    private var lastLabelInBRy = 0f
     private var lastLoggedRows = -1
     private var lastLoggedCols = -1
     private var lastLoggedSource = ""
@@ -779,6 +785,18 @@ class SolverService : Service() {
                     // 🔥 v42: 보정 완료 시 무조건 수동 고정
                     isAutoDetectEnabled = false
                     isScanning = false
+                    // v78: 보정 학습 데이터 기록
+                    if (lastLabelInBRx > 0f) {
+                        GridCalibrationDB.add(applicationContext, GridCalibrationDB.Record(
+                            inTLx = lastLabelInTLx, inTLy = lastLabelInTLy,
+                            inBRx = lastLabelInBRx, inBRy = lastLabelInBRy,
+                            outTLx = ptTL.x, outTLy = ptTL.y,
+                            outBRx = ptBR.x, outBRy = ptBR.y,
+                            timestamp = System.currentTimeMillis()
+                        ))
+                        val offset = GridCalibrationDB.getAverageOffset(applicationContext)
+                        AppLogger.d("📚 보정 학습 (총 ${GridCalibrationDB.size(applicationContext)}개): ΔTL=(${offset[0].toInt()},${offset[1].toInt()}) ΔBR=(${offset[2].toInt()},${offset[3].toInt()})")
+                    }
                     // v51: 사용자 명시적 액션 → seed 저장
                     saveSeedExplicitly()
                     savePreferences()
@@ -2651,18 +2669,28 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
+                            // v78: 라벨 입력 좌표 기록 (보정 학습용)
+                            lastLabelInTLx = tlFull.x
+                            lastLabelInTLy = tlFull.y
+                            lastLabelInBRx = brFull.x
+                            lastLabelInBRy = brFull.y
                             // v75: 좌우 4.2% 확장 + 상단 1% 확장, 하단 5.3% 확장
                             val w0 = brFull.x - tlFull.x
                             val h0 = brFull.y - tlFull.y
-                            val expandLeft = w0 * 0.042f     // 좌측 확장 (25px/950)
-                            val expandRight = w0 * 0.042f    // 우측 확장 (11px 추가됨)
-                            val expandTop = h0 * 0.01f       // 상단 살짝만 (49px 축소)
-                            val expandBottom = h0 * 0.053f   // 하단 확장 유지
-                            val realTLx = (tlFull.x - expandLeft).coerceAtLeast(0f)
-                            val realTLy = (tlFull.y - expandTop).coerceAtLeast(0f)
-                            val realBRx = (brFull.x + expandRight).coerceAtMost(fullBmp.width.toFloat())
-                            val realBRy = (brFull.y + expandBottom).coerceAtMost(fullBmp.height.toFloat())
+                            val expandLeft = w0 * 0.042f
+                            val expandRight = w0 * 0.042f
+                            val expandTop = h0 * 0.01f
+                            val expandBottom = h0 * 0.053f
+                            // v79: 학습된 오프셋 자동 적용
+                            val offset = GridCalibrationDB.getAverageOffset(applicationContext)
+                            val realTLx = (tlFull.x - expandLeft + offset[0]).coerceAtLeast(0f)
+                            val realTLy = (tlFull.y - expandTop + offset[1]).coerceAtLeast(0f)
+                            val realBRx = (brFull.x + expandRight + offset[2]).coerceAtMost(fullBmp.width.toFloat())
+                            val realBRy = (brFull.y + expandBottom + offset[3]).coerceAtMost(fullBmp.height.toFloat())
                             AppLogger.d("v75 확장: L=${expandLeft.toInt()} R=${expandRight.toInt()} T=${expandTop.toInt()} B=${expandBottom.toInt()}")
+                            if (offset[0] != 0f || offset[1] != 0f || offset[2] != 0f || offset[3] != 0f) {
+                                AppLogger.d("📚 자동 오프셋 적용: ΔTL=(${offset[0].toInt()},${offset[1].toInt()}) ΔBR=(${offset[2].toInt()},${offset[3].toInt()})")
+                            }
                             AppLogger.d("저장 전 확인: tlFull=(${realTLx.toInt()},${realTLy.toInt()}) brFull=(${realBRx.toInt()},${realBRy.toInt()})")
                             ptTL.set(realTLx, realTLy)
                             ptTR.set(realBRx, realTLy)
