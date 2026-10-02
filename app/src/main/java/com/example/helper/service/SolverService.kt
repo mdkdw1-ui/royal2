@@ -2345,34 +2345,33 @@ class SolverService : Service() {
                 // 안전한 좌표 변환
                 fun ivToOriginal(ivX: Float, ivY: Float): android.graphics.PointF? {
                     return try {
-                        val drawable = iv.drawable
-                        if (drawable == null) {
-                            AppLogger.d("ivToOrig: drawable null")
-                            return null
-                        }
-                        val dW = drawable.intrinsicWidth.toFloat()
-                        val dH = drawable.intrinsicHeight.toFloat()
+                        val bmpW = workingBitmap.width.toFloat()
+                        val bmpH = workingBitmap.height.toFloat()
+                        if (bmpW <= 0f || bmpH <= 0f) return null
+
                         val vW = iv.width.toFloat()
                         val vH = iv.height.toFloat()
-                        if (dW <= 0f || dH <= 0f || vW <= 0f || vH <= 0f) return null
+                        if (vW <= 0f || vH <= 0f) return null
 
-                        val scale = minOf(vW / dW, vH / dH)
-                        val dispW = dW * scale
-                        val dispH = dH * scale
+                        // FIT_CENTER 스케일
+                        val scale = minOf(vW / bmpW, vH / bmpH)
+                        val dispW = bmpW * scale
+                        val dispH = bmpH * scale
                         val offsetX = (vW - dispW) / 2f
                         val offsetY = (vH - dispH) / 2f
 
-                        val px = (ivX - offsetX) / scale
-                        val py = (ivY - offsetY) / scale
-                        if (px < 0f || py < 0f || px > dW || py > dH) return null
+                        // iv 좌표 → workingBitmap 좌표
+                        val wx = (ivX - offsetX) / scale
+                        val wy = (ivY - offsetY) / scale
+                        if (wx < 0f || wy < 0f || wx > bmpW || wy > bmpH) return null
 
-                        // v67: fullBmp 좌표로 스케일 변환 (drawable이 500x974, fullBmp가 1088x2120)
-                        val fullScaleX = fullBmp.width.toFloat() / dW
-                        val fullScaleY = fullBmp.height.toFloat() / dH
-                        val finalX = px * fullScaleX
-                        val finalY = py * fullScaleY
-                        AppLogger.d("ivToOrig: iv=(${ivX.toInt()},${ivY.toInt()}) → drawable=(${px.toInt()},${py.toInt()}) → full=(${finalX.toInt()},${finalY.toInt()})")
-                        android.graphics.PointF(finalX, finalY)
+                        // v71: workingBitmap → fullBmp 좌표로 스케일
+                        val fScaleX = fullBmp.width.toFloat() / bmpW
+                        val fScaleY = fullBmp.height.toFloat() / bmpH
+                        val fx = wx * fScaleX
+                        val fy = wy * fScaleY
+                        AppLogger.d("ivToOrig: iv=(${ivX.toInt()},${ivY.toInt()}) v=${vW.toInt()}x${vH.toInt()} wb=${bmpW.toInt()}x${bmpH.toInt()} → wb=(${wx.toInt()},${wy.toInt()}) → full=(${fx.toInt()},${fy.toInt()})")
+                        android.graphics.PointF(fx, fy)
                     } catch (e: Exception) {
                         AppLogger.e("ivToOrig err", e)
                         null
