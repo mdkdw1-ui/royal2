@@ -45,11 +45,7 @@ class SolverService : Service() {
 
     private var isAutoDetectEnabled = true
     private var currentFingerprint: String = ""
-    // v78: 라벨 입력 시 좌표 임시 저장
-    private var lastLabelInTLx = 0f
-    private var lastLabelInTLy = 0f
-    private var lastLabelInBRx = 0f
-    private var lastLabelInBRy = 0f
+    // v86: v78 필드 제거 (v85 feature 기반 사용)
     private var lastLoggedRows = -1
     private var lastLoggedCols = -1
     private var lastLoggedSource = ""
@@ -785,18 +781,7 @@ class SolverService : Service() {
                     // 🔥 v42: 보정 완료 시 무조건 수동 고정
                     isAutoDetectEnabled = false
                     isScanning = false
-                    // v78: 보정 학습 데이터 기록
-                    if (lastLabelInBRx > 0f) {
-                        GridCalibrationDB.add(applicationContext, GridCalibrationDB.Record(
-                            inTLx = lastLabelInTLx, inTLy = lastLabelInTLy,
-                            inBRx = lastLabelInBRx, inBRy = lastLabelInBRy,
-                            outTLx = ptTL.x, outTLy = ptTL.y,
-                            outBRx = ptBR.x, outBRy = ptBR.y,
-                            timestamp = System.currentTimeMillis()
-                        ))
-                        val offset = GridCalibrationDB.getAverageOffset(applicationContext)
-                        AppLogger.d("📚 보정 학습 (총 ${GridCalibrationDB.size(applicationContext)}개): ΔTL=(${offset[0].toInt()},${offset[1].toInt()}) ΔBR=(${offset[2].toInt()},${offset[3].toInt()})")
-                    }
+                    // v86: v78 옛 학습 블록 제거 (v85로 대체됨)
                     // v51: 사용자 명시적 액션 → seed 저장
                     saveSeedExplicitly()
                     savePreferences()
@@ -2681,11 +2666,6 @@ class SolverService : Service() {
                                 return@setOnClickListener
                             }
                             rows = r; cols = c
-                            // v78: 라벨 입력 좌표 기록 (보정 학습용)
-                            lastLabelInTLx = tlFull.x
-                            lastLabelInTLy = tlFull.y
-                            lastLabelInBRx = brFull.x
-                            lastLabelInBRy = brFull.y
                             // v85: 사용자 탭 그대로 + 학습된 오프셋 함께 저장
                             val realTLx = tlFull.x.coerceAtLeast(0f)
                             val realTLy = tlFull.y.coerceAtLeast(0f)
