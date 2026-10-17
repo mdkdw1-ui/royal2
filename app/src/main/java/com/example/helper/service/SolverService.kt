@@ -33,6 +33,13 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.abs
 
+// 🔥 v98: 5매치 이동 쌍 (source → target)
+data class MatchTarget(
+    val targetRow: Int, val targetCol: Int,
+    val sourceRow: Int, val sourceCol: Int,
+    val color: Int
+)
+
 class SolverService : Service() {
     private val TAG = "OOXOO_Auto"
     private val binder = SolverBinder()
