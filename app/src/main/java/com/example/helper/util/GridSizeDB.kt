@@ -37,16 +37,18 @@ object GridSizeDB {
         if (idx >= 0) {
             val old = list[idx]
             val newCount = old.count + 1
+            // 🔥 v98: EMA (최근 30% 가중) — 오래된 데이터 영향 축소
+            val alpha = 0.3f
             list[idx] = SizeRecord(
                 rows = rows, cols = cols,
-                avgTLx = (old.avgTLx * old.count + tlx) / newCount,
-                avgTLy = (old.avgTLy * old.count + tly) / newCount,
-                avgBRx = (old.avgBRx * old.count + brx) / newCount,
-                avgBRy = (old.avgBRy * old.count + bry) / newCount,
+                avgTLx = old.avgTLx * (1 - alpha) + tlx * alpha,
+                avgTLy = old.avgTLy * (1 - alpha) + tly * alpha,
+                avgBRx = old.avgBRx * (1 - alpha) + brx * alpha,
+                avgBRy = old.avgBRy * (1 - alpha) + bry * alpha,
                 count = newCount,
                 timestamp = System.currentTimeMillis()
             )
-            AppLogger.d("📏 ${key} 평균 업데이트 (${newCount}개): tl=(${(old.avgTLx).toInt()},${(old.avgTLy).toInt()}) br=(${(old.avgBRx).toInt()},${(old.avgBRy).toInt()})")
+            AppLogger.d("📏 ${key} EMA 업데이트 (${newCount}개)")
         } else {
             list.add(SizeRecord(rows, cols, tlx, tly, brx, bry, 1, System.currentTimeMillis()))
             AppLogger.d("📏 ${key} 신규 저장: tl=(${tlx.toInt()},${tly.toInt()}) br=(${brx.toInt()},${bry.toInt()})")

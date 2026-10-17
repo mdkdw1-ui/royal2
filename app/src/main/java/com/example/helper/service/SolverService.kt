@@ -97,7 +97,7 @@ class SolverService : Service() {
     private val templateSizes = mutableListOf<Pair<Int, Int>>()
     private var isOpenCVInitialized = false
 
-    private var foundPositions = mutableListOf<Pair<Int, Int>>()
+    private var foundPositions = mutableListOf<MatchTarget>()
 
     inner class SolverBinder : Binder() {
         fun getService(): SolverService = this@SolverService
@@ -411,7 +411,7 @@ class SolverService : Service() {
 
     // 🔥 오버레이 뷰
     inner class OverlayView(context: Context) : View(context) {
-        private var positions = listOf<Pair<Int, Int>>()
+        private var positions = listOf<MatchTarget>()
         private val circlePaint = Paint().apply { color = Color.RED; style = Paint.Style.FILL; alpha = 180 }
         private val borderPaint = Paint().apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f }
         private val textPaint = Paint().apply { color = Color.WHITE; textSize = 30f; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
@@ -420,8 +420,28 @@ class SolverService : Service() {
         private val cornerStrokePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 4f }
         private val activeCornerPaint = Paint().apply { color = Color.parseColor("#FF00FF"); style = Paint.Style.FILL }
         private val cornerNamePaint = Paint().apply { color = Color.WHITE; textSize = 18f; textAlign = Paint.Align.CENTER }
+        // 🔥 v98: 5매치 화살표 페인트
+        private val targetPaint = Paint().apply {
+            color = Color.parseColor("#FFFF00"); style = Paint.Style.FILL; alpha = 200
+        }
+        private val targetStrokePaint = Paint().apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 6f
+        }
+        private val sourcePaint = Paint().apply {
+            color = Color.parseColor("#00E5FF"); style = Paint.Style.FILL; alpha = 220
+        }
+        private val sourceStrokePaint = Paint().apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f
+        }
+        private val arrowPaint = Paint().apply {
+            color = Color.parseColor("#00FF88"); style = Paint.Style.STROKE
+            strokeWidth = 8f; strokeCap = Paint.Cap.ROUND; isAntiAlias = true
+        }
+        private val arrowHeadPaint = Paint().apply {
+            color = Color.parseColor("#00FF88"); style = Paint.Style.FILL; isAntiAlias = true
+        }
 
-        fun updatePositions(newPositions: List<Pair<Int, Int>>) {
+        fun updatePositions(newPositions: List<MatchTarget>) {
             this.positions = newPositions
             invalidate()
         }
@@ -460,18 +480,40 @@ class SolverService : Service() {
                 }
             }
 
-            for ((row, col) in positions) {
-                val u = (col + 0.5f) / cols
-                val v = (row + 0.5f) / rows
-                val topX = (1 - u) * ptTL.x + u * ptTR.x
-                val topY = (1 - u) * ptTL.y + u * ptTR.y
-                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
-                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
-                val cx = (1 - v) * topX + v * bottomX
-                val cy = (1 - v) * topY + v * bottomY
-                canvas.drawCircle(cx, cy, 40f, circlePaint)
-                canvas.drawCircle(cx, cy, 40f, borderPaint)
-                canvas.drawText("X", cx, cy + 10f, textPaint)
+            // 🔥 v98: 5매치 화살표 (source O → target X)
+            for (t in positions) {
+                fun cellCenter(rr: Int, cc: Int): Pair<Float, Float> {
+                    val u = (cc + 0.5f) / cols; val v = (rr + 0.5f) / rows
+                    val tX = (1 - u) * ptTL.x + u * ptTR.x
+                    val tY = (1 - u) * ptTL.y + u * ptTR.y
+                    val bX = (1 - u) * ptBL.x + u * ptBR.x
+                    val bY = (1 - u) * ptBL.y + u * ptBR.y
+                    return Pair((1 - v) * tX + v * bX, (1 - v) * tY + v * bY)
+                }
+                val (sx, sy) = cellCenter(t.sourceRow, t.sourceCol)
+                val (tx, ty) = cellCenter(t.targetRow, t.targetCol)
+
+                // source O (시안)
+                canvas.drawCircle(sx, sy, 45f, sourcePaint)
+                canvas.drawCircle(sx, sy, 45f, sourceStrokePaint)
+                canvas.drawText("O", sx, sy + 12f, textPaint)
+
+                // arrow: source → target
+                canvas.drawLine(sx, sy, tx, ty, arrowPaint)
+                val ang = Math.atan2((ty - sy).toDouble(), (tx - sx).toDouble())
+                val aLen = 30f; val aAng = Math.PI / 6
+                val path = android.graphics.Path().apply {
+                    moveTo(tx, ty)
+                    lineTo((tx - aLen * Math.cos(ang - aAng)).toFloat(), (ty - aLen * Math.sin(ang - aAng)).toFloat())
+                    lineTo((tx - aLen * Math.cos(ang + aAng)).toFloat(), (ty - aLen * Math.sin(ang + aAng)).toFloat())
+                    close()
+                }
+                canvas.drawPath(path, arrowHeadPaint)
+
+                // target X (노랑)
+                canvas.drawCircle(tx, ty, 50f, targetPaint)
+                canvas.drawCircle(tx, ty, 50f, targetStrokePaint)
+                canvas.drawText("!", tx, ty + 14f, textPaint)
             }
         }
 
@@ -1637,17 +1679,25 @@ class SolverService : Service() {
                 currentFingerprint = LevelGridMemory.computeFingerprint(bitmap)
                 currentFeature = GridFeature.extract(bitmap, ptTL, ptTR, ptBL, ptBR)
 
-                // 🔥 v55: 자동 판바뀜 감지 - manual seed가 있으면 스킵
-                val hasManualSeed = GridSeedDB.loadAll(applicationContext).any { it.manual }
-                if (!hasManualSeed && lastFingerprintForGameChange.isNotEmpty() && currentFingerprint.isNotEmpty()) {
+                // 🔥 v98: 새 판 자동 감지 (manual seed 있어도 실행)
+                if (lastFingerprintForGameChange.isNotEmpty() && currentFingerprint.isNotEmpty()) {
                     var diff = 0
                     val len = minOf(lastFingerprintForGameChange.length, currentFingerprint.length)
                     for (i in 0 until len) {
                         if (lastFingerprintForGameChange[i] != currentFingerprint[i]) diff++
                     }
-                    if (diff > len * 0.3 && !isAutoDetectEnabled && !isCalibrationMode) {
-                        AppLogger.d("NEW_GAME_AUTO: 판 바뀜 (diff=$diff/$len) → auto 재개")
+                    if (diff > len * 0.25 && !isCalibrationMode) {
+                        AppLogger.d("NEW_GAME: diff=$diff/$len → 자동 격자 재적용")
                         isAutoDetectEnabled = true
+                        // 학습된 크기별 코너 즉시 복원
+                        val sizeRec = GridSizeDB.find(applicationContext, rows, cols)
+                        if (sizeRec != null) {
+                            ptTL.set(sizeRec.avgTLx, sizeRec.avgTLy)
+                            ptTR.set(sizeRec.avgBRx, sizeRec.avgTLy)
+                            ptBL.set(sizeRec.avgTLx, sizeRec.avgBRy)
+                            ptBR.set(sizeRec.avgBRx, sizeRec.avgBRy)
+                            AppLogger.d("📏 ${rows}x${cols} 학습코너 적용 (${sizeRec.count}개 평균)")
+                        }
                         savePreferences()
                         mainHandler.post { refreshControlUI() }
                     }
@@ -1677,6 +1727,16 @@ class SolverService : Service() {
                 val autoRows = rows
                 val autoCols = cols
                 val autoChanged = (beforeRows != autoRows || beforeCols != autoCols)
+
+                // 🔥 v98: 크기 변경 시 자동 학습 (데이터 축적)
+                if (autoChanged) {
+                    try {
+                        GridSizeDB.addOrUpdate(
+                            applicationContext, rows, cols,
+                            ptTL.x, ptTL.y, ptBR.x, ptBR.y
+                        )
+                    } catch (e: Exception) { }
+                }
 
                 // 2) k-NN 예측 (학습된 seed가 있으면 우선 적용)
                 val feat = currentFeature
@@ -1722,6 +1782,16 @@ class SolverService : Service() {
 
                 val positions = findOOXOO(bitmap)
 
+                // 🔥 v98: 성공 스캔을 지문별로 저장 (다음 같은 판에서 복원)
+                if (positions.isNotEmpty() && currentFingerprint.isNotEmpty()) {
+                    try {
+                        LevelGridMemory.save(
+                            applicationContext, currentFingerprint,
+                            rows, cols, manual = false
+                        )
+                    } catch (e: Exception) { }
+                }
+
                 mainHandler.post {
                     foundPositions.clear(); foundPositions.addAll(positions)
                     overlayView?.updatePositions(positions)
@@ -1735,10 +1805,9 @@ class SolverService : Service() {
     }
 
     // 🔥 OOXOO 탐색 (5칸 정확히)
-    private fun findOOXOO(bitmap: Bitmap): List<Pair<Int, Int>> {
+    private fun findOOXOO(bitmap: Bitmap): List<MatchTarget> {
         val width = bitmap.width; val height = bitmap.height
         val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-        // v54: rows/cols 유효성 검사
         val safeRows = rows.coerceIn(3, 20)
         val safeCols = cols.coerceIn(3, 20)
         if (safeRows != rows || safeCols != cols) {
@@ -1759,29 +1828,23 @@ class SolverService : Service() {
             val ix = cx.toInt().coerceIn(0, width - 1); val iy = cy.toInt().coerceIn(0, height - 1)
             val pixel = pixels[iy * width + ix]
 
-            // 기믹 체크
             if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
                 val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(20)
                 val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(20)
-
                 val cropSize = minOf(cellW, cellH)
                 val half = cropSize / 2
-                var startX = (cx - half).toInt().coerceIn(0, width - cropSize)
-                var startY = (cy - half).toInt().coerceIn(0, height - cropSize)
+                val startX = (cx - half).toInt().coerceIn(0, width - cropSize)
+                val startY = (cy - half).toInt().coerceIn(0, height - cropSize)
                 val realSize = minOf(cropSize, width - startX, height - startY).coerceAtLeast(1)
-
                 try {
                     val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, realSize, realSize)
                     val resizedCell = Bitmap.createScaledBitmap(cellBitmap, 64, 64, true)
-
                     if (isGimmick(resizedCell)) {
                         colorGrid[r][c] = -1
-                        resizedCell.recycle()
-                        cellBitmap.recycle()
+                        resizedCell.recycle(); cellBitmap.recycle()
                         continue
                     }
-                    resizedCell.recycle()
-                    cellBitmap.recycle()
+                    resizedCell.recycle(); cellBitmap.recycle()
                 } catch (e: Exception) {}
             }
 
@@ -1798,51 +1861,47 @@ class SolverService : Service() {
             }
         }
 
-        val result = mutableListOf<Pair<Int, Int>>()
+        val result = mutableListOf<MatchTarget>()
 
-        // 🔥 가로 OOXOO (5칸: O O X O O)
+        // 🔥 v98: 가로 OOXOO → (타겟 X, 소스 O) 쌍
         if (cols >= 5) {
-            for (r in 0 until rows) {
-                for (c in 0 until cols - 4) {
-                    val color = colorGrid[r][c]
-                    if (color == -1) continue
-                    if (colorGrid[r][c] == color &&
-                        colorGrid[r][c + 1] == color &&
-                        colorGrid[r][c + 2] != color &&
-                        colorGrid[r][c + 3] == color &&
-                        colorGrid[r][c + 4] == color) {
-                        val xCol = c + 2
-                        if ((r > 0 && colorGrid[r - 1][xCol] == color) ||
-                            (r < rows - 1 && colorGrid[r + 1][xCol] == color)) {
-                            result.add(Pair(r, xCol))
-                        }
-                    }
+            for (r in 0 until rows) for (c in 0 until cols - 4) {
+                val color = colorGrid[r][c]
+                if (color == -1) continue
+                if (colorGrid[r][c] == color &&
+                    colorGrid[r][c + 1] == color &&
+                    colorGrid[r][c + 2] != color &&
+                    colorGrid[r][c + 3] == color &&
+                    colorGrid[r][c + 4] == color) {
+                    val xCol = c + 2
+                    if (r > 0 && colorGrid[r - 1][xCol] == color)
+                        result.add(MatchTarget(r, xCol, r - 1, xCol, color))
+                    if (r < rows - 1 && colorGrid[r + 1][xCol] == color)
+                        result.add(MatchTarget(r, xCol, r + 1, xCol, color))
                 }
             }
         }
 
-        // 🔥 세로 OOXOO (5칸: O O X O O)
+        // 🔥 v98: 세로 OOXOO
         if (rows >= 5) {
-            for (c in 0 until cols) {
-                for (r in 0 until rows - 4) {
-                    val color = colorGrid[r][c]
-                    if (color == -1) continue
-                    if (colorGrid[r][c] == color &&
-                        colorGrid[r + 1][c] == color &&
-                        colorGrid[r + 2][c] != color &&
-                        colorGrid[r + 3][c] == color &&
-                        colorGrid[r + 4][c] == color) {
-                        val xRow = r + 2
-                        if ((c > 0 && colorGrid[xRow][c - 1] == color) ||
-                            (c < cols - 1 && colorGrid[xRow][c + 1] == color)) {
-                            result.add(Pair(xRow, c))
-                        }
-                    }
+            for (c in 0 until cols) for (r in 0 until rows - 4) {
+                val color = colorGrid[r][c]
+                if (color == -1) continue
+                if (colorGrid[r][c] == color &&
+                    colorGrid[r + 1][c] == color &&
+                    colorGrid[r + 2][c] != color &&
+                    colorGrid[r + 3][c] == color &&
+                    colorGrid[r + 4][c] == color) {
+                    val xRow = r + 2
+                    if (c > 0 && colorGrid[xRow][c - 1] == color)
+                        result.add(MatchTarget(xRow, c, xRow, c - 1, color))
+                    if (c < cols - 1 && colorGrid[xRow][c + 1] == color)
+                        result.add(MatchTarget(xRow, c, xRow, c + 1, color))
                 }
             }
         }
 
-        return result.distinct()
+        return result.distinctBy { "${it.targetRow},${it.targetCol},${it.sourceRow},${it.sourceCol}" }
     }
 
     // 🔥 기믹 인식
@@ -1853,24 +1912,46 @@ class SolverService : Service() {
         Utils.bitmapToMat(cellBitmap, cellMat)
         Imgproc.cvtColor(cellMat, cellMat, Imgproc.COLOR_RGBA2GRAY)
 
+        val cellEdges = Mat()
+        Imgproc.Canny(cellMat, cellEdges, 50.0, 150.0)
+
+        var bestScore = 0.0
         val resultMat = Mat()
-        var matched = false
 
         synchronized(dynamicTemplates) {
             for (template in dynamicTemplates) {
-                if (cellMat.cols() >= template.cols() && cellMat.rows() >= template.rows()) {
-                    Imgproc.matchTemplate(cellMat, template, resultMat, Imgproc.TM_CCOEFF_NORMED)
-                    if (Core.minMaxLoc(resultMat).maxVal >= 0.55) {
-                        matched = true
-                        break
+                for (scale in listOf(0.75, 0.9, 1.0, 1.1, 1.25)) {
+                    val tw = (template.cols() * scale).toInt()
+                    val th = (template.rows() * scale).toInt()
+                    if (tw < 8 || th < 8) continue
+                    if (cellMat.cols() < tw || cellMat.rows() < th) continue
+
+                    val resized = Mat()
+                    Imgproc.resize(template, resized, Size(tw.toDouble(), th.toDouble()))
+
+                    Imgproc.matchTemplate(cellMat, resized, resultMat, Imgproc.TM_CCOEFF_NORMED)
+                    val grayScore = Core.minMaxLoc(resultMat).maxVal
+                    if (grayScore > bestScore) bestScore = grayScore
+
+                    val resizedEdges = Mat()
+                    Imgproc.Canny(resized, resizedEdges, 50.0, 150.0)
+                    if (resizedEdges.cols() > 0 && resizedEdges.rows() > 0 &&
+                        cellEdges.cols() >= resizedEdges.cols() && cellEdges.rows() >= resizedEdges.rows()) {
+                        Imgproc.matchTemplate(cellEdges, resizedEdges, resultMat, Imgproc.TM_CCOEFF_NORMED)
+                        val edgeScore = Core.minMaxLoc(resultMat).maxVal
+                        if (edgeScore > bestScore) bestScore = edgeScore
                     }
+                    resized.release(); resizedEdges.release()
+
+                    if (bestScore >= 0.80) break
                 }
+                if (bestScore >= 0.80) break
             }
         }
 
-        cellMat.release()
-        resultMat.release()
-        return matched
+        cellMat.release(); cellEdges.release(); resultMat.release()
+
+        return bestScore >= 0.62
     }
 
     // 🔥 기믹 캡처
