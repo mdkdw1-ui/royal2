@@ -13,7 +13,7 @@ import org.json.JSONObject
 object GridSizeDB {
     private const val PREFS = "grid_size_db"
     private const val KEY = "records"
-    private const val MIN_SAMPLES = 3  // 최소 3개 필요
+    private const val MIN_SAMPLES = 2  // v97: 2개부터  // 최소 3개 필요
 
     data class SizeRecord(
         val rows: Int,

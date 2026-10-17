@@ -1412,7 +1412,7 @@ class SolverService : Service() {
             for (x in 0 until w) if (colSmooth[x] > maxCol) maxCol = colSmooth[x]
             if (maxCol < 30) { AppLogger.d("colProj 약함: $maxCol"); return null }
 
-            val colThr = maxCol * 0.50  // 🔥 v13: 엄격
+            val colThr = maxCol * 0.28  // v97: 관대  // 🔥 v13: 엄격
             var boardLeft = -1
             var boardRight = -1
             var gapCntX = 0
@@ -1423,7 +1423,7 @@ class SolverService : Service() {
                     gapCntX = 0
                 } else {
                     gapCntX++
-                    if (boardLeft != -1 && gapCntX > 60) break
+                    if (boardLeft != -1 && gapCntX > 160) break  // v97: 관대
                 }
             }
 
@@ -1432,15 +1432,30 @@ class SolverService : Service() {
                 return null
             }
 
-            val boardW = boardRight - boardLeft
-            AppLogger.d("보드(proj): ${boardW}x${boardH} @ (${boardLeft},${boardTop}) [확장+${(boardW*0.03).toInt()}px]")
+            val boardW0 = boardRight - boardLeft
+            var fLeft = boardLeft
+            var fRight = boardRight
+            val aspectCheck = boardW0.toFloat() / boardH.toFloat()
+            if (aspectCheck < 0.85f) {
+                val targetW = (boardH * 0.90f).toInt().coerceAtMost(w)
+                val deficit = targetW - boardW0
+                if (deficit > 0) {
+                    val addLeft = minOf(boardLeft, deficit / 2)
+                    val addRight = minOf(w - boardRight, deficit - addLeft)
+                    fLeft = boardLeft - addLeft
+                    fRight = boardRight + addRight
+                    AppLogger.d("🔧 X 보정: ${boardW0} → ${fRight-fLeft} (종횡비 ${"%.2f".format(aspectCheck)} → 0.90)")
+                }
+            }
+            val boardW = fRight - fLeft
+            AppLogger.d("보드(proj): ${boardW}x${boardH} @ (${fLeft},${boardTop}) [확장+${(boardW*0.03).toInt()}px]")
 
             // 🔥 v45: 격자 좌우로 살짝 확장 (안쪽 잡힘 해결)
             val expandW = (boardW * 0.03f).toInt()  // 좌우 3%씩
-            ptTL.set((boardLeft - expandW).toFloat().coerceAtLeast(0f), boardTop.toFloat())
-            ptTR.set((boardRight + expandW).toFloat(), boardTop.toFloat())
-            ptBL.set((boardLeft - expandW).toFloat().coerceAtLeast(0f), boardBottom.toFloat())
-            ptBR.set((boardRight + expandW).toFloat(), boardBottom.toFloat())
+            ptTL.set((fLeft - expandW).toFloat().coerceAtLeast(0f), boardTop.toFloat())
+            ptTR.set((fRight + expandW).toFloat(), boardTop.toFloat())
+            ptBL.set((fLeft - expandW).toFloat().coerceAtLeast(0f), boardBottom.toFloat())
+            ptBR.set((fRight + expandW).toFloat(), boardBottom.toFloat())
 
             // 🔥🔥 v12: Royal Match 타일 특성 반영 (세로가 ~10% 김)
             // rowsRaw가 10.0~12.5면 11로 스냅 (Royal Match 11행 압도적)
@@ -2389,7 +2404,7 @@ class SolverService : Service() {
                         val fScaleY = fullBmp.height.toFloat() / bmpH
                         val fx = wx * fScaleX
                         val fy = wy * fScaleY
-                        AppLogger.d("ivToOrig: iv=(${ivX.toInt()},${ivY.toInt()}) v=${vW.toInt()}x${vH.toInt()} wb=${bmpW.toInt()}x${bmpH.toInt()} → wb=(${wx.toInt()},${wy.toInt()}) → full=(${fx.toInt()},${fy.toInt()})")
+                        // v97-log: AppLogger.d("ivToOrig: iv=(${ivX.toInt()},${ivY.toInt()}) v=${vW.toInt()}x${vH.toInt()} wb=${bmpW.toInt()}x${bmpH.toInt()} → wb=(${wx.toInt()},${wy.toInt()}) → full=(${fx.toInt()},${fy.toInt()})")
                         android.graphics.PointF(fx, fy)
                     } catch (e: Exception) {
                         AppLogger.e("ivToOrig err", e)
