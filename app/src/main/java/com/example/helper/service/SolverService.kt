@@ -58,6 +58,7 @@ class SolverService : Service() {
     private var lastLoggedCols = -1
     private var lastLoggedSource = ""
     private var lastFingerprintForGameChange = ""
+    private var lastNewGameTime = 0L // 🔥 v101 쿨다운용
     private var lastSeedLogTime = 0L
     private var latestThumbnail: Bitmap? = null
     private var currentBoardCrop: Bitmap? = null
@@ -1337,8 +1338,8 @@ class SolverService : Service() {
             val curW = ptBR.x - ptTL.x
             val curH = ptBL.y - ptTL.y
             
-            // 셀 크기 오차가 3% 이상 발생하면 학습된 크기로 강제 조정
-            if (Math.abs(curW - targetW) > targetW * 0.03f || Math.abs(curH - targetH) > targetH * 0.03f) {
+            // 🔥 v101: curW, curH가 양수일 때만 정렬 작동
+            if (curW > 0 && curH > 0 && (Math.abs(curW - targetW) > targetW * 0.03f || Math.abs(curH - targetH) > targetH * 0.03f)) {
                 val cx = (ptTL.x + ptBR.x) / 2f
                 val cy = (ptTL.y + ptBL.y) / 2f
                 
@@ -1684,12 +1685,11 @@ class SolverService : Service() {
                 bitmap.copyPixelsFromBuffer(buffer)
 
                 // 🔥 v26: full bitmap freeze (라벨링용)
-                try { latestFullBitmap?.recycle(); latestFullBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false) } catch (e: Exception) { }
+                try { latestFullBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false) } catch (e: Exception) { } // v101: recycle 제거
 
                 // 🔥 v22: 프리뷰용 썸네일 저장
                 try {
-                    latestThumbnail?.recycle()
-                    val tw = 500
+                    val tw = 500 // v101: recycle 제거
                     val th = (500f * bitmap.height / bitmap.width).toInt()
                     latestThumbnail = Bitmap.createScaledBitmap(bitmap, tw, th, true)
                 } catch (e: Exception) { }
@@ -1721,7 +1721,9 @@ class SolverService : Service() {
                     for (i in 0 until len) {
                         if (lastFingerprintForGameChange[i] != currentFingerprint[i]) diff++
                     }
-                    if (diff > len * 0.25 && !isCalibrationMode) {
+                    val now = System.currentTimeMillis()
+                    if (diff > len * 0.25 && !isCalibrationMode && (now - lastNewGameTime > 5000L)) {
+                        lastNewGameTime = now
                         AppLogger.d("NEW_GAME: diff=$diff/$len → 자동 격자 재적용")
                         isAutoDetectEnabled = true
                         // 학습된 크기별 코너 즉시 복원
@@ -1843,17 +1845,15 @@ class SolverService : Service() {
     private fun findOOXOO(bitmap: Bitmap): List<MatchTarget> {
         val width = bitmap.width; val height = bitmap.height
         val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-        val safeRows = rows.coerceIn(3, 20)
-        val safeCols = cols.coerceIn(3, 20)
-        if (safeRows != rows || safeCols != cols) {
-            AppLogger.d("findOOXOO: rows/cols 조정 ${rows}x${cols} → ${safeRows}x${safeCols}")
-            rows = safeRows
-            cols = safeCols
-        }
-        val colorGrid = Array(rows) { IntArray(cols) }
+        
+        // 🔥 v101: 로컬 스냅샷 (백그라운드 중 rows/cols 변경으로 인한 크래시 방지)
+        val rCnt = rows.coerceIn(3, 20)
+        val cCnt = cols.coerceIn(3, 20)
+        
+        val colorGrid = Array(rCnt) { IntArray(cCnt) }
 
-        for (r in 0 until rows) for (c in 0 until cols) {
-            val u = (c + 0.5f) / cols; val v = (r + 0.5f) / rows
+        for (r in 0 until rCnt) for (c in 0 until cCnt) {
+            val u = (c + 0.5f) / cCnt; val v = (r + 0.5f) / rCnt
             val topX = (1 - u) * ptTL.x + u * ptTR.x
             val topY = (1 - u) * ptTL.y + u * ptTR.y
             val bottomX = (1 - u) * ptBL.x + u * ptBR.x
@@ -1864,8 +1864,8 @@ class SolverService : Service() {
             val pixel = pixels[iy * width + ix]
 
             if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
-                val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(20)
-                val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(20)
+                val cellW = (abs(ptTR.x - ptTL.x) / cCnt).toInt().coerceAtLeast(20)
+                val cellH = (abs(ptBL.y - ptTL.y) / rCnt).toInt().coerceAtLeast(20)
                 val cropSize = minOf(cellW, cellH)
                 val half = cropSize / 2
                 val startX = (cx - half).toInt().coerceIn(0, width - cropSize)
@@ -1899,8 +1899,8 @@ class SolverService : Service() {
         val result = mutableListOf<MatchTarget>()
 
         // 🔥 v98: 가로 OOXOO → (타겟 X, 소스 O) 쌍
-        if (cols >= 5) {
-            for (r in 0 until rows) for (c in 0 until cols - 4) {
+        if (cCnt >= 5) {
+            for (r in 0 until rCnt) for (c in 0 until cCnt - 4) {
                 val color = colorGrid[r][c]
                 if (color == -1) continue
                 if (colorGrid[r][c] == color &&
@@ -1913,7 +1913,7 @@ class SolverService : Service() {
                         result.add(MatchTarget(r, xCol, r - 1, xCol, color))
                         AppLogger.d("🔍 OOXOO(가로) 발견: Target($r,$xCol) <- Source(${r-1},$xCol) Color:$color")
                     }
-                    if (r < rows - 1 && colorGrid[r + 1][xCol] == color) {
+                    if (r < rCnt - 1 && colorGrid[r + 1][xCol] == color) {
                         result.add(MatchTarget(r, xCol, r + 1, xCol, color))
                         AppLogger.d("🔍 OOXOO(가로) 발견: Target($r,$xCol) <- Source(${r+1},$xCol) Color:$color")
                     }
@@ -1922,8 +1922,8 @@ class SolverService : Service() {
         }
 
         // 🔥 v98: 세로 OOXOO
-        if (rows >= 5) {
-            for (c in 0 until cols) for (r in 0 until rows - 4) {
+        if (rCnt >= 5) {
+            for (c in 0 until cCnt) for (r in 0 until rCnt - 4) {
                 val color = colorGrid[r][c]
                 if (color == -1) continue
                 if (colorGrid[r][c] == color &&
@@ -1936,7 +1936,7 @@ class SolverService : Service() {
                         result.add(MatchTarget(xRow, c, xRow, c - 1, color))
                         AppLogger.d("🔍 OOXOO(세로) 발견: Target($xRow,$c) <- Source($xRow,${c-1}) Color:$color")
                     }
-                    if (c < cols - 1 && colorGrid[xRow][c + 1] == color) {
+                    if (c < cCnt - 1 && colorGrid[xRow][c + 1] == color) {
                         result.add(MatchTarget(xRow, c, xRow, c + 1, color))
                         AppLogger.d("🔍 OOXOO(세로) 발견: Target($xRow,$c) <- Source($xRow,${c+1}) Color:$color")
                     }
@@ -2829,7 +2829,7 @@ class SolverService : Service() {
                             GridSizeDB.addOrUpdate(ctx, rows, cols, realTLx, realTLy, realBRx, realBRy)
                             AppLogger.d("v93 저장: ${rows}x${cols} → (${realTLx.toInt()},${realTLy.toInt()})~(${realBRx.toInt()},${realBRy.toInt()})")
                             // v85: fingerprint+오프셋 학습 (자동검출 vs 사용자탭 차이)
-                            val learnFeat = GridFeature.extract(fullBmp, ptTL, ptTR, ptBL, ptBR)
+                            val learnFeat = if (!fullBmp.isRecycled) GridFeature.extract(fullBmp, ptTL, ptTR, ptBL, ptBR) else currentFeature
                             if (learnFeat != null && learnFeat.size == GridFeature.DIM) {
                                 // 자동 검출 결과 대신, 저장 시점의 ptTL/ptBR과 사용자 탭 차이 기록
                                 GridCalibrationDB.addWithFeature(
