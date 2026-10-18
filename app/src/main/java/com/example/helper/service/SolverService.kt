@@ -1342,10 +1342,15 @@ class SolverService : Service() {
                 val cx = (ptTL.x + ptBR.x) / 2f
                 val cy = (ptTL.y + ptBL.y) / 2f
                 
-                ptTL.set(cx - targetW / 2f, cy - targetH / 2f)
-                ptTR.set(cx + targetW / 2f, cy - targetH / 2f)
-                ptBL.set(cx - targetW / 2f, cy + targetH / 2f)
-                ptBR.set(cx + targetW / 2f, cy + targetH / 2f)
+                val wMax = bitmap.width.toFloat()
+                val hMax = bitmap.height.toFloat()
+                val nTLx = (cx - targetW / 2f).coerceIn(0f, wMax - targetW)
+                val nTLy = (cy - targetH / 2f).coerceIn(0f, hMax - targetH)
+                
+                ptTL.set(nTLx, nTLy)
+                ptTR.set(nTLx + targetW, nTLy)
+                ptBL.set(nTLx, nTLy + targetH)
+                ptBR.set(nTLx + targetW, nTLy + targetH)
                 
                 AppLogger.d("🔧 셀 크기 기반 강제 정렬: ${curW.toInt()}x${curH.toInt()} -> ${targetW.toInt()}x${targetH.toInt()}")
             }
@@ -1904,10 +1909,14 @@ class SolverService : Service() {
                     colorGrid[r][c + 3] == color &&
                     colorGrid[r][c + 4] == color) {
                     val xCol = c + 2
-                    if (r > 0 && colorGrid[r - 1][xCol] == color)
+                    if (r > 0 && colorGrid[r - 1][xCol] == color) {
                         result.add(MatchTarget(r, xCol, r - 1, xCol, color))
-                    if (r < rows - 1 && colorGrid[r + 1][xCol] == color)
+                        AppLogger.d("🔍 OOXOO(가로) 발견: Target($r,$xCol) <- Source(${r-1},$xCol) Color:$color")
+                    }
+                    if (r < rows - 1 && colorGrid[r + 1][xCol] == color) {
                         result.add(MatchTarget(r, xCol, r + 1, xCol, color))
+                        AppLogger.d("🔍 OOXOO(가로) 발견: Target($r,$xCol) <- Source(${r+1},$xCol) Color:$color")
+                    }
                 }
             }
         }
@@ -1923,10 +1932,14 @@ class SolverService : Service() {
                     colorGrid[r + 3][c] == color &&
                     colorGrid[r + 4][c] == color) {
                     val xRow = r + 2
-                    if (c > 0 && colorGrid[xRow][c - 1] == color)
+                    if (c > 0 && colorGrid[xRow][c - 1] == color) {
                         result.add(MatchTarget(xRow, c, xRow, c - 1, color))
-                    if (c < cols - 1 && colorGrid[xRow][c + 1] == color)
+                        AppLogger.d("🔍 OOXOO(세로) 발견: Target($xRow,$c) <- Source($xRow,${c-1}) Color:$color")
+                    }
+                    if (c < cols - 1 && colorGrid[xRow][c + 1] == color) {
                         result.add(MatchTarget(xRow, c, xRow, c + 1, color))
+                        AppLogger.d("🔍 OOXOO(세로) 발견: Target($xRow,$c) <- Source($xRow,${c+1}) Color:$color")
+                    }
                 }
             }
         }
@@ -1981,7 +1994,7 @@ class SolverService : Service() {
 
         cellMat.release(); cellEdges.release(); resultMat.release()
 
-        return bestScore >= 0.62
+        return bestScore >= 0.78  // v100: 일반 타일 오탐 방지 (기존 0.62)
     }
 
     // 🔥 기믹 캡처
