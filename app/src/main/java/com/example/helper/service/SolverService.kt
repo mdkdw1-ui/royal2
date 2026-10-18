@@ -1995,6 +1995,33 @@ class SolverService : Service() {
 
         return maxLen
     }
+    
+    // 매치 길이 반환 헬퍼 함수
+    private fun checkMatchLength(grid: Array<IntArray>, r: Int, c: Int): Int {
+        val color = grid[r][c]
+        if (color == -1) return 0
+        val rows = grid.size
+        val cols = grid[0].size
+        var maxLen = 0
+
+        // 가로 길이
+        var hCount = 1
+        var cLeft = c - 1
+        while (cLeft >= 0 && grid[r][cLeft] == color) { hCount++; cLeft-- }
+        var cRight = c + 1
+        while (cRight < cols && grid[r][cRight] == color) { hCount++; cRight++ }
+        if (hCount > maxLen) maxLen = hCount
+
+        // 세로 길이
+        var vCount = 1
+        var rUp = r - 1
+        while (rUp >= 0 && grid[rUp][c] == color) { vCount++; rUp-- }
+        var rDown = r + 1
+        while (rDown < rows && grid[rDown][c] == color) { vCount++; rDown++ }
+        if (vCount > maxLen) maxLen = vCount
+
+        return maxLen
+    }
 
     // 🔥 기믹 인식
     private fun isGimmick(cellBitmap: Bitmap): Boolean {
