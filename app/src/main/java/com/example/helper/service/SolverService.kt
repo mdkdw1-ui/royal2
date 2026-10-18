@@ -1845,7 +1845,6 @@ class SolverService : Service() {
         val width = bitmap.width; val height = bitmap.height
         val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         
-        // 🔥 v101: 로컬 스냅샷 (백그라운드 중 rows/cols 변경으로 인한 크래시 방지)
         val rCnt = rows.coerceIn(3, 20)
         val cCnt = cols.coerceIn(3, 20)
         
@@ -1860,7 +1859,6 @@ class SolverService : Service() {
             val cx = (1 - v) * topX + v * bottomX
             val cy = (1 - v) * topY + v * bottomY
             val ix = cx.toInt().coerceIn(0, width - 1); val iy = cy.toInt().coerceIn(0, height - 1)
-            val pixel = pixels[iy * width + ix]
 
             if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
                 val cellW = (abs(ptTR.x - ptTL.x) / cCnt).toInt().coerceAtLeast(20)
@@ -1882,10 +1880,25 @@ class SolverService : Service() {
                 } catch (e: Exception) {}
             }
 
-            val hsv = FloatArray(3); Color.colorToHSV(pixel, hsv)
-            val hue = hsv[0]; val sat = hsv[1]
+            // 🔥 v102: 5x5 평균 색상 계산
+            var rSum = 0; var gSum = 0; var bSum = 0; var cnt = 0
+            for (dy in -2..2) {
+                for (dx in -2..2) {
+                    val nx = (ix + dx).coerceIn(0, width - 1)
+                    val ny = (iy + dy).coerceIn(0, height - 1)
+                    val p = pixels[ny * width + nx]
+                    rSum += (p shr 16) and 0xFF
+                    gSum += (p shr 8) and 0xFF
+                    bSum += p and 0xFF
+                    cnt++
+                }
+            }
+            val avgColor = Color.rgb(rSum / cnt, gSum / cnt, bSum / cnt)
+            val hsv = FloatArray(3); Color.colorToHSV(avgColor, hsv)
+            val hue = hsv[0]; val sat = hsv[1]; val valColor = hsv[2]
+            
             colorGrid[r][c] = when {
-                sat < 0.2f -> -1
+                sat < 0.25f || valColor < 0.25f -> -1
                 hue in 0f..30f -> 1
                 hue in 31f..70f -> 2
                 hue in 71f..160f -> 3
@@ -1895,55 +1908,92 @@ class SolverService : Service() {
             }
         }
 
+        // 🔥 v106: 스왑 시뮬레이션으로 '오직 5개 매치'만 완벽 탐지
         val result = mutableListOf<MatchTarget>()
+        val simGrid = Array(rCnt) { r -> IntArray(cCnt) { c -> colorGrid[r][c] } }
+        val dirs = arrayOf(intArrayOf(0, 1), intArrayOf(1, 0)) // 오른쪽, 아래
 
-        // 🔥 v98: 가로 OOXOO → (타겟 X, 소스 O) 쌍
-        if (cCnt >= 5) {
-            for (r in 0 until rCnt) for (c in 0 until cCnt - 4) {
-                val color = colorGrid[r][c]
-                if (color == -1) continue
-                if (colorGrid[r][c] == color &&
-                    colorGrid[r][c + 1] == color &&
-                    colorGrid[r][c + 2] != color &&
-                    colorGrid[r][c + 3] == color &&
-                    colorGrid[r][c + 4] == color) {
-                    val xCol = c + 2
-                    if (r > 0 && colorGrid[r - 1][xCol] == color) {
-                        result.add(MatchTarget(r, xCol, r - 1, xCol, color))
-                        AppLogger.d("🔍 OOXOO(가로) 발견: Target($r,$xCol) <- Source(${r-1},$xCol) Color:$color")
+        for (r in 0 until rCnt) {
+            for (c in 0 until cCnt) {
+                val color1 = simGrid[r][c]
+                if (color1 == -1) continue
+
+                for (dir in dirs) {
+                    val nr = r + dir[0]
+                    val nc = c + dir[1]
+                    if (nr >= rCnt || nc >= cCnt) continue
+                    
+                    val color2 = simGrid[nr][nc]
+                    if (color2 == -1 || color1 == color2) continue
+
+                    // 시뮬레이션 스왑
+                    simGrid[r][c] = color2
+                    simGrid[nr][nc] = color1
+
+                    // 🔥 오직 길이가 5 이상인 경우만 체크 (3,4개 무시)
+                    val isMatch1_5 = checkMatchLength(simGrid, r, c) >= 5
+                    val isMatch2_5 = checkMatchLength(simGrid, nr, nc) >= 5
+
+                    if (isMatch1_5) {
+                        result.add(MatchTarget(r, c, nr, nc, color2))
+                        AppLogger.d("🌟 5매치 발견: Target($r,$c) <- Source($nr,$nc) Color:$color2")
                     }
-                    if (r < rCnt - 1 && colorGrid[r + 1][xCol] == color) {
-                        result.add(MatchTarget(r, xCol, r + 1, xCol, color))
-                        AppLogger.d("🔍 OOXOO(가로) 발견: Target($r,$xCol) <- Source(${r+1},$xCol) Color:$color")
+                    if (isMatch2_5) {
+                        result.add(MatchTarget(nr, nc, r, c, color1))
+                        AppLogger.d("🌟 5매치 발견: Target($nr,$nc) <- Source($r,$c) Color:$color1")
                     }
+
+                    // 원상 복구
+                    simGrid[r][c] = color1
+                    simGrid[nr][nc] = color2
                 }
             }
         }
 
-        // 🔥 v98: 세로 OOXOO
-        if (rCnt >= 5) {
-            for (c in 0 until cCnt) for (r in 0 until rCnt - 4) {
-                val color = colorGrid[r][c]
-                if (color == -1) continue
-                if (colorGrid[r][c] == color &&
-                    colorGrid[r + 1][c] == color &&
-                    colorGrid[r + 2][c] != color &&
-                    colorGrid[r + 3][c] == color &&
-                    colorGrid[r + 4][c] == color) {
-                    val xRow = r + 2
-                    if (c > 0 && colorGrid[xRow][c - 1] == color) {
-                        result.add(MatchTarget(xRow, c, xRow, c - 1, color))
-                        AppLogger.d("🔍 OOXOO(세로) 발견: Target($xRow,$c) <- Source($xRow,${c-1}) Color:$color")
-                    }
-                    if (c < cCnt - 1 && colorGrid[xRow][c + 1] == color) {
-                        result.add(MatchTarget(xRow, c, xRow, c + 1, color))
-                        AppLogger.d("🔍 OOXOO(세로) 발견: Target($xRow,$c) <- Source($xRow,${c+1}) Color:$color")
-                    }
+        // 디버그 로그 (10초에 한 번만)
+        val nowLog = System.currentTimeMillis()
+        if (nowLog - lastSeedLogTime > 10000L) {
+            lastSeedLogTime = nowLog
+            var gridStr = ""
+            for (r in 0 until rCnt) {
+                var rowStr = ""
+                for (c in 0 until cCnt) {
+                    val v = colorGrid[r][c]
+                    rowStr += if (v == -1) ". " else "$v "
                 }
+                gridStr += "  $rowStr\n"
             }
+            AppLogger.d("🎨 색상 그리드:\n$gridStr")
         }
 
         return result.distinctBy { "${it.targetRow},${it.targetCol},${it.sourceRow},${it.sourceCol}" }
+    }
+    
+    // 매치 길이 반환 헬퍼 함수
+    private fun checkMatchLength(grid: Array<IntArray>, r: Int, c: Int): Int {
+        val color = grid[r][c]
+        if (color == -1) return 0
+        val rows = grid.size
+        val cols = grid[0].size
+        var maxLen = 0
+
+        // 가로 길이
+        var hCount = 1
+        var cLeft = c - 1
+        while (cLeft >= 0 && grid[r][cLeft] == color) { hCount++; cLeft-- }
+        var cRight = c + 1
+        while (cRight < cols && grid[r][cRight] == color) { hCount++; cRight++ }
+        if (hCount > maxLen) maxLen = hCount
+
+        // 세로 길이
+        var vCount = 1
+        var rUp = r - 1
+        while (rUp >= 0 && grid[rUp][c] == color) { vCount++; rUp-- }
+        var rDown = r + 1
+        while (rDown < rows && grid[rDown][c] == color) { vCount++; rDown++ }
+        if (vCount > maxLen) maxLen = vCount
+
+        return maxLen
     }
 
     // 🔥 기믹 인식
