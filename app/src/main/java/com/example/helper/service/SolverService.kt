@@ -1328,6 +1328,29 @@ class SolverService : Service() {
         ptBL.set(sortedPoints[2].x.toFloat(), sortedPoints[2].y.toFloat())
         ptBR.set(sortedPoints[3].x.toFloat(), sortedPoints[3].y.toFloat())
 
+        // 🔥 v99: 학습된 셀 크기를 기반으로 격자 강제 정렬 (중심점 기준)
+        val sizeRec = GridSizeDB.find(applicationContext, rows, cols)
+        if (sizeRec != null && sizeRec.avgCellW > 0 && sizeRec.avgCellH > 0) {
+            val targetW = sizeRec.avgCellW * cols
+            val targetH = sizeRec.avgCellH * rows
+            
+            val curW = ptBR.x - ptTL.x
+            val curH = ptBL.y - ptTL.y
+            
+            // 셀 크기 오차가 3% 이상 발생하면 학습된 크기로 강제 조정
+            if (Math.abs(curW - targetW) > targetW * 0.03f || Math.abs(curH - targetH) > targetH * 0.03f) {
+                val cx = (ptTL.x + ptBR.x) / 2f
+                val cy = (ptTL.y + ptBL.y) / 2f
+                
+                ptTL.set(cx - targetW / 2f, cy - targetH / 2f)
+                ptTR.set(cx + targetW / 2f, cy - targetH / 2f)
+                ptBL.set(cx - targetW / 2f, cy + targetH / 2f)
+                ptBR.set(cx + targetW / 2f, cy + targetH / 2f)
+                
+                AppLogger.d("🔧 셀 크기 기반 강제 정렬: ${curW.toInt()}x${curH.toInt()} -> ${targetW.toInt()}x${targetH.toInt()}")
+            }
+        }
+
         // 🔥 격자선 프로젝션 방식으로 크기 검출
         val detected = detectGridDimensions(bitmap)
         if (detected != null) {

@@ -3,69 +3,66 @@ package com.example.helper.util
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 
 /**
- * v93: 판 크기별 좌표 학습
- * - 판 크기(11x9, 10x9 등)를 키로 사용
- * - 각 크기별 평균 좌표 + 개수 저장
- * - 3개 이상 쌓이면 자동 적용
+ * v99: 판 크기별 좌표 및 셀 크기 학습
  */
 object GridSizeDB {
     private const val PREFS = "grid_size_db"
     private const val KEY = "records"
-    private const val MIN_SAMPLES = 2  // v97: 2개부터  // 최소 3개 필요
+    private const val MIN_SAMPLES = 2
 
     data class SizeRecord(
         val rows: Int,
         val cols: Int,
         var avgTLx: Float, var avgTLy: Float,
         var avgBRx: Float, var avgBRy: Float,
+        var avgCellW: Float, var avgCellH: Float, // 🔥 v99 추가
         var count: Int,
         var timestamp: Long
     )
 
-    /** 사용자 조정 좌표를 크기별로 저장 (평균 업데이트) */
     fun addOrUpdate(
         context: Context,
         rows: Int, cols: Int,
         tlx: Float, tly: Float, brx: Float, bry: Float
     ) {
         val list = loadAll(context).toMutableList()
-        val key = "${rows}x${cols}"
         val idx = list.indexOfFirst { it.rows == rows && it.cols == cols }
+
+        val currentCellW = (brx - tlx) / cols
+        val currentCellH = (bry - tly) / rows
 
         if (idx >= 0) {
             val old = list[idx]
             val newCount = old.count + 1
-            // 🔥 v98: EMA (최근 30% 가중) — 오래된 데이터 영향 축소
-            val alpha = 0.3f
+            val alpha = 0.3f // 최근 데이터 가중치
+            
             list[idx] = SizeRecord(
                 rows = rows, cols = cols,
                 avgTLx = old.avgTLx * (1 - alpha) + tlx * alpha,
                 avgTLy = old.avgTLy * (1 - alpha) + tly * alpha,
                 avgBRx = old.avgBRx * (1 - alpha) + brx * alpha,
                 avgBRy = old.avgBRy * (1 - alpha) + bry * alpha,
+                avgCellW = if (old.avgCellW > 0) old.avgCellW * (1 - alpha) + currentCellW * alpha else currentCellW,
+                avgCellH = if (old.avgCellH > 0) old.avgCellH * (1 - alpha) + currentCellH * alpha else currentCellH,
                 count = newCount,
                 timestamp = System.currentTimeMillis()
             )
-            AppLogger.d("📏 ${key} EMA 업데이트 (${newCount}개)")
+            AppLogger.d("📏 ${rows}x${cols} EMA 업데이트 (${newCount}개) | 셀: ${list[idx].avgCellW.toInt()}x${list[idx].avgCellH.toInt()}")
         } else {
-            list.add(SizeRecord(rows, cols, tlx, tly, brx, bry, 1, System.currentTimeMillis()))
-            AppLogger.d("📏 ${key} 신규 저장: tl=(${tlx.toInt()},${tly.toInt()}) br=(${brx.toInt()},${bry.toInt()})")
+            list.add(SizeRecord(rows, cols, tlx, tly, brx, bry, currentCellW, currentCellH, 1, System.currentTimeMillis()))
+            AppLogger.d("📏 ${rows}x${cols} 신규 저장 | 셀: ${currentCellW.toInt()}x${currentCellH.toInt()}")
         }
 
         save(context, list)
     }
 
-    /** 특정 크기의 평균 좌표 반환 (3개 이상일 때만) */
     fun find(context: Context, rows: Int, cols: Int): SizeRecord? {
         val list = loadAll(context)
         val rec = list.firstOrNull { it.rows == rows && it.cols == cols } ?: return null
-        if (rec.count < MIN_SAMPLES) {
-            AppLogger.d("📏 ${rows}x${cols}: 데이터 부족 (${rec.count}/${MIN_SAMPLES})")
-            return null
-        }
-        AppLogger.d("📏 ${rows}x${cols} 평균 사용 (${rec.count}개): tl=(${rec.avgTLx.toInt()},${rec.avgTLy.toInt()}) br=(${rec.avgBRx.toInt()},${rec.avgBRy.toInt()})")
+        if (rec.count < MIN_SAMPLES) return null
         return rec
     }
 
@@ -80,6 +77,7 @@ object GridSizeDB {
                     o.getInt("r"), o.getInt("c"),
                     o.getDouble("tLx").toFloat(), o.getDouble("tLy").toFloat(),
                     o.getDouble("bRx").toFloat(), o.getDouble("bRy").toFloat(),
+                    o.optDouble("cW", 0.0).toFloat(), o.optDouble("cH", 0.0).toFloat(),
                     o.getInt("n"), o.getLong("t")
                 )
             }
@@ -93,6 +91,7 @@ object GridSizeDB {
             o.put("r", r.rows); o.put("c", r.cols)
             o.put("tLx", r.avgTLx.toDouble()); o.put("tLy", r.avgTLy.toDouble())
             o.put("bRx", r.avgBRx.toDouble()); o.put("bRy", r.avgBRy.toDouble())
+            o.put("cW", r.avgCellW.toDouble()); o.put("cH", r.avgCellH.toDouble())
             o.put("n", r.count); o.put("t", r.timestamp)
             arr.put(o)
         }
