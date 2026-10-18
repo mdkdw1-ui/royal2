@@ -1542,10 +1542,9 @@ class SolverService : Service() {
             val rowsRaw = boardH.toFloat() / tileW
 
             var rows = when {
-                rowsRaw < 9.3f -> 9
-                rowsRaw < 10.5f -> 10   // 🔥 v15: 9.3~10.5 → 10행 (이번 케이스)
-                rowsRaw < 13.0f -> 11   // 10.5~13.0 → 11행
-                rowsRaw < 14.5f -> 13
+                rowsRaw < 9.5f -> 9
+                rowsRaw < 11.5f -> 11   // 🔥 v102: 10.x 행은 11행으로 강제 보정
+                rowsRaw < 13.5f -> 13
                 else -> Math.round(rowsRaw).toInt()
             }
 

@@ -18,8 +18,8 @@ object GridPredictor {
 
     fun predict(context: Context, feature: FloatArray): Prediction? {
         val allSeeds = GridSeedDB.loadAll(context)
-        // 🔥 v41: manual만 사용 / v101: 8열 이하 오학습 데이터 무시
-        val seeds = allSeeds.filter { it.manual && it.cols >= 9 }
+        // 🔥 v102: 11행 이상의 manual 데이터만 신뢰 (10x9 오예측 원천 차단)
+        val seeds = allSeeds.filter { it.manual && it.rows >= 11 && it.cols >= 9 }
         if (seeds.size < MIN_SEEDS) return null
 
         val distances = seeds.map { seed -> seed to GridFeature.distance(seed.feature, feature) }
