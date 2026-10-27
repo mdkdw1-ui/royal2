@@ -1263,7 +1263,7 @@ class SolverService : Service() {
                 val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
                 bitmap.copyPixelsFromBuffer(buffer)
 
-                val detected = autoDetectBoard(bitmap)
+                val detected = autoDetectBoard(bitmap, true)
                 mainHandler.post {
                     if (detected) {
                         Toast.makeText(applicationContext, "✅ 자동 감지 성공: ${rows}x${cols}", Toast.LENGTH_SHORT).show()
@@ -1282,98 +1282,46 @@ class SolverService : Service() {
     private fun dpToPx(dp: Int) = (dp * resources.displayMetrics.density).toInt()
 
     // 🔥 자동 보드 인식
-    private fun autoDetectBoard(bitmap: Bitmap): Boolean {
-        if (!isOpenCVInitialized) return false
-        val width = bitmap.width; val height = bitmap.height
-        val centerX = width / 2f; val centerY = height / 2f
-        val searchRadius = minOf(width, height) * 0.48f
+    private var pendingGrid: com.example.helper.core.AutoGrid? = null
+    private var forceApplyOnce = false
+    private val AUTO_GRID_V2 = true
+    private val USE_KNN = false
 
-        val src = Mat(); Utils.bitmapToMat(bitmap, src)
-        val gray = Mat(); Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
-        val blurred = Mat(); Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
-        val edges = Mat(); Imgproc.Canny(blurred, edges, 25.0, 80.0)
-
-        val contours = ArrayList<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-
-        var bestContour: MatOfPoint? = null
-        var bestArea = 0.0
-        for (contour in contours) {
-            val moments = Imgproc.moments(contour)
-            if (moments.m00 == 0.0) continue
-            val cx = (moments.m10 / moments.m00).toFloat()
-            val cy = (moments.m01 / moments.m00).toFloat()
-            val dist = Math.hypot((cx - centerX).toDouble(), (cy - centerY).toDouble())
-            if (dist > searchRadius) continue
-            val area = Imgproc.contourArea(contour)
-            if (area > bestArea && area > 25000) {
-                val peri = Imgproc.arcLength(MatOfPoint2f(*contour.toArray()), true)
-                val approx = MatOfPoint2f()
-                Imgproc.approxPolyDP(MatOfPoint2f(*contour.toArray()), approx, peri * 0.025, true)
-                if (approx.toArray().size == 4) {
-                    bestContour = contour; bestArea = area
-                }
-            }
-        }
-
-        if (bestContour == null) {
-            src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
+    // 🔥 v2: 칸 크기(피치) 기반 자동 격자. 연속 2회 같은 결과일 때만 반영(깜빡임 방지)
+    private fun autoDetectBoard(bitmap: Bitmap, force: Boolean = false): Boolean {
+        val g = com.example.helper.core.GridAutoDetector.detect(bitmap)
+        if (g == null) {
+            pendingGrid = null
+            AppLogger.d("⚠️ 격자 검출 실패, 기존 값 유지: ${rows}x${cols}")
             return false
         }
+        val tolW = g.cellW * 0.12f
+        val tolH = g.cellH * 0.12f
+        val same = rows == g.rows && cols == g.cols &&
+            abs(ptTL.x - g.left) < tolW && abs(ptTL.y - g.top) < tolH &&
+            abs(ptBR.x - g.right) < tolW && abs(ptBR.y - g.bottom) < tolH
+        if (same) { pendingGrid = null; return true }
 
-        val points = bestContour.toArray()
-        val sortedPoints = sortCorners(points)
-        ptTL.set(sortedPoints[0].x.toFloat(), sortedPoints[0].y.toFloat())
-        ptTR.set(sortedPoints[1].x.toFloat(), sortedPoints[1].y.toFloat())
-        ptBL.set(sortedPoints[2].x.toFloat(), sortedPoints[2].y.toFloat())
-        ptBR.set(sortedPoints[3].x.toFloat(), sortedPoints[3].y.toFloat())
-
-        // 🔥 v99: 학습된 셀 크기를 기반으로 격자 강제 정렬 (중심점 기준)
-        val sizeRec = GridSizeDB.find(applicationContext, rows, cols)
-        if (sizeRec != null && sizeRec.avgCellW > 0 && sizeRec.avgCellH > 0) {
-            val targetW = sizeRec.avgCellW * cols
-            val targetH = sizeRec.avgCellH * rows
-            
-            val curW = ptBR.x - ptTL.x
-            val curH = ptBL.y - ptTL.y
-            
-            // 🔥 v101: curW, curH가 양수일 때만 정렬 작동
-            if (curW > 0 && curH > 0 && (Math.abs(curW - targetW) > targetW * 0.03f || Math.abs(curH - targetH) > targetH * 0.03f)) {
-                val cx = (ptTL.x + ptBR.x) / 2f
-                val cy = (ptTL.y + ptBL.y) / 2f
-                
-                val wMax = bitmap.width.toFloat()
-                val hMax = bitmap.height.toFloat()
-                val nTLx = (cx - targetW / 2f).coerceIn(0f, wMax - targetW)
-                val nTLy = (cy - targetH / 2f).coerceIn(0f, hMax - targetH)
-                
-                ptTL.set(nTLx, nTLy)
-                ptTR.set(nTLx + targetW, nTLy)
-                ptBL.set(nTLx, nTLy + targetH)
-                ptBR.set(nTLx + targetW, nTLy + targetH)
-                
-                AppLogger.d("🔧 셀 크기 기반 강제 정렬: ${curW.toInt()}x${curH.toInt()} -> ${targetW.toInt()}x${targetH.toInt()}")
-            }
-        }
-
-        // 🔥 격자선 프로젝션 방식으로 크기 검출
-        val detected = detectGridDimensions(bitmap)
-        if (detected != null) {
-            rows = detected.first
-            cols = detected.second
-            savePreferences()
-            AppLogger.d("✅ 자동 인식 성공: ${rows}x${cols}")
-            mainHandler.post {
-                Toast.makeText(applicationContext, "✅ 판 크기: ${rows}행 x ${cols}열", Toast.LENGTH_SHORT).show()
-            }
-            src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
-            return true
-        } else {
-            AppLogger.d("⚠️ 격자 크기 검출 실패, 기존 값 유지: ${rows}x${cols}")
-            src.release(); gray.release(); blurred.release(); edges.release(); hierarchy.release()
+        val p = pendingGrid
+        val agree = p != null && p.rows == g.rows && p.cols == g.cols &&
+            abs(p.left - g.left) < tolW && abs(p.top - g.top) < tolH
+        if (!(force || forceApplyOnce || agree)) {
+            pendingGrid = g
+            AppLogger.d("⏳ 격자 후보 ${g.rows}x${g.cols} (확인 대기, 신뢰도=${"%.2f".format(g.confidence)})")
             return false
         }
+        pendingGrid = null
+        forceApplyOnce = false
+        rows = g.rows; cols = g.cols
+        ptTL.set(g.left, g.top); ptTR.set(g.right, g.top)
+        ptBL.set(g.left, g.bottom); ptBR.set(g.right, g.bottom)
+        savePreferences()
+        AppLogger.d("✅ 격자 적용: ${rows}행 x ${cols}열 | 칸 ${g.cellW.toInt()}x${g.cellH.toInt()} | 신뢰도=${"%.2f".format(g.confidence)}")
+        mainHandler.post {
+            Toast.makeText(applicationContext, "✅ 판 크기: ${rows}행 x ${cols}열", Toast.LENGTH_SHORT).show()
+            overlayView?.invalidate()
+        }
+        return true
     }
 
 
@@ -1725,9 +1673,11 @@ class SolverService : Service() {
                         lastNewGameTime = now
                         AppLogger.d("NEW_GAME: diff=$diff/$len → 자동 격자 재적용")
                         isAutoDetectEnabled = true
+                        pendingGrid = null
+                        forceApplyOnce = true
                         // 학습된 크기별 코너 즉시 복원
                         val sizeRec = GridSizeDB.find(applicationContext, rows, cols)
-                        if (sizeRec != null) {
+                        if (sizeRec != null && !AUTO_GRID_V2) {
                             ptTL.set(sizeRec.avgTLx, sizeRec.avgTLy)
                             ptTR.set(sizeRec.avgBRx, sizeRec.avgTLy)
                             ptBL.set(sizeRec.avgTLx, sizeRec.avgBRy)
@@ -1779,7 +1729,7 @@ class SolverService : Service() {
                 var finalSource = if (isAutoDetectEnabled) "auto" else "manual-lock"
                 if (feat != null) {
                     val prediction = GridPredictor.predict(applicationContext, feat)
-                    if (prediction != null && prediction.confidence >= 0.75f) {  // 🔥 v36: 0.75 (안정성)
+                    if (prediction != null && USE_KNN && prediction.confidence >= 0.75f) {  // 🔥 v36: 0.75 (안정성)
                         rows = prediction.rows
                         cols = prediction.cols
                         finalSource = "k-NN"
@@ -1903,7 +1853,8 @@ class SolverService : Service() {
                 hue in 31f..70f -> 2
                 hue in 71f..160f -> 3
                 hue in 161f..230f -> 4
-                hue in 231f..360f -> 5
+                hue in 231f..334f -> 5
+                hue in 335f..360f -> 1
                 else -> -1
             }
         }
@@ -1996,32 +1947,7 @@ class SolverService : Service() {
         return maxLen
     }
     
-    // 매치 길이 반환 헬퍼 함수
-    private fun checkMatchLength(grid: Array<IntArray>, r: Int, c: Int): Int {
-        val color = grid[r][c]
-        if (color == -1) return 0
-        val rows = grid.size
-        val cols = grid[0].size
-        var maxLen = 0
 
-        // 가로 길이
-        var hCount = 1
-        var cLeft = c - 1
-        while (cLeft >= 0 && grid[r][cLeft] == color) { hCount++; cLeft-- }
-        var cRight = c + 1
-        while (cRight < cols && grid[r][cRight] == color) { hCount++; cRight++ }
-        if (hCount > maxLen) maxLen = hCount
-
-        // 세로 길이
-        var vCount = 1
-        var rUp = r - 1
-        while (rUp >= 0 && grid[rUp][c] == color) { vCount++; rUp-- }
-        var rDown = r + 1
-        while (rDown < rows && grid[rDown][c] == color) { vCount++; rDown++ }
-        if (vCount > maxLen) maxLen = vCount
-
-        return maxLen
-    }
 
     // 🔥 기믹 인식
     private fun isGimmick(cellBitmap: Bitmap): Boolean {
