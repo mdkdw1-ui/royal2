@@ -1489,11 +1489,13 @@ class SolverService : Service() {
             val tileW = boardW.toFloat() / COLS
             val rowsRaw = boardH.toFloat() / tileW
 
-            var rows = when {
-                rowsRaw < 9.5f -> 9
-                rowsRaw < 11.5f -> 11   // 🔥 v102: 10.x 행은 11행으로 강제 보정
-                rowsRaw < 13.5f -> 13
-                else -> Math.round(rowsRaw).toInt()
+            val rows = when {
+                rowsRaw < 9.7f -> 10
+                rowsRaw < 11.5f -> 11
+                else -> {
+                    AppLogger.d("⚠️ 비정상 rowsRaw=${"%.2f".format(rowsRaw)} → 검출 실패")
+                    return null
+                }
             }
 
             AppLogger.d("계산: tileW=${tileW.toInt()}, rowsRaw=${"%.2f".format(rowsRaw)} → rows=$rows")
