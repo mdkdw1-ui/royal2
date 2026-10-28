@@ -1498,8 +1498,7 @@ class SolverService : Service() {
 
             AppLogger.d("계산: tileW=${tileW.toInt()}, rowsRaw=${"%.2f".format(rowsRaw)} → rows=$rows")
 
-            if (rows < 9) rows = 9
-            if (rows > 13) rows = 13
+            // v98: rows clamp 제거 (val)
 
             val tileH = boardH.toFloat() / rows
             val err = Math.abs(tileW - tileH) / Math.max(tileW, tileH)
