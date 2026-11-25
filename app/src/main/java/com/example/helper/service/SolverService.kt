@@ -37,7 +37,8 @@ import kotlin.math.abs
 data class MatchTarget(
     val targetRow: Int, val targetCol: Int,
     val sourceRow: Int, val sourceCol: Int,
-    val color: Int
+    val color: Int,
+    val lineCells: List<Pair<Int, Int>> = emptyList()
 )
 
 class SolverService : Service() {
@@ -97,7 +98,7 @@ class SolverService : Service() {
     private var isGrabberProcessing = false
 
     private var isAutoScanEnabled = true
-    private val AUTO_SCAN_INTERVAL = 1000L
+    private val AUTO_SCAN_INTERVAL = 600L
     private var autoScanRunnable: Runnable? = null
 
     private val dynamicTemplates = mutableListOf<Mat>()
@@ -488,8 +489,21 @@ class SolverService : Service() {
                 }
             }
 
-            // 🔥 v98: 5매치 화살표 (source O → target X)
+            // 🔥 v98+: 5매치 완성 라인(OOOOO) 하이라이트 + 화살표
+            val lineHighlightPaint = Paint().apply {
+                color = Color.parseColor("#55FFD700")
+                style = Paint.Style.FILL
+            }
             for (t in positions) {
+                for ((lr, lc) in t.lineCells) {
+                    val u0 = lc.toFloat() / cols; val u1 = (lc + 1).toFloat() / cols
+                    val v0 = lr.toFloat() / rows; val v1 = (lr + 1).toFloat() / rows
+                    val x0 = (1 - v0) * ((1 - u0) * ptTL.x + u0 * ptTR.x) + v0 * ((1 - u0) * ptBL.x + u0 * ptBR.x)
+                    val y0 = (1 - v0) * ((1 - u0) * ptTL.y + u0 * ptTR.y) + v0 * ((1 - u0) * ptBL.y + u0 * ptBR.y)
+                    val x1 = (1 - v1) * ((1 - u1) * ptTL.x + u1 * ptTR.x) + v1 * ((1 - u1) * ptBL.x + u1 * ptBR.x)
+                    val y1 = (1 - v1) * ((1 - u1) * ptTL.y + u1 * ptTR.y) + v1 * ((1 - u1) * ptBL.y + u1 * ptBR.y)
+                    canvas.drawRect(x0, y0, x1, y1, lineHighlightPaint)
+                }
                 fun cellCenter(rr: Int, cc: Int): Pair<Float, Float> {
                     val u = (cc + 0.5f) / cols; val v = (rr + 0.5f) / rows
                     val tX = (1 - u) * ptTL.x + u * ptTR.x
@@ -1255,13 +1269,15 @@ class SolverService : Service() {
                 return@post
             }
             try {
-                val metrics = resources.displayMetrics
+                val (w, h) = getRealScreenMetrics()
                 val planes = image.planes; val buffer = planes[0].buffer
                 val pixelStride = planes[0].pixelStride; val rowStride = planes[0].rowStride
-                val w = metrics.widthPixels; val h = metrics.heightPixels
                 val rowPadding = rowStride - pixelStride * w
-                val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
-                bitmap.copyPixelsFromBuffer(buffer)
+                val rawBmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                rawBmp.copyPixelsFromBuffer(buffer)
+                val bitmap = if (rawBmp.width != w) {
+                    Bitmap.createBitmap(rawBmp, 0, 0, w, h).also { rawBmp.recycle() }
+                } else rawBmp
 
                 val detected = autoDetectBoard(bitmap, true)
                 mainHandler.post {
@@ -1280,6 +1296,18 @@ class SolverService : Service() {
     }
 
     private fun dpToPx(dp: Int) = (dp * resources.displayMetrics.density).toInt()
+
+    private fun getRealScreenMetrics(): Pair<Int, Int> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager.currentWindowMetrics.bounds
+            Pair(bounds.width(), bounds.height())
+        } else {
+            val dm = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(dm)
+            Pair(dm.widthPixels, dm.heightPixels)
+        }
+    }
 
     // 🔥 자동 보드 인식
     private var pendingGrid: com.example.helper.core.AutoGrid? = null
@@ -1624,13 +1652,15 @@ class SolverService : Service() {
             }
 
             try {
-                val metrics = resources.displayMetrics
+                val (w, h) = getRealScreenMetrics()
                 val planes = image.planes; val buffer = planes[0].buffer
                 val pixelStride = planes[0].pixelStride; val rowStride = planes[0].rowStride
-                val w = metrics.widthPixels; val h = metrics.heightPixels
                 val rowPadding = rowStride - pixelStride * w
-                val bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
-                bitmap.copyPixelsFromBuffer(buffer)
+                val rawBmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                rawBmp.copyPixelsFromBuffer(buffer)
+                val bitmap = if (rawBmp.width != w) {
+                    Bitmap.createBitmap(rawBmp, 0, 0, w, h).also { rawBmp.recycle() }
+                } else rawBmp
 
                 // 🔥 v26: full bitmap freeze (라벨링용)
                 try { latestFullBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false) } catch (e: Exception) { } // v101: recycle 제거
@@ -1791,15 +1821,19 @@ class SolverService : Service() {
         }
     }
 
-    // 🔥 OOXOO 탐색 (5칸 정확히)
+    // 🔥 OOXOO 탐색 (v107: 49점 다중샘플링 + 기믹/부스터 차단 + 고정O 지원 + 낙하중 스킵)
     private fun findOOXOO(bitmap: Bitmap): List<MatchTarget> {
         val width = bitmap.width; val height = bitmap.height
         val pixels = IntArray(width * height); bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-        
+
         val rCnt = rows.coerceIn(3, 20)
         val cCnt = cols.coerceIn(3, 20)
-        
+
         val colorGrid = Array(rCnt) { IntArray(cCnt) }
+        val movableGrid = Array(rCnt) { BooleanArray(cCnt) }
+
+        val cellW = (abs(ptTR.x - ptTL.x) / cCnt).coerceAtLeast(20f)
+        val cellH = (abs(ptBL.y - ptTL.y) / rCnt).coerceAtLeast(20f)
 
         for (r in 0 until rCnt) for (c in 0 until cCnt) {
             val u = (c + 0.5f) / cCnt; val v = (r + 0.5f) / rCnt
@@ -1809,12 +1843,9 @@ class SolverService : Service() {
             val bottomY = (1 - u) * ptBL.y + u * ptBR.y
             val cx = (1 - v) * topX + v * bottomX
             val cy = (1 - v) * topY + v * bottomY
-            val ix = cx.toInt().coerceIn(0, width - 1); val iy = cy.toInt().coerceIn(0, height - 1)
 
             if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
-                val cellW = (abs(ptTR.x - ptTL.x) / cCnt).toInt().coerceAtLeast(20)
-                val cellH = (abs(ptBL.y - ptTL.y) / rCnt).toInt().coerceAtLeast(20)
-                val cropSize = minOf(cellW, cellH)
+                val cropSize = minOf(cellW, cellH).toInt().coerceAtLeast(20)
                 val half = cropSize / 2
                 val startX = (cx - half).toInt().coerceIn(0, width - cropSize)
                 val startY = (cy - half).toInt().coerceIn(0, height - cropSize)
@@ -1824,6 +1855,7 @@ class SolverService : Service() {
                     val resizedCell = Bitmap.createScaledBitmap(cellBitmap, 64, 64, true)
                     if (isGimmick(resizedCell)) {
                         colorGrid[r][c] = -1
+                        movableGrid[r][c] = false
                         resizedCell.recycle(); cellBitmap.recycle()
                         continue
                     }
@@ -1831,97 +1863,99 @@ class SolverService : Service() {
                 } catch (e: Exception) {}
             }
 
-            // 🔥 v102: 5x5 평균 색상 계산
-            var rSum = 0; var gSum = 0; var bSum = 0; var cnt = 0
-            for (dy in -2..2) {
-                for (dx in -2..2) {
-                    val nx = (ix + dx).coerceIn(0, width - 1)
-                    val ny = (iy + dy).coerceIn(0, height - 1)
-                    val p = pixels[ny * width + nx]
-                    rSum += (p shr 16) and 0xFF
-                    gSum += (p shr 8) and 0xFF
-                    bSum += p and 0xFF
-                    cnt++
-                }
-            }
-            val avgColor = Color.rgb(rSum / cnt, gSum / cnt, bSum / cnt)
-            val hsv = FloatArray(3); Color.colorToHSV(avgColor, hsv)
-            val hue = hsv[0]; val sat = hsv[1]; val valColor = hsv[2]
-            
-            colorGrid[r][c] = when {
-                sat < 0.25f || valColor < 0.25f -> -1
-                hue in 0f..30f -> 1
-                hue in 31f..70f -> 2
-                hue in 71f..160f -> 3
-                hue in 161f..230f -> 4
-                hue in 231f..334f -> 5
-                hue in 335f..360f -> 1
-                else -> -1
-            }
+            val cls = com.example.helper.core.CellClassifier.classify(pixels, width, height, cx, cy, cellW, cellH)
+            colorGrid[r][c] = cls.color
+            movableGrid[r][c] = cls.movable
         }
 
-        // 🔥 v106: 스왑 시뮬레이션으로 '오직 5개 매치'만 완벽 탐지
+        // 낙하/연쇄 중이면 스킵
+        if (boardAlreadyMatched(colorGrid)) {
+            return emptyList()
+        }
+
         val result = mutableListOf<MatchTarget>()
         val simGrid = Array(rCnt) { r -> IntArray(cCnt) { c -> colorGrid[r][c] } }
-        val dirs = arrayOf(intArrayOf(0, 1), intArrayOf(1, 0)) // 오른쪽, 아래
+        val dirs = arrayOf(intArrayOf(0, 1), intArrayOf(1, 0))
 
         for (r in 0 until rCnt) {
             for (c in 0 until cCnt) {
                 val color1 = simGrid[r][c]
-                if (color1 == -1) continue
+                if (color1 == -1 || !movableGrid[r][c]) continue
 
                 for (dir in dirs) {
                     val nr = r + dir[0]
                     val nc = c + dir[1]
                     if (nr >= rCnt || nc >= cCnt) continue
-                    
-                    val color2 = simGrid[nr][nc]
-                    if (color2 == -1 || color1 == color2) continue
 
-                    // 시뮬레이션 스왑
+                    val color2 = simGrid[nr][nc]
+                    if (color2 == -1 || !movableGrid[nr][nc] || color1 == color2) continue
+
                     simGrid[r][c] = color2
                     simGrid[nr][nc] = color1
 
-                    // 🔥 오직 길이가 5 이상인 경우만 체크 (3,4개 무시)
-                    val isMatch1_5 = checkMatchLength(simGrid, r, c) >= 5
-                    val isMatch2_5 = checkMatchLength(simGrid, nr, nc) >= 5
-
-                    if (isMatch1_5) {
-                        result.add(MatchTarget(r, c, nr, nc, color2))
-                        AppLogger.d("🌟 5매치 발견: Target($r,$c) <- Source($nr,$nc) Color:$color2")
+                    if (checkMatchLength(simGrid, r, c) >= 5) {
+                        val line = collectFiveLine(simGrid, r, c)
+                        result.add(MatchTarget(r, c, nr, nc, color2, line))
+                        AppLogger.d("🌟 5매치: Target($r,$c) <- Source($nr,$nc) Color:$color2")
                     }
-                    if (isMatch2_5) {
-                        result.add(MatchTarget(nr, nc, r, c, color1))
-                        AppLogger.d("🌟 5매치 발견: Target($nr,$nc) <- Source($r,$c) Color:$color1")
+                    if (checkMatchLength(simGrid, nr, nc) >= 5) {
+                        val line = collectFiveLine(simGrid, nr, nc)
+                        result.add(MatchTarget(nr, nc, r, c, color1, line))
+                        AppLogger.d("🌟 5매치: Target($nr,$nc) <- Source($r,$c) Color:$color1")
                     }
 
-                    // 원상 복구
                     simGrid[r][c] = color1
                     simGrid[nr][nc] = color2
                 }
             }
         }
 
-        // 디버그 로그 (10초에 한 번만)
         val nowLog = System.currentTimeMillis()
         if (nowLog - lastSeedLogTime > 10000L) {
             lastSeedLogTime = nowLog
-            var gridStr = ""
+            val sb = StringBuilder()
             for (r in 0 until rCnt) {
-                var rowStr = ""
+                sb.append("  ")
                 for (c in 0 until cCnt) {
                     val v = colorGrid[r][c]
-                    rowStr += if (v == -1) ". " else "$v "
+                    sb.append(if (v == -1) ". " else if (movableGrid[r][c]) "$v " else "${v}*")
                 }
-                gridStr += "  $rowStr\n"
+                sb.append("
+")
             }
-            AppLogger.d("🎨 색상 그리드:\n$gridStr")
+            AppLogger.d("🎨 보드:
+$sb")
         }
 
         return result.distinctBy { "${it.targetRow},${it.targetCol},${it.sourceRow},${it.sourceCol}" }
     }
-    
-    // 매치 길이 반환 헬퍼 함수
+
+    private fun boardAlreadyMatched(grid: Array<IntArray>): Boolean {
+        for (r in grid.indices) {
+            for (c in grid[0].indices) {
+                if (grid[r][c] != -1 && checkMatchLength(grid, r, c) >= 3) return true
+            }
+        }
+        return false
+    }
+
+    private fun collectFiveLine(grid: Array<IntArray>, r: Int, c: Int): List<Pair<Int, Int>> {
+        val color = grid[r][c]
+        if (color == -1) return emptyList()
+        val R = grid.size; val C = grid[0].size
+        val hList = mutableListOf<Pair<Int, Int>>()
+        var cc = c
+        while (cc > 0 && grid[r][cc - 1] == color) cc--
+        while (cc < C && grid[r][cc] == color) { hList.add(r to cc); cc++ }
+        if (hList.size >= 5) return hList
+
+        val vList = mutableListOf<Pair<Int, Int>>()
+        var rr = r
+        while (rr > 0 && grid[rr - 1][c] == color) rr--
+        while (rr < R && grid[rr][c] == color) { vList.add(rr to c); rr++ }
+        return if (vList.size >= 5) vList else emptyList()
+    }
+
     private fun checkMatchLength(grid: Array<IntArray>, r: Int, c: Int): Int {
         val color = grid[r][c]
         if (color == -1) return 0
@@ -1929,7 +1963,6 @@ class SolverService : Service() {
         val cols = grid[0].size
         var maxLen = 0
 
-        // 가로 길이
         var hCount = 1
         var cLeft = c - 1
         while (cLeft >= 0 && grid[r][cLeft] == color) { hCount++; cLeft-- }
@@ -1937,7 +1970,6 @@ class SolverService : Service() {
         while (cRight < cols && grid[r][cRight] == color) { hCount++; cRight++ }
         if (hCount > maxLen) maxLen = hCount
 
-        // 세로 길이
         var vCount = 1
         var rUp = r - 1
         while (rUp >= 0 && grid[rUp][c] == color) { vCount++; rUp-- }
@@ -1947,10 +1979,8 @@ class SolverService : Service() {
 
         return maxLen
     }
-    
 
-
-    // 🔥 기믹 인식
+    // 🔥 기믹 인식 (패딩 추가로 스케일 스킵 버그 수정)
     private fun isGimmick(cellBitmap: Bitmap): Boolean {
         if (!isOpenCVInitialized || dynamicTemplates.isEmpty()) return false
 
@@ -1958,46 +1988,44 @@ class SolverService : Service() {
         Utils.bitmapToMat(cellBitmap, cellMat)
         Imgproc.cvtColor(cellMat, cellMat, Imgproc.COLOR_RGBA2GRAY)
 
-        val cellEdges = Mat()
-        Imgproc.Canny(cellMat, cellEdges, 50.0, 150.0)
+        val padded = Mat()
+        Core.copyMakeBorder(cellMat, padded, 8, 8, 8, 8, Core.BORDER_REPLICATE)
+        val paddedEdges = Mat()
+        Imgproc.Canny(padded, paddedEdges, 50.0, 150.0)
 
         var bestScore = 0.0
         val resultMat = Mat()
 
         synchronized(dynamicTemplates) {
             for (template in dynamicTemplates) {
-                for (scale in listOf(0.75, 0.9, 1.0, 1.1, 1.25)) {
+                for (scale in listOf(0.80, 0.90, 1.0, 1.10)) {
                     val tw = (template.cols() * scale).toInt()
                     val th = (template.rows() * scale).toInt()
-                    if (tw < 8 || th < 8) continue
-                    if (cellMat.cols() < tw || cellMat.rows() < th) continue
+                    if (tw < 12 || th < 12 || padded.cols() < tw || padded.rows() < th) continue
 
                     val resized = Mat()
                     Imgproc.resize(template, resized, Size(tw.toDouble(), th.toDouble()))
 
-                    Imgproc.matchTemplate(cellMat, resized, resultMat, Imgproc.TM_CCOEFF_NORMED)
+                    Imgproc.matchTemplate(padded, resized, resultMat, Imgproc.TM_CCOEFF_NORMED)
                     val grayScore = Core.minMaxLoc(resultMat).maxVal
                     if (grayScore > bestScore) bestScore = grayScore
 
                     val resizedEdges = Mat()
                     Imgproc.Canny(resized, resizedEdges, 50.0, 150.0)
-                    if (resizedEdges.cols() > 0 && resizedEdges.rows() > 0 &&
-                        cellEdges.cols() >= resizedEdges.cols() && cellEdges.rows() >= resizedEdges.rows()) {
-                        Imgproc.matchTemplate(cellEdges, resizedEdges, resultMat, Imgproc.TM_CCOEFF_NORMED)
+                    if (paddedEdges.cols() >= resizedEdges.cols() && paddedEdges.rows() >= resizedEdges.rows()) {
+                        Imgproc.matchTemplate(paddedEdges, resizedEdges, resultMat, Imgproc.TM_CCOEFF_NORMED)
                         val edgeScore = Core.minMaxLoc(resultMat).maxVal
                         if (edgeScore > bestScore) bestScore = edgeScore
                     }
                     resized.release(); resizedEdges.release()
-
-                    if (bestScore >= 0.80) break
+                    if (bestScore >= 0.84) break
                 }
-                if (bestScore >= 0.80) break
+                if (bestScore >= 0.84) break
             }
         }
 
-        cellMat.release(); cellEdges.release(); resultMat.release()
-
-        return bestScore >= 0.78  // v100: 일반 타일 오탐 방지 (기존 0.62)
+        cellMat.release(); padded.release(); paddedEdges.release(); resultMat.release()
+        return bestScore >= 0.82
     }
 
     // 🔥 기믹 캡처
@@ -2024,13 +2052,15 @@ class SolverService : Service() {
             }
 
             try {
-                val metrics = resources.displayMetrics
+                val (w, h) = getRealScreenMetrics()
                 val planes = image.planes; val buffer = planes[0].buffer
                 val pixelStride = planes[0].pixelStride; val rowStride = planes[0].rowStride
-                val w = metrics.widthPixels; val h = metrics.heightPixels
                 val rowPadding = rowStride - pixelStride * w
-                val fullBitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
-                fullBitmap.copyPixelsFromBuffer(buffer)
+                val rawFull = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                rawFull.copyPixelsFromBuffer(buffer)
+                val fullBitmap = if (rawFull.width != w) {
+                    Bitmap.createBitmap(rawFull, 0, 0, w, h).also { rawFull.recycle() }
+                } else rawFull
 
                 val u = (col + 0.5f) / cols; val v = (row + 0.5f) / rows
                 val topX = (1 - u) * ptTL.x + u * ptTR.x
@@ -2080,9 +2110,10 @@ class SolverService : Service() {
             }, backgroundHandler)
 
             val metrics = resources.displayMetrics
-            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
+            val (realW, realH) = getRealScreenMetrics()
+            imageReader = ImageReader.newInstance(realW, realH, PixelFormat.RGBA_8888, 2)
             virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "OOXOO_Capture", metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
+                "OOXOO_Capture", realW, realH, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, backgroundHandler
             )
             isCapturing = true
