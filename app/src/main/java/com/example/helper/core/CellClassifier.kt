@@ -11,7 +11,9 @@ data class CellClass(
 object CellClassifier {
 
     /**
-     * 셀 내부 7x7(49점) 샘플링 + 반사광 면역 + 나무상자/얼음/다색 부스터 차단
+     * 셀 내부 7x7(49점) 샘플링.
+     * relaxed=true (화이트리스트 가동 시): 후보 색만 넓게 골라 OpenCV 템플릿 검증으로 넘김
+     * relaxed=false (미등록 시 fallback): 엄격한 색상+순도 필터로 기믹 차단
      */
     fun classify(
         pixels: IntArray,
@@ -20,7 +22,8 @@ object CellClassifier {
         cx: Float,
         cy: Float,
         cellW: Float,
-        cellH: Float
+        cellH: Float,
+        relaxed: Boolean = false
     ): CellClass {
         val rx = cellW * 0.26f
         val ry = cellH * 0.26f
@@ -54,39 +57,31 @@ object CellClassifier {
                 val s = hsv[1]
                 val v = hsv[2]
 
-                if (v < 0.22f) {
+                if (v < 0.20f) {
                     darkVoid++
                     continue
                 }
-                if (s < 0.24f) {
+                if (s < 0.22f) {
                     if (v > 0.76f) whiteHighlight++ else greyStone++
                     continue
                 }
 
                 when {
-                    // 빨간 사과 (갈색 상자 17~33 구간 철저히 분리)
-                    (h <= 16f || h >= 338f) && s >= 0.45f && v >= 0.34f -> red++
-                    // 갈색/황토색 나무상자·항아리·테두리
+                    (h <= 16f || h >= 338f) && s >= 0.42f && v >= 0.32f -> red++
                     (h in 16.01f..33.99f && s < 0.78f) || (h in 16.01f..31f && v < 0.72f) -> brownWood++
-                    // 노란 왕관 (밝고 진한 노랑)
-                    h in 34f..63f && s >= 0.44f && v >= 0.52f -> yellow++
-                    // 초록 나뭇잎
-                    h in 72f..158f && s >= 0.38f && v >= 0.32f -> green++
-                    // 얼음/물 하늘색 (낮은 채도의 시안)
+                    h in 34f..64f && s >= 0.42f && v >= 0.48f -> yellow++
+                    h in 72f..158f && s >= 0.36f && v >= 0.30f -> green++
                     h in 162f..187f && s < 0.78f -> cyanIce++
-                    // 파란 방패
-                    h in 188f..244f && s >= 0.42f && v >= 0.35f -> blue++
-                    // 보라색
-                    h in 252f..334f && s >= 0.36f && v >= 0.30f -> purple++
+                    h in 188f..244f && s >= 0.40f && v >= 0.32f -> blue++
+                    h in 252f..334f && s >= 0.34f && v >= 0.28f -> purple++
                     else -> otherChroma++
                 }
             }
         }
 
-        // 어두운 빈칸/배경, 흰색 과다(로켓 몸체/얼음/알), 나무/돌/얼음 기믹 차단
-        if (darkVoid > 24) return CellClass(-1, false)
-        if (whiteHighlight > 21) return CellClass(-1, false)
-        if (brownWood + greyStone + cyanIce > 14) return CellClass(-1, false)
+        if (darkVoid > (if (relaxed) 28 else 24)) return CellClass(-1, false)
+        if (whiteHighlight > (if (relaxed) 26 else 21)) return CellClass(-1, false)
+        if (brownWood + greyStone + cyanIce > (if (relaxed) 19 else 14)) return CellClass(-1, false)
 
         val counts = intArrayOf(red, yellow, green, blue, purple)
         var bestIdx = -1
@@ -104,17 +99,19 @@ object CellClassifier {
         }
 
         val chromaSum = red + yellow + green + blue + purple + brownWood + cyanIce + otherChroma
-        if (bestIdx == -1 || bestCnt < 11 || chromaSum == 0) {
+        val minBest = if (relaxed) 8 else 11
+        val minPurity = if (relaxed) 0.45f else 0.62f
+        val maxSecond = if (relaxed) 10 else 6
+
+        if (bestIdx == -1 || bestCnt < minBest || chromaSum == 0) {
             return CellClass(-1, false)
         }
-
-        // 단일 색상 순도 검사 (전구/TNT/프로펠러 등 다색 부스터 오인식 차단)
         val purity = bestCnt.toFloat() / chromaSum.toFloat()
-        if (purity < 0.62f || secondCnt > 6) {
+        if (purity < minPurity || secondCnt > maxSecond) {
             return CellClass(-1, false)
         }
 
-        // 외곽 8점 검사: 얼음/쇠사슬로 덮인 타일은 이동 불가(고정 O로만 사용)
+        // 외곽 8점 검사 (얼음/쇠사슬 여부)
         var rimBlocked = 0
         val ox = cellW * 0.39f
         val oy = cellH * 0.39f
@@ -131,14 +128,11 @@ object CellClassifier {
             val g = (p shr 8) and 0xFF
             val b = p and 0xFF
             Color.RGBToHSV(r, g, b, hsv)
-            val s = hsv[1]
-            val v = hsv[2]
-            val h = hsv[0]
+            val s = hsv[1]; val v = hsv[2]; val h = hsv[0]
             val isIceOrChain = (s < 0.22f && v > 0.72f) || (s < 0.20f && v in 0.28f..0.62f) || (h in 165f..192f && s < 0.55f && v > 0.65f)
             if (isIceOrChain) rimBlocked++
         }
 
-        val movable = rimBlocked < 5
-        return CellClass(bestIdx + 1, movable)
+        return CellClass(bestIdx + 1, rimBlocked < 5)
     }
 }

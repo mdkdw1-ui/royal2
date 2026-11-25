@@ -95,6 +95,8 @@ class SolverService : Service() {
     private var isCapturing = false
     private var isScanning = false
     private var isImageGrabberMode = false
+    private var isGemRegisterMode = false
+    private var selectedGemColor = 1 // 1:빨, 2:노, 3:초, 4:파, 5:보
     private var isGrabberProcessing = false
 
     private var isAutoScanEnabled = true
@@ -124,7 +126,10 @@ class SolverService : Service() {
         if (OpenCVLoader.initDebug()) {
             AppLogger.d("OpenCV 로드 성공")
             isOpenCVInitialized = true
-            backgroundHandler?.post { loadTemplatesFromStorage() }
+            backgroundHandler?.post {
+                loadTemplatesFromStorage()
+                com.example.helper.core.GemWhitelist.load(applicationContext)
+            }
         } else {
             AppLogger.e("OpenCV 로드 실패")
         }
@@ -540,6 +545,30 @@ class SolverService : Service() {
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
+            // 🔥 일반 젬 4종 화이트리스트 등록 모드 우선 처리
+            if (isGemRegisterMode && !isGrabberProcessing && event.action == MotionEvent.ACTION_DOWN) {
+                val x = event.x; val y = event.y
+                var minDist = Float.MAX_VALUE; var targetRow = -1; var targetCol = -1
+                for (r in 0 until rows) for (c in 0 until cols) {
+                    val u = (c + 0.5f) / cols; val v = (r + 0.5f) / rows
+                    val topX = (1 - u) * ptTL.x + u * ptTR.x
+                    val topY = (1 - u) * ptTL.y + u * ptTR.y
+                    val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                    val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                    val cx = (1 - v) * topX + v * bottomX
+                    val cy = (1 - v) * topY + v * bottomY
+                    val dist = Math.hypot((x - cx).toDouble(), (y - cy).toDouble()).toFloat()
+                    if (dist < minDist) { minDist = dist; targetRow = r; targetCol = c }
+                }
+                if (minDist < 150f) {
+                    isGrabberProcessing = true
+                    captureCellForGemWhitelist(targetRow, targetCol, selectedGemColor)
+                    return true
+                }
+                Toast.makeText(context, "⚠️ 젬 칸 중앙을 터치하세요", Toast.LENGTH_SHORT).show()
+                return true
+            }
+
             // 🔥 기믹 따기 모드 우선 처리
             if (isImageGrabberMode && !isGrabberProcessing && event.action == MotionEvent.ACTION_DOWN) {
                 val x = event.x; val y = event.y
@@ -746,6 +775,77 @@ class SolverService : Service() {
         val context = applicationContext
 
         // =========================================================
+        // 💎 일반 젬 4종 화이트리스트 등록 전용 패널
+        // =========================================================
+        if (isGemRegisterMode) {
+            val gemNames = listOf(1 to "빨", 2 to "노", 3 to "초", 4 to "파", 5 to "보")
+            val gemColors = mapOf(
+                1 to "#C62828", 2 to "#F9A825", 3 to "#2E7D32", 4 to "#1565C0", 5 to "#6A1B9A"
+            )
+            TextView(context).apply {
+                text = "💎 보드에서 선택된 색 젬을 터치 (${com.example.helper.core.GemWhitelist.registeredBaseCount()}/4)"
+                setTextColor(Color.YELLOW)
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setPadding(6, 4, 6, 4)
+            }.also { view.addView(it) }
+
+            val gemRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(4, 2, 4, 2)
+            }
+            gemNames.forEach { (code, name) ->
+                val done = com.example.helper.core.GemWhitelist.hasColor(code)
+                val sel = (code == selectedGemColor)
+                Button(context).apply {
+                    text = (if (sel) "▶" else "") + name + (if (done) "✓" else "")
+                    textSize = 10f
+                    setPadding(2, 2, 2, 2)
+                    setBackgroundColor(Color.parseColor(if (sel) "#FF00AA" else gemColors[code]))
+                    setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(30)).apply { setMargins(2, 0, 2, 0) }
+                    setOnClickListener {
+                        selectedGemColor = code
+                        refreshControlUI()
+                    }
+                }.also { gemRow.addView(it) }
+            }
+            view.addView(gemRow)
+
+            val ctrlRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(4, 4, 4, 4)
+            }
+            Button(context).apply {
+                text = "🗑️ 초기화"
+                textSize = 10f
+                setBackgroundColor(Color.parseColor("#D32F2F"))
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1f).apply { setMargins(2, 0, 2, 0) }
+                setOnClickListener {
+                    com.example.helper.core.GemWhitelist.clearAll(context)
+                    selectedGemColor = 1
+                    Toast.makeText(context, "🗑️ 일반 젬 초기화됨", Toast.LENGTH_SHORT).show()
+                    refreshControlUI()
+                }
+            }.also { ctrlRow.addView(it) }
+            Button(context).apply {
+                text = "✅ 완료"
+                textSize = 10f
+                setBackgroundColor(Color.parseColor("#4CAF50"))
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(30), 1f).apply { setMargins(2, 0, 2, 0) }
+                setOnClickListener { exitGemRegisterMode() }
+            }.also { ctrlRow.addView(it) }
+            view.addView(ctrlRow)
+
+            floatParams?.let { params -> try { windowManager.updateViewLayout(view, params) } catch (e: Exception) {} }
+            return
+        }
+
+        // =========================================================
         // 보정 모드 전용 초미니 패널
         // =========================================================
         if (isCalibrationMode) {
@@ -944,7 +1044,8 @@ class SolverService : Service() {
             run {
                 val seedCount = GridSeedDB.size(context)
                 val manualCount = GridSeedDB.loadAll(context).count { it.manual }
-                "$statusText | ${rows}x${cols} | 🧠 ${seedCount}개(👤${manualCount})"
+                val wlTxt = if (com.example.helper.core.GemWhitelist.isReady()) "💎WL" else "💎${com.example.helper.core.GemWhitelist.registeredBaseCount()}/4"
+                "$statusText | ${rows}x${cols} | $wlTxt"
             }
             setTextColor(if (isAutoScanEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#FF9800"))
             textSize = 11f
@@ -1013,15 +1114,16 @@ class SolverService : Service() {
             fun actionBtn(label: String, color: Int, action: () -> Unit): Button {
                 return Button(context).apply {
                     text = label
-                    textSize = 10f
-                    setPadding(2, 2, 2, 2)
+                    textSize = 9f
+                    setPadding(1, 1, 1, 1)
                     setBackgroundColor(color)
                     setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(dpToPx(36), dpToPx(26)).apply { setMargins(1, 0, 1, 0) }
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(31), dpToPx(26)).apply { setMargins(1, 0, 1, 0) }
                     setOnClickListener { action() }
                 }
             }
 
+            actionRow.addView(actionBtn("💎", Color.parseColor(if (com.example.helper.core.GemWhitelist.isReady()) "#2E7D32" else "#8E24AA")) { enterGemRegisterMode() })
             actionRow.addView(actionBtn("입력", Color.parseColor("#0288D1")) { showLabelingDialog() })
             actionRow.addView(actionBtn("확정", Color.parseColor("#4CAF50")) { confirmCorrect() })
             actionRow.addView(actionBtn(if (isAutoDetectEnabled) "자동" else "수동", Color.parseColor("#555555")) {
@@ -1128,6 +1230,15 @@ class SolverService : Service() {
                 refreshControlUI()
                 overlayView?.invalidate()
             }
+        }.also { view.addView(it) }
+
+        // 5.5 일반 젬 4종 화이트리스트 등록
+        Button(context).apply {
+            val ready = com.example.helper.core.GemWhitelist.isReady()
+            text = if (ready) "💎 일반젬 4종: 완료 (재등록)" else "💎 일반젬 4종 등록 (${com.example.helper.core.GemWhitelist.registeredBaseCount()}/4)"
+            setBackgroundColor(if (ready) Color.parseColor("#2E7D32") else Color.parseColor("#8E24AA"))
+            setTextColor(Color.WHITE)
+            setOnClickListener { enterGemRegisterMode() }
         }.also { view.addView(it) }
 
         // 6. 기믹 따기
@@ -1624,7 +1735,7 @@ class SolverService : Service() {
     // 🔥 스캔 실행
     private fun performScan() {
         // 🔥 v38: 보정 모드/수동 모드면 아예 진입 X
-        if (isCalibrationMode || !isAutoDetectEnabled) {
+        if (isCalibrationMode || isGemRegisterMode || isImageGrabberMode || !isAutoDetectEnabled) {
             mainHandler.post {
                 val positions = foundPositions
                 overlayView?.updatePositions(positions)
@@ -1835,6 +1946,8 @@ class SolverService : Service() {
         val cellW = (abs(ptTR.x - ptTL.x) / cCnt).coerceAtLeast(20f)
         val cellH = (abs(ptBL.y - ptTL.y) / rCnt).coerceAtLeast(20f)
 
+        val useWhitelist = isOpenCVInitialized && com.example.helper.core.GemWhitelist.isReady()
+
         for (r in 0 until rCnt) for (c in 0 until cCnt) {
             val u = (c + 0.5f) / cCnt; val v = (r + 0.5f) / rCnt
             val topX = (1 - u) * ptTL.x + u * ptTR.x
@@ -1844,28 +1957,60 @@ class SolverService : Service() {
             val cx = (1 - v) * topX + v * bottomX
             val cy = (1 - v) * topY + v * bottomY
 
-            if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
+            val cls = com.example.helper.core.CellClassifier.classify(
+                pixels, width, height, cx, cy, cellW, cellH, relaxed = useWhitelist
+            )
+
+            if (useWhitelist) {
+                if (cls.color == -1 || !com.example.helper.core.GemWhitelist.hasColor(cls.color)) {
+                    colorGrid[r][c] = -1
+                    movableGrid[r][c] = false
+                    continue
+                }
                 val cropSize = minOf(cellW, cellH).toInt().coerceAtLeast(20)
                 val half = cropSize / 2
                 val startX = (cx - half).toInt().coerceIn(0, width - cropSize)
                 val startY = (cy - half).toInt().coerceIn(0, height - cropSize)
                 val realSize = minOf(cropSize, width - startX, height - startY).coerceAtLeast(1)
+                var okGem = false
+                var tmplMov = false
                 try {
                     val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, realSize, realSize)
-                    val resizedCell = Bitmap.createScaledBitmap(cellBitmap, 64, 64, true)
-                    if (isGimmick(resizedCell)) {
-                        colorGrid[r][c] = -1
-                        movableGrid[r][c] = false
-                        resizedCell.recycle(); cellBitmap.recycle()
-                        continue
-                    }
-                    resizedCell.recycle(); cellBitmap.recycle()
+                    val res = com.example.helper.core.GemWhitelist.verifyCell(cellBitmap, cls.color)
+                    cellBitmap.recycle()
+                    okGem = res.first
+                    tmplMov = res.second
                 } catch (e: Exception) {}
-            }
 
-            val cls = com.example.helper.core.CellClassifier.classify(pixels, width, height, cx, cy, cellW, cellH)
-            colorGrid[r][c] = cls.color
-            movableGrid[r][c] = cls.movable
+                if (okGem) {
+                    colorGrid[r][c] = cls.color
+                    movableGrid[r][c] = tmplMov && cls.movable
+                } else {
+                    colorGrid[r][c] = -1
+                    movableGrid[r][c] = false
+                }
+            } else {
+                if (isOpenCVInitialized && dynamicTemplates.isNotEmpty()) {
+                    val cropSize = minOf(cellW, cellH).toInt().coerceAtLeast(20)
+                    val half = cropSize / 2
+                    val startX = (cx - half).toInt().coerceIn(0, width - cropSize)
+                    val startY = (cy - half).toInt().coerceIn(0, height - cropSize)
+                    val realSize = minOf(cropSize, width - startX, height - startY).coerceAtLeast(1)
+                    try {
+                        val cellBitmap = Bitmap.createBitmap(bitmap, startX, startY, realSize, realSize)
+                        val resizedCell = Bitmap.createScaledBitmap(cellBitmap, 64, 64, true)
+                        if (isGimmick(resizedCell)) {
+                            colorGrid[r][c] = -1
+                            movableGrid[r][c] = false
+                            resizedCell.recycle(); cellBitmap.recycle()
+                            continue
+                        }
+                        resizedCell.recycle(); cellBitmap.recycle()
+                    } catch (e: Exception) {}
+                }
+                colorGrid[r][c] = cls.color
+                movableGrid[r][c] = cls.movable
+            }
         }
 
         // 낙하/연쇄 중이면 스킵
@@ -2026,6 +2171,106 @@ $sb")
 
         cellMat.release(); padded.release(); paddedEdges.release(); resultMat.release()
         return bestScore >= 0.82
+    }
+
+    private fun enterGemRegisterMode() {
+        isGemRegisterMode = true
+        isImageGrabberMode = false
+        isCalibrationMode = false
+        isGrabberProcessing = false
+        selectedGemColor = com.example.helper.core.GemWhitelist.nextMissingColor() ?: 1
+        overlayView?.let {
+            val p = it.layoutParams as WindowManager.LayoutParams
+            p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            windowManager.updateViewLayout(it, p)
+        }
+        Toast.makeText(applicationContext, "💎 빨→노→초→파 순서로 보드의 일반 젬을 터치하세요", Toast.LENGTH_LONG).show()
+        refreshControlUI()
+    }
+
+    private fun exitGemRegisterMode() {
+        isGemRegisterMode = false
+        isGrabberProcessing = false
+        overlayView?.let {
+            val p = it.layoutParams as WindowManager.LayoutParams
+            p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            windowManager.updateViewLayout(it, p)
+        }
+        refreshControlUI()
+    }
+
+    private fun captureCellForGemWhitelist(row: Int, col: Int, gemColor: Int) {
+        val reader = imageReader ?: run {
+            isGrabberProcessing = false
+            return
+        }
+        val names = mapOf(1 to "빨강", 2 to "노랑", 3 to "초록", 4 to "파랑", 5 to "보라")
+        backgroundHandler?.post {
+            var image = reader.acquireLatestImage()
+            if (image == null) {
+                try { Thread.sleep(50) } catch (e: Exception) {}
+                image = reader.acquireNextImage()
+            }
+            if (image == null) {
+                isGrabberProcessing = false
+                mainHandler.post { Toast.makeText(applicationContext, "❌ 화면 캡처 실패", Toast.LENGTH_SHORT).show() }
+                return@post
+            }
+            try {
+                val (w, h) = getRealScreenMetrics()
+                val planes = image.planes; val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride; val rowStride = planes[0].rowStride
+                val rowPadding = rowStride - pixelStride * w
+                val rawFull = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                rawFull.copyPixelsFromBuffer(buffer)
+                val fullBitmap = if (rawFull.width != w) {
+                    Bitmap.createBitmap(rawFull, 0, 0, w, h).also { rawFull.recycle() }
+                } else rawFull
+
+                val u = (col + 0.5f) / cols; val v = (row + 0.5f) / rows
+                val topX = (1 - u) * ptTL.x + u * ptTR.x
+                val topY = (1 - u) * ptTL.y + u * ptTR.y
+                val bottomX = (1 - u) * ptBL.x + u * ptBR.x
+                val bottomY = (1 - u) * ptBL.y + u * ptBR.y
+                val cx = (1 - v) * topX + v * bottomX
+                val cy = (1 - v) * topY + v * bottomY
+
+                val cellW = (abs(ptTR.x - ptTL.x) / cols).toInt().coerceAtLeast(30)
+                val cellH = (abs(ptBL.y - ptTL.y) / rows).toInt().coerceAtLeast(30)
+                val cropSize = minOf(cellW, cellH).coerceAtLeast(24)
+                val half = cropSize / 2
+                val startX = (cx - half).toInt().coerceIn(0, fullBitmap.width - cropSize)
+                val startY = (cy - half).toInt().coerceIn(0, fullBitmap.height - cropSize)
+                val realSize = minOf(cropSize, fullBitmap.width - startX, fullBitmap.height - startY).coerceAtLeast(1)
+
+                val cellBitmap = Bitmap.createBitmap(fullBitmap, startX, startY, realSize, realSize)
+                com.example.helper.core.GemWhitelist.saveGem(applicationContext, gemColor, cellBitmap)
+                cellBitmap.recycle()
+                fullBitmap.recycle()
+
+                mainHandler.post {
+                    val gName = names[gemColor] ?: "$gemColor"
+                    val nextMissing = com.example.helper.core.GemWhitelist.nextMissingColor()
+                    if (gemColor <= 4 && nextMissing != null) {
+                        selectedGemColor = nextMissing
+                        Toast.makeText(applicationContext, "✅ ${gName} 등록! 다음 [${names[nextMissing]}] 터치", Toast.LENGTH_SHORT).show()
+                        refreshControlUI()
+                    } else if (gemColor <= 4 && com.example.helper.core.GemWhitelist.isReady()) {
+                        Toast.makeText(applicationContext, "🎉 4종 화이트리스트 완료! (보라는 💎→보)", Toast.LENGTH_LONG).show()
+                        exitGemRegisterMode()
+                    } else {
+                        Toast.makeText(applicationContext, "✅ ${gName} 등록 완료!", Toast.LENGTH_SHORT).show()
+                        exitGemRegisterMode()
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.e("일반 젬 등록 오류", e)
+                mainHandler.post { Toast.makeText(applicationContext, "❌ 오류: ${e.message}", Toast.LENGTH_SHORT).show() }
+            } finally {
+                image.close()
+                isGrabberProcessing = false
+            }
+        }
     }
 
     // 🔥 기믹 캡처
@@ -2974,7 +3219,7 @@ $sb")
 
     // 🔥 v20: 꾹 누르면 연속
     override fun onDestroy() {
-        stopCapture(); hideGimmickManager()
+        stopCapture(); hideGimmickManager(); com.example.helper.core.GemWhitelist.release()
         synchronized(dynamicTemplates) {
             dynamicTemplates.forEach { it.release() }
             dynamicTemplates.clear(); dynamicTemplateFiles.clear(); templateSizes.clear()
