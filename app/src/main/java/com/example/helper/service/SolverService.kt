@@ -2065,11 +2065,9 @@ class SolverService : Service() {
                     val v = colorGrid[r][c]
                     sb.append(if (v == -1) ". " else if (movableGrid[r][c]) "$v " else "${v}*")
                 }
-                sb.append("
-")
+                sb.append("\n")
             }
-            AppLogger.d("🎨 보드:
-$sb")
+            AppLogger.d("🎨 보드:\n$sb")
         }
 
         return result.distinctBy { "${it.targetRow},${it.targetCol},${it.sourceRow},${it.sourceCol}" }
