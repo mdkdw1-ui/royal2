@@ -1,0 +1,5 @@
+output.txt
+server/__pycache__/
+server/templates_db/
+*.pyc
+venv/
